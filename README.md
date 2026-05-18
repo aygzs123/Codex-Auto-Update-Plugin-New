@@ -2,8 +2,8 @@
 
 [English](README_EN.md) | [中文](README.md)
 
-这是一个仓库内的 Codex Desktop 插件，用于通过 store.rg-adguard.net 检查 Codex 的
-Microsoft Store 安装包，下载较新的 MSIX 包，并且只在明确指定时执行安装。
+Codex Desktop 插件，用于通过 store.rg-adguard.net 检查 Codex 的
+Microsoft Store 安装包，下载并安装较新的 MSIX 包。
 
 ## 功能
 
