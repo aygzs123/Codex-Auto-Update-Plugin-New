@@ -1,9 +1,9 @@
 ---
-name: codex-ms-store-updater
+name: codex-ms-desktop-updater
 description: Check the Microsoft Store Codex package through store.rg-adguard.net, download a newer MSIX/MSIXBundle, and optionally install it with Add-AppxPackage on Windows.
 ---
 
-# Codex MS Store Updater
+# Codex MS Desktop Updater
 
 Use this skill when the user asks to check for a Codex desktop/MS Store update, download the Codex MSIX package, or install the downloaded package.
 
@@ -19,19 +19,19 @@ Use this skill when the user asks to check for a Codex desktop/MS Store update, 
 From the repository root:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File plugins/codex-ms-store-updater/scripts/check-codex-update.ps1 -CheckOnly
+powershell -NoProfile -ExecutionPolicy Bypass -File plugins/codex-ms-desktop-updater/scripts/check-codex-update.ps1 -CheckOnly
 ```
 
 Download the newest package without installing:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File plugins/codex-ms-store-updater/scripts/check-codex-update.ps1 -DownloadOnly
+powershell -NoProfile -ExecutionPolicy Bypass -File plugins/codex-ms-desktop-updater/scripts/check-codex-update.ps1 -DownloadOnly
 ```
 
 Download and install:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File plugins/codex-ms-store-updater/scripts/check-codex-update.ps1 -Install
+powershell -NoProfile -ExecutionPolicy Bypass -File plugins/codex-ms-desktop-updater/scripts/check-codex-update.ps1 -Install
 ```
 
 ## Defaults
@@ -40,5 +40,5 @@ powershell -NoProfile -ExecutionPolicy Bypass -File plugins/codex-ms-store-updat
 - Query endpoint: `https://store.rg-adguard.net/api/GetFiles`
 - Ring: `Retail`
 - Architecture: `x64`
-- Download directory: `plugins/codex-ms-store-updater/downloads`
+- Download directory: `plugins/codex-ms-desktop-updater/downloads`
 - Download cleanup: installed-or-older `OpenAI.Codex_*.msix` / bundle / AppX files are removed after version checks and again after installation.

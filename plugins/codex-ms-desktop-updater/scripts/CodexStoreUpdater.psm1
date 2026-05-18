@@ -226,7 +226,7 @@ function Invoke-RgAdguardQuery {
         -Method Post `
         -ContentType "application/x-www-form-urlencoded" `
         -Body $body `
-        -Headers @{ "User-Agent" = "Codex-MS-Store-Updater/0.1"; "Referer" = "$BaseUrl/" } `
+        -Headers @{ "User-Agent" = "Codex-MS-Desktop-Updater/0.1"; "Referer" = "$BaseUrl/" } `
         -UseBasicParsing
 
     $response.Content

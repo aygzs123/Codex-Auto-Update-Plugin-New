@@ -1,5 +1,5 @@
 {
-  "name": "codex-ms-store-updater",
+  "name": "codex-ms-desktop-updater",
   "version": "0.1.0",
   "description": "Checks the Microsoft Store Codex package via store.rg-adguard.net and downloads or installs MSIX updates.",
   "author": {
@@ -13,7 +13,7 @@
   "keywords": ["codex", "microsoft-store", "msix", "updater"],
   "skills": "./skills/",
   "interface": {
-    "displayName": "Codex MS Store Updater",
+    "displayName": "Codex MS Desktop Updater",
     "shortDescription": "Check, download, and optionally install Codex MSIX updates.",
     "longDescription": "Provides a PowerShell-based workflow for querying store.rg-adguard.net for the Codex Microsoft Store package, comparing versions, downloading MSIX packages, and installing only when explicitly requested.",
     "developerName": "Local",
@@ -23,7 +23,7 @@
     "privacyPolicyURL": "https://store.rg-adguard.net/",
     "termsOfServiceURL": "https://store.rg-adguard.net/",
     "defaultPrompt": [
-      "Check Codex MS Store update",
+      "Check Codex Desktop update",
       "Download latest Codex MSIX",
       "Install downloaded Codex update"
     ],

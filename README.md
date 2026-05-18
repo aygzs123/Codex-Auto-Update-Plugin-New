@@ -1,8 +1,8 @@
-# Codex MS Store 更新插件
+# Codex MS Desktop 更新插件
 
 [English](README_EN.md) | [中文](README.md)
 
-这是一个仓库内的 Codex 插件，用于通过 store.rg-adguard.net 检查 Codex 的
+这是一个仓库内的 Codex Desktop 插件，用于通过 store.rg-adguard.net 检查 Codex 的
 Microsoft Store 安装包，下载较新的 MSIX 包，并且只在明确指定时执行安装。
 
 ## 功能
@@ -23,9 +23,9 @@ Microsoft Store 安装包，下载较新的 MSIX 包，并且只在明确指定�
 ## 目录结构
 
 ```text
-plugins/codex-ms-store-updater/
+plugins/codex-ms-desktop-updater/
   .codex-plugin/plugin.json
-  skills/codex-ms-store-updater/SKILL.md
+  skills/codex-ms-desktop-updater/SKILL.md
   scripts/CodexStoreUpdater.psm1
   scripts/check-codex-update.ps1
   tests/CodexStoreUpdater.Tests.ps1
@@ -36,25 +36,25 @@ plugins/codex-ms-store-updater/
 仅检查更新：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File plugins/codex-ms-store-updater/scripts/check-codex-update.ps1 -CheckOnly
+powershell -NoProfile -ExecutionPolicy Bypass -File plugins/codex-ms-desktop-updater/scripts/check-codex-update.ps1 -CheckOnly
 ```
 
 仅下载更新：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File plugins/codex-ms-store-updater/scripts/check-codex-update.ps1 -DownloadOnly
+powershell -NoProfile -ExecutionPolicy Bypass -File plugins/codex-ms-desktop-updater/scripts/check-codex-update.ps1 -DownloadOnly
 ```
 
 下载并安装：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File plugins/codex-ms-store-updater/scripts/check-codex-update.ps1 -Install
+powershell -NoProfile -ExecutionPolicy Bypass -File plugins/codex-ms-desktop-updater/scripts/check-codex-update.ps1 -Install
 ```
 
 下载的文件会保存到：
 
 ```text
-plugins/codex-ms-store-updater/downloads/
+plugins/codex-ms-desktop-updater/downloads/
 ```
 
 每次检查到本机已安装版本后，脚本都会清理该目录中已安装版本及更旧版本的
@@ -66,13 +66,13 @@ plugins/codex-ms-store-updater/downloads/
 在当前 Windows 用户配置中，安装方式是复制：
 
 ```text
-<repo>\plugins\codex-ms-store-updater
+<repo>\plugins\codex-ms-desktop-updater
 ```
 
 到：
 
 ```text
-%USERPROFILE%\.codex\plugins\codex-ms-store-updater
+%USERPROFILE%\.codex\plugins\codex-ms-desktop-updater
 ```
 
 然后在下面的文件中添加插件入口：
@@ -88,9 +88,9 @@ plugins/codex-ms-store-updater/downloads/
     "authentication": "ON_INSTALL"
   },
   "category": "Developer Tools",
-  "name": "codex-ms-store-updater",
+  "name": "codex-ms-desktop-updater",
   "source": {
-    "path": "./plugins/codex-ms-store-updater",
+    "path": "./plugins/codex-ms-desktop-updater",
     "source": "local"
   }
 }

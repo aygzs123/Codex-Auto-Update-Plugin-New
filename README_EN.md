@@ -1,8 +1,8 @@
-# Codex MS Store Updater
+# Codex MS Desktop Updater
 
 [English](README_EN.md) | [中文](README.md)
 
-Repo-local Codex plugin for checking the Microsoft Store Codex package through
+Repo-local Codex Desktop plugin for checking the Microsoft Store Codex package through
 store.rg-adguard.net, downloading a newer MSIX package, and installing it only
 when explicitly requested.
 
@@ -26,9 +26,9 @@ re-hosting Microsoft Store MSIX files.
 ## Layout
 
 ```text
-plugins/codex-ms-store-updater/
+plugins/codex-ms-desktop-updater/
   .codex-plugin/plugin.json
-  skills/codex-ms-store-updater/SKILL.md
+  skills/codex-ms-desktop-updater/SKILL.md
   scripts/CodexStoreUpdater.psm1
   scripts/check-codex-update.ps1
   tests/CodexStoreUpdater.Tests.ps1
@@ -39,25 +39,25 @@ plugins/codex-ms-store-updater/
 Check only:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File plugins/codex-ms-store-updater/scripts/check-codex-update.ps1 -CheckOnly
+powershell -NoProfile -ExecutionPolicy Bypass -File plugins/codex-ms-desktop-updater/scripts/check-codex-update.ps1 -CheckOnly
 ```
 
 Download only:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File plugins/codex-ms-store-updater/scripts/check-codex-update.ps1 -DownloadOnly
+powershell -NoProfile -ExecutionPolicy Bypass -File plugins/codex-ms-desktop-updater/scripts/check-codex-update.ps1 -DownloadOnly
 ```
 
 Download and install:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File plugins/codex-ms-store-updater/scripts/check-codex-update.ps1 -Install
+powershell -NoProfile -ExecutionPolicy Bypass -File plugins/codex-ms-desktop-updater/scripts/check-codex-update.ps1 -Install
 ```
 
 Downloaded files are saved under:
 
 ```text
-plugins/codex-ms-store-updater/downloads/
+plugins/codex-ms-desktop-updater/downloads/
 ```
 
 After the script detects the installed local version, it cleans installed-or-older
@@ -70,13 +70,13 @@ successful install, it reads the installed version again and repeats the cleanup
 For a Windows user profile, install by copying:
 
 ```text
-<repo>\plugins\codex-ms-store-updater
+<repo>\plugins\codex-ms-desktop-updater
 ```
 
 to:
 
 ```text
-%USERPROFILE%\.codex\plugins\codex-ms-store-updater
+%USERPROFILE%\.codex\plugins\codex-ms-desktop-updater
 ```
 
 Then add this entry to:
@@ -92,9 +92,9 @@ Then add this entry to:
     "authentication": "ON_INSTALL"
   },
   "category": "Developer Tools",
-  "name": "codex-ms-store-updater",
+  "name": "codex-ms-desktop-updater",
   "source": {
-    "path": "./plugins/codex-ms-store-updater",
+    "path": "./plugins/codex-ms-desktop-updater",
     "source": "local"
   }
 }
