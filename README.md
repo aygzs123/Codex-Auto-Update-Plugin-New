@@ -18,7 +18,7 @@ Microsoft Store 安装包，下载并安装较新的 MSIX 包。
 - 只有使用 `-DownloadOnly` 或 `-Install` 时才会下载包。
 - 只有明确使用 `-Install` 时才会运行 `Add-AppxPackage`。
 
-本项目有意不包含将 Microsoft Store MSIX 文件重新托管到 GitHub Release 的自动化。
+
 
 ## 目录结构
 

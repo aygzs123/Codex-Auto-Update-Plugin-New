@@ -20,8 +20,6 @@ when explicitly requested.
 - Downloads the package only when `-DownloadOnly` or `-Install` is used.
 - Runs `Add-AppxPackage` only when `-Install` is explicitly used.
 
-This project intentionally does not include GitHub Release automation for
-re-hosting Microsoft Store MSIX files.
 
 ## Layout
 
