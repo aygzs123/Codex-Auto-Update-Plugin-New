@@ -58,15 +58,6 @@ Downloaded files are saved under:
 plugins/codex-ms-store-updater/downloads/
 ```
 
-## Test
-
-Run the local parser and version-selection tests:
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File plugins/codex-ms-store-updater/tests/CodexStoreUpdater.Tests.ps1
-```
-
-The tests do not download or install packages.
 
 ## Local Codex Plugin Install
 

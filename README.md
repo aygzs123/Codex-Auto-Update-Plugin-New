@@ -55,15 +55,6 @@ powershell -NoProfile -ExecutionPolicy Bypass -File plugins/codex-ms-store-updat
 plugins/codex-ms-store-updater/downloads/
 ```
 
-## 测试
-
-运行本地解析和版本选择测试：
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File plugins/codex-ms-store-updater/tests/CodexStoreUpdater.Tests.ps1
-```
-
-测试不会下载或安装任何安装包。
 
 ## 安装到本机 Codex
 
