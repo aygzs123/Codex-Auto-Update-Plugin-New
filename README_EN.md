@@ -15,6 +15,8 @@ when explicitly requested.
 - Parses `OpenAI.Codex_*.msix` / bundle links from the response.
 - Compares the latest available version with the installed `OpenAI.Codex`
   AppX package.
+- After version checks, automatically removes downloaded `OpenAI.Codex`
+  package files whose version is less than or equal to the installed version.
 - Downloads the package only when `-DownloadOnly` or `-Install` is used.
 - Runs `Add-AppxPackage` only when `-Install` is explicitly used.
 
@@ -57,6 +59,10 @@ Downloaded files are saved under:
 ```text
 plugins/codex-ms-store-updater/downloads/
 ```
+
+After the script detects the installed local version, it cleans installed-or-older
+`OpenAI.Codex_*.msix` / bundle / AppX packages from that directory. After a
+successful install, it reads the installed version again and repeats the cleanup.
 
 
 ## Local Codex Plugin Install

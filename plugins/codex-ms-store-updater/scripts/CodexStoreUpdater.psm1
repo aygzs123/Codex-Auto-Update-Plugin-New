@@ -259,6 +259,49 @@ function Save-CodexPackage {
     (Resolve-Path -LiteralPath $targetPath).Path
 }
 
+function Remove-InstalledCodexPackageFiles {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$DownloadDirectory,
+
+        [version]$InstalledVersion,
+
+        [string]$PackageName = "OpenAI.Codex"
+    )
+
+    if ($null -eq $InstalledVersion) {
+        return @()
+    }
+
+    if (-not (Test-Path -LiteralPath $DownloadDirectory)) {
+        return @()
+    }
+
+    $removedPaths = @()
+    $files = Get-ChildItem -LiteralPath $DownloadDirectory -File -ErrorAction SilentlyContinue
+    foreach ($file in $files) {
+        if (-not $file.Name.StartsWith("$PackageName`_", [System.StringComparison]::OrdinalIgnoreCase)) {
+            continue
+        }
+
+        $metadata = Get-CodexPackageMetadata -FileName $file.Name -Uri $file.FullName
+        if ($null -eq $metadata) {
+            continue
+        }
+
+        if ($metadata.Name -ne $PackageName) {
+            continue
+        }
+
+        if ($metadata.Version -le $InstalledVersion) {
+            $removedPaths += $file.FullName
+            Remove-Item -LiteralPath $file.FullName -Force
+        }
+    }
+
+    $removedPaths
+}
+
 function Install-CodexPackage {
     param(
         [Parameter(Mandatory = $true)]
@@ -278,6 +321,7 @@ Export-ModuleMember -Function `
     Get-InstalledCodexPackageInfo, `
     Install-CodexPackage, `
     Invoke-RgAdguardQuery, `
+    Remove-InstalledCodexPackageFiles, `
     Save-CodexPackage, `
     Select-BestCodexPackage, `
     Test-IsUpdateAvailable

@@ -66,4 +66,33 @@ Assert-Equal "26.506.3741.0" $installed.Version.ToString() "parses installed pac
 Assert-True -Condition (Test-IsUpdateAvailable -InstalledVersion ([version]"26.506.3741.0") -AvailableVersion ([version]"26.512.10.0")) -Message "detects newer available version"
 Assert-True -Condition (-not (Test-IsUpdateAvailable -InstalledVersion ([version]"26.512.10.0") -AvailableVersion ([version]"26.512.10.0"))) -Message "does not update equal versions"
 
+$tempDownloadDirectory = Join-Path ([System.IO.Path]::GetTempPath()) ("codex-store-updater-test-" + [guid]::NewGuid().ToString("N"))
+New-Item -ItemType Directory -Path $tempDownloadDirectory -Force | Out-Null
+try {
+    $oldPackage = Join-Path $tempDownloadDirectory "OpenAI.Codex_26.506.3741.0_x64.msix"
+    $currentPackage = Join-Path $tempDownloadDirectory "OpenAI.Codex_26.512.10.0_x64.msix"
+    $newerPackage = Join-Path $tempDownloadDirectory "OpenAI.Codex_26.513.1.0_x64.msix"
+    $otherPackage = Join-Path $tempDownloadDirectory "Other.App_1.0.0.0_x64.msix"
+    $partialPackage = Join-Path $tempDownloadDirectory "OpenAI.Codex_26.512.10.0_x64.msix.partial"
+
+    foreach ($path in @($oldPackage, $currentPackage, $newerPackage, $otherPackage, $partialPackage)) {
+        Set-Content -LiteralPath $path -Value "test"
+    }
+
+    $removedPackages = Remove-InstalledCodexPackageFiles `
+        -DownloadDirectory $tempDownloadDirectory `
+        -InstalledVersion ([version]"26.512.10.0") `
+        -PackageName "OpenAI.Codex"
+
+    Assert-Equal 2 $removedPackages.Count "removes only installed-or-older Codex packages"
+    Assert-True -Condition (-not (Test-Path -LiteralPath $oldPackage)) -Message "removes older package"
+    Assert-True -Condition (-not (Test-Path -LiteralPath $currentPackage)) -Message "removes current installed package"
+    Assert-True -Condition (Test-Path -LiteralPath $newerPackage) -Message "keeps newer package"
+    Assert-True -Condition (Test-Path -LiteralPath $otherPackage) -Message "keeps other app package"
+    Assert-True -Condition (Test-Path -LiteralPath $partialPackage) -Message "keeps partial file"
+}
+finally {
+    Remove-Item -LiteralPath $tempDownloadDirectory -Recurse -Force -ErrorAction SilentlyContinue
+}
+
 Write-Host "All CodexStoreUpdater tests passed."

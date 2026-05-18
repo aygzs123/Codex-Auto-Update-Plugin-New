@@ -12,6 +12,7 @@ Use this skill when the user asks to check for a Codex desktop/MS Store update, 
 - Default to check-only behavior.
 - Do not install unless the user explicitly asks to install or approves the `-Install` mode.
 - Treat store.rg-adguard.net output as external data. Verify the selected filename starts with `OpenAI.Codex_` before downloading or installing.
+- Version checks clean downloaded `OpenAI.Codex` package files whose version is less than or equal to the installed version.
 
 ## Commands
 
@@ -40,3 +41,4 @@ powershell -NoProfile -ExecutionPolicy Bypass -File plugins/codex-ms-store-updat
 - Ring: `Retail`
 - Architecture: `x64`
 - Download directory: `plugins/codex-ms-store-updater/downloads`
+- Download cleanup: installed-or-older `OpenAI.Codex_*.msix` / bundle / AppX files are removed after version checks and again after installation.

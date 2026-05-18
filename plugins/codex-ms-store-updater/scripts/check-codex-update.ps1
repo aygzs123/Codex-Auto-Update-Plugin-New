@@ -48,6 +48,17 @@ Write-Host ("Available version: {0}" -f $selected.Version)
 Write-Host ("Selected package: {0}" -f $selected.FileName)
 Write-Host ("Update available: {0}" -f $updateAvailable)
 
+$removedPackagePaths = Remove-InstalledCodexPackageFiles `
+    -DownloadDirectory $DownloadDirectory `
+    -InstalledVersion $installedVersion `
+    -PackageName $PackageName
+if ($removedPackagePaths.Count -gt 0) {
+    Write-Host ("Removed {0} installed-or-older package file(s) from download cache:" -f $removedPackagePaths.Count)
+    foreach ($removedPackagePath in $removedPackagePaths) {
+        Write-Host ("  {0}" -f $removedPackagePath)
+    }
+}
+
 if ($CheckOnly -or (-not $DownloadOnly -and -not $Install)) {
     return
 }
@@ -64,4 +75,17 @@ if ($Install) {
     Write-Host "Installing package with Add-AppxPackage..."
     Install-CodexPackage -Path $packagePath
     Write-Host "Install command completed."
+
+    $installedAfterInstall = Get-InstalledCodexPackageInfo -PackageName $PackageName
+    $installedVersionAfterInstall = if ($null -eq $installedAfterInstall) { $null } else { $installedAfterInstall.Version }
+    $removedAfterInstall = Remove-InstalledCodexPackageFiles `
+        -DownloadDirectory $DownloadDirectory `
+        -InstalledVersion $installedVersionAfterInstall `
+        -PackageName $PackageName
+    if ($removedAfterInstall.Count -gt 0) {
+        Write-Host ("Removed {0} installed-or-older package file(s) after install:" -f $removedAfterInstall.Count)
+        foreach ($removedPackagePath in $removedAfterInstall) {
+            Write-Host ("  {0}" -f $removedPackagePath)
+        }
+    }
 }

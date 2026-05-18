@@ -13,6 +13,8 @@ Microsoft Store 安装包，下载较新的 MSIX 包，并且只在明确指定�
   `https://apps.microsoft.com/detail/9plm9xgg6vks?hl=en-GB&gl=HK`。
 - 从响应中解析 `OpenAI.Codex_*.msix` / bundle 链接。
 - 将最新可用版本和本机已安装的 `OpenAI.Codex` AppX 包版本进行比较。
+- 版本校验后自动清理下载目录中版本小于或等于当前已安装版本的
+  `OpenAI.Codex` 安装包。
 - 只有使用 `-DownloadOnly` 或 `-Install` 时才会下载包。
 - 只有明确使用 `-Install` 时才会运行 `Add-AppxPackage`。
 
@@ -54,6 +56,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File plugins/codex-ms-store-updat
 ```text
 plugins/codex-ms-store-updater/downloads/
 ```
+
+每次检查到本机已安装版本后，脚本都会清理该目录中已安装版本及更旧版本的
+`OpenAI.Codex_*.msix` / bundle / AppX 包。安装完成后会重新读取已安装版本并再清理一次。
 
 
 ## 安装到本机 Codex
