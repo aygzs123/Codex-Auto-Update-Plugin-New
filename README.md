@@ -113,7 +113,7 @@ plugins/codex-ms-desktop-updater/downloads/
 }
 ```
 
-注在新设备安装插件后，如果需要每日检查更新，需要在该设备的 Codex Desktop 中单独创建每日自动化。
+注意：在新设备安装插件后，如果需要每日检查更新，需要在该设备的 Codex Desktop 中单独创建每日自动化。
 自动化应每天运行：
 
 ```powershell
