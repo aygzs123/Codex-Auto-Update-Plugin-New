@@ -3,6 +3,8 @@ param(
     [switch]$CheckOnly,
     [switch]$DownloadOnly,
     [switch]$Install,
+    [switch]$InstallWithRestart,
+    [switch]$NoProxy,
     [string]$StoreUrl = "https://apps.microsoft.com/detail/9plm9xgg6vks?hl=en-GB&gl=HK",
     [string]$Ring = "Retail",
     [string]$Architecture = "x64",
@@ -20,11 +22,17 @@ if ([string]::IsNullOrWhiteSpace($DownloadDirectory)) {
 
 Import-Module (Join-Path $scriptRoot "CodexStoreUpdater.psm1") -Force
 
-if ($Install -and $CheckOnly) {
-    throw "Use either -CheckOnly or -Install, not both."
+$writeModes = @($CheckOnly, $DownloadOnly, $Install, $InstallWithRestart) | Where-Object { $_ }
+if ($writeModes.Count -gt 1) {
+    throw "Use only one of -CheckOnly, -DownloadOnly, -Install, or -InstallWithRestart."
 }
-if ($Install -and $DownloadOnly) {
-    throw "Use either -DownloadOnly or -Install, not both."
+
+if ($NoProxy) {
+    $env:HTTP_PROXY = ""
+    $env:HTTPS_PROXY = ""
+    $env:ALL_PROXY = ""
+    $env:NO_PROXY = "*"
+    [System.Net.WebRequest]::DefaultWebProxy = New-Object System.Net.WebProxy
 }
 
 Write-Host "Querying Codex package links from store.rg-adguard.net..."
@@ -59,7 +67,7 @@ if ($removedPackagePaths.Count -gt 0) {
     }
 }
 
-if ($CheckOnly -or (-not $DownloadOnly -and -not $Install)) {
+if ($CheckOnly -or (-not $DownloadOnly -and -not $Install -and -not $InstallWithRestart)) {
     return
 }
 
@@ -88,4 +96,10 @@ if ($Install) {
             Write-Host ("  {0}" -f $removedPackagePath)
         }
     }
+}
+
+if ($InstallWithRestart) {
+    $installRestartScript = Join-Path $scriptRoot "install-codex-msix-and-restart.ps1"
+    Write-Host "Starting detached install-and-restart workflow..."
+    & $installRestartScript -PackagePath $packagePath -PackageName $PackageName
 }

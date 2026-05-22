@@ -200,6 +200,24 @@ function Get-InstalledCodexPackageInfo {
     }
 }
 
+function Get-CodexAppUserModelId {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$PackageFamilyName,
+
+        [string]$AppId = "Codex"
+    )
+
+    if ([string]::IsNullOrWhiteSpace($PackageFamilyName)) {
+        throw "PackageFamilyName is required."
+    }
+    if ([string]::IsNullOrWhiteSpace($AppId)) {
+        throw "AppId is required."
+    }
+
+    "{0}!{1}" -f $PackageFamilyName, $AppId
+}
+
 function Invoke-RgAdguardQuery {
     param(
         [string]$StoreUrl = "https://apps.microsoft.com/detail/9plm9xgg6vks?hl=en-GB&gl=HK",
@@ -318,6 +336,7 @@ function Install-CodexPackage {
 Export-ModuleMember -Function `
     ConvertFrom-AppxPackageText, `
     ConvertFrom-RgAdguardHtml, `
+    Get-CodexAppUserModelId, `
     Get-InstalledCodexPackageInfo, `
     Install-CodexPackage, `
     Invoke-RgAdguardQuery, `

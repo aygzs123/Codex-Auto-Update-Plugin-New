@@ -25,7 +25,7 @@
     "defaultPrompt": [
       "Check Codex Desktop update",
       "Download latest Codex MSIX",
-      "Install downloaded Codex update"
+      "Install downloaded Codex update and restart"
     ],
     "brandColor": "#2563EB"
   }

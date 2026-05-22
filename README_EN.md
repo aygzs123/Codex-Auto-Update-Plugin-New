@@ -19,6 +19,10 @@ when explicitly requested.
   package files whose version is less than or equal to the installed version.
 - Downloads the package only when `-DownloadOnly` or `-Install` is used.
 - Runs `Add-AppxPackage` only when `-Install` is explicitly used.
+- Supports `-InstallWithRestart` to start a detached workflow that closes Codex,
+  installs the MSIX, and restarts Codex.
+- Supports `-NoProxy` to disable proxy use for the current PowerShell process
+  while downloading the MSIX.
 
 
 ## Layout
@@ -52,6 +56,18 @@ Download and install:
 powershell -NoProfile -ExecutionPolicy Bypass -File plugins/codex-ms-desktop-updater/scripts/check-codex-update.ps1 -Install
 ```
 
+Download and start the close-install-restart workflow:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File plugins/codex-ms-desktop-updater/scripts/check-codex-update.ps1 -InstallWithRestart -NoProxy
+```
+
+Install a downloaded MSIX and restart Codex:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File plugins/codex-ms-desktop-updater/scripts/install-codex-msix-and-restart.ps1 -PackagePath "<path-to-msix>"
+```
+
 Downloaded files are saved under:
 
 ```text
@@ -61,6 +77,10 @@ plugins/codex-ms-desktop-updater/downloads/
 After the script detects the installed local version, it cleans installed-or-older
 `OpenAI.Codex_*.msix` / bundle / AppX packages from that directory. After a
 successful install, it reads the installed version again and repeats the cleanup.
+
+The daily automation runs `-CheckOnly` only. If it detects a newer version, it
+reminds you to manually run `-InstallWithRestart -NoProxy`; it does not close
+the active Codex session automatically.
 
 
 ## Local Codex Plugin Install
@@ -96,6 +116,18 @@ Then add this entry to:
     "source": "local"
   }
 }
+```
+
+Note:  Afterinstalling this plugin on another device, create the daily automation separately in that device's Codex Desktop. The automation should run:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File <repo>\plugins\codex-ms-desktop-updater\scripts\check-codex-update.ps1 -CheckOnly -NoProxy
+```
+
+If the output contains `Update available: True`, manually run:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File <repo>\plugins\codex-ms-desktop-updater\scripts\check-codex-update.ps1 -InstallWithRestart -NoProxy
 ```
 
 Restart Codex if the plugin does not appear immediately.

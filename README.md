@@ -17,6 +17,8 @@ Microsoft Store 安装包，下载并安装较新的 MSIX 包。
   `OpenAI.Codex` 安装包。
 - 只有使用 `-DownloadOnly` 或 `-Install` 时才会下载包。
 - 只有明确使用 `-Install` 时才会运行 `Add-AppxPackage`。
+- 可使用 `-InstallWithRestart` 启动独立安装流程，关闭 Codex、安装 MSIX 后再重启 Codex。
+- 可使用 `-NoProxy` 让本次 PowerShell 进程下载 MSIX 时不走代理。
 
 
 
@@ -51,6 +53,18 @@ powershell -NoProfile -ExecutionPolicy Bypass -File plugins/codex-ms-desktop-upd
 powershell -NoProfile -ExecutionPolicy Bypass -File plugins/codex-ms-desktop-updater/scripts/check-codex-update.ps1 -Install
 ```
 
+下载并启动关闭、安装、重启流程：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File plugins/codex-ms-desktop-updater/scripts/check-codex-update.ps1 -InstallWithRestart -NoProxy
+```
+
+安装已下载的 MSIX 并重启 Codex：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File plugins/codex-ms-desktop-updater/scripts/install-codex-msix-and-restart.ps1 -PackagePath "<path-to-msix>"
+```
+
 下载的文件会保存到：
 
 ```text
@@ -59,6 +73,9 @@ plugins/codex-ms-desktop-updater/downloads/
 
 每次检查到本机已安装版本后，脚本都会清理该目录中已安装版本及更旧版本的
 `OpenAI.Codex_*.msix` / bundle / AppX 包。安装完成后会重新读取已安装版本并再清理一次。
+
+每日自动化只运行 `-CheckOnly`。如果检测到新版本，它会提醒你手动运行
+`-InstallWithRestart -NoProxy`，不会自动关闭当前 Codex 会话。
 
 
 ## 安装到本机 Codex
@@ -94,6 +111,19 @@ plugins/codex-ms-desktop-updater/downloads/
     "source": "local"
   }
 }
+```
+
+注在新设备安装插件后，如果需要每日检查更新，需要在该设备的 Codex Desktop 中单独创建每日自动化。
+自动化应每天运行：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File <repo>\plugins\codex-ms-desktop-updater\scripts\check-codex-update.ps1 -CheckOnly -NoProxy
+```
+
+如果输出 `Update available: True`，再手动运行：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File <repo>\plugins\codex-ms-desktop-updater\scripts\check-codex-update.ps1 -InstallWithRestart -NoProxy
 ```
 
 如果插件没有立即出现在 Codex 中，请重启 Codex。
