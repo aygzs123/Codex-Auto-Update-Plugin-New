@@ -225,8 +225,13 @@ function Invoke-RgAdguardQuery {
         [string]$Type = "url",
         [string]$Ring = "Retail",
         [string]$Language = "",
-        [string]$BaseUrl = "https://store.rg-adguard.net"
+        [string]$BaseUrl = "https://store.rg-adguard.net",
+        [int]$MaxAttempts = 3
     )
+
+    if ($MaxAttempts -lt 1) {
+        throw "MaxAttempts must be >= 1."
+    }
 
     $bodyParts = [ordered]@{
         type = $Type
@@ -239,15 +244,96 @@ function Invoke-RgAdguardQuery {
         "{0}={1}" -f [System.Net.WebUtility]::UrlEncode($_.Key), [System.Net.WebUtility]::UrlEncode([string]$_.Value)
     }) -join "&"
 
-    $response = Invoke-WebRequest `
-        -Uri "$BaseUrl/api/GetFiles" `
-        -Method Post `
-        -ContentType "application/x-www-form-urlencoded" `
-        -Body $body `
-        -Headers @{ "User-Agent" = "Codex-MS-Desktop-Updater/0.1"; "Referer" = "$BaseUrl/" } `
-        -UseBasicParsing
+    $endpoint = "$BaseUrl/api/GetFiles"
+    $httpFallbackEndpoint = $null
+    if ($endpoint.StartsWith("https://", [System.StringComparison]::OrdinalIgnoreCase)) {
+        $httpFallbackEndpoint = "http://" + $endpoint.Substring("https://".Length)
+    }
+    $headers = @{ "User-Agent" = "Codex-MS-Desktop-Updater/0.1"; "Referer" = "$BaseUrl/" }
 
-    $response.Content
+    $lastError = $null
+    for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+        try {
+            # PowerShell 5.1 Invoke-WebRequest can fail on some networks/endpoints with TLS issues.
+            # Prefer TLS 1.2 when available, and retry before falling back to curl.exe.
+            try {
+                [System.Net.ServicePointManager]::SecurityProtocol = `
+                    [System.Net.SecurityProtocolType]::Tls12 -bor [System.Net.ServicePointManager]::SecurityProtocol
+            }
+            catch {
+                # Ignore if the runtime doesn't support these enum values.
+            }
+
+            $response = Invoke-WebRequest `
+                -Uri $endpoint `
+                -Method Post `
+                -ContentType "application/x-www-form-urlencoded" `
+                -Body $body `
+                -Headers $headers `
+                -UseBasicParsing
+
+            return $response.Content
+        }
+        catch {
+            $lastError = $_
+
+            # If HTTPS is failing due to TLS interception/credential issues, retry once over HTTP.
+            if ($null -ne $httpFallbackEndpoint) {
+                try {
+                    $response = Invoke-WebRequest `
+                        -Uri $httpFallbackEndpoint `
+                        -Method Post `
+                        -ContentType "application/x-www-form-urlencoded" `
+                        -Body $body `
+                        -Headers @{ "User-Agent" = $headers["User-Agent"]; "Referer" = ($httpFallbackEndpoint -replace "/api/GetFiles$", "/") } `
+                        -UseBasicParsing
+
+                    return $response.Content
+                }
+                catch {
+                    $lastError = $_
+                }
+            }
+
+            # Fallback: use curl.exe (different HTTP stack than Invoke-WebRequest on Windows).
+            # This often succeeds when .NET Framework WebRequest fails with "unexpected error on a receive".
+            $curl = Get-Command curl.exe -ErrorAction SilentlyContinue
+            if ($null -ne $curl) {
+                try {
+                    $curlEndpoint = $endpoint
+                    $curlReferer = $headers["Referer"]
+                    if ($null -ne $httpFallbackEndpoint) {
+                        $curlEndpoint = $httpFallbackEndpoint
+                        $curlReferer = ($httpFallbackEndpoint -replace "/api/GetFiles$", "/")
+                    }
+                    $curlArgs = @(
+                        "-sS", "-L", "--fail",
+                        "--noproxy", "*",
+                        "-X", "POST",
+                        "-H", "Content-Type: application/x-www-form-urlencoded",
+                        "-H", ("User-Agent: {0}" -f $headers["User-Agent"]),
+                        "-H", ("Referer: {0}" -f $curlReferer),
+                        "--data", $body,
+                        $curlEndpoint
+                    )
+                    $content = & $curl.Source @curlArgs
+                    if ($LASTEXITCODE -ne 0) {
+                        throw "curl.exe exited with code $LASTEXITCODE"
+                    }
+                    return $content
+                }
+                catch {
+                    $lastError = $_
+                }
+            }
+
+            if ($attempt -lt $MaxAttempts) {
+                Start-Sleep -Seconds ([Math]::Min(5, $attempt))
+            }
+        }
+    }
+
+    throw $lastError
 }
 
 function Save-CodexPackage {
@@ -256,9 +342,14 @@ function Save-CodexPackage {
         [object]$Package,
 
         [Parameter(Mandatory = $true)]
-        [string]$DownloadDirectory
+        [string]$DownloadDirectory,
+
+        [int]$MaxAttempts = 3
     )
 
+    if ($MaxAttempts -lt 1) {
+        throw "MaxAttempts must be >= 1."
+    }
     if (-not $Package.FileName.StartsWith("OpenAI.Codex_", [System.StringComparison]::OrdinalIgnoreCase)) {
         throw "Refusing to download unexpected package '$($Package.FileName)'."
     }
@@ -271,8 +362,74 @@ function Save-CodexPackage {
     }
 
     $partialPath = "$targetPath.partial"
-    Invoke-WebRequest -Uri $Package.Uri -OutFile $partialPath -UseBasicParsing
-    Move-Item -LiteralPath $partialPath -Destination $targetPath -Force
+
+    $lastError = $null
+    for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+        try {
+            try {
+                [System.Net.ServicePointManager]::SecurityProtocol = `
+                    [System.Net.SecurityProtocolType]::Tls12 -bor [System.Net.ServicePointManager]::SecurityProtocol
+            }
+            catch { }
+
+            # If we already have a partial download, prefer curl resume support.
+            $curl = Get-Command curl.exe -ErrorAction SilentlyContinue
+            if ((Test-Path -LiteralPath $partialPath) -and ($null -ne $curl)) {
+                $curlArgs = @(
+                    "-sS", "-L", "--fail",
+                    "--noproxy", "*",
+                    "-C", "-",
+                    "-o", $partialPath,
+                    $Package.Uri
+                )
+                & $curl.Source @curlArgs
+                if ($LASTEXITCODE -ne 0) {
+                    throw "curl.exe exited with code $LASTEXITCODE"
+                }
+            }
+            else {
+                Invoke-WebRequest -Uri $Package.Uri -OutFile $partialPath -UseBasicParsing
+            }
+
+            Move-Item -LiteralPath $partialPath -Destination $targetPath -Force
+            break
+        }
+        catch {
+            $lastError = $_
+
+            $curl = Get-Command curl.exe -ErrorAction SilentlyContinue
+            if ($null -ne $curl) {
+                try {
+                    if (Test-Path -LiteralPath $partialPath) {
+                        # Keep partials when possible so we can resume; remove only when we are about to restart cleanly.
+                    }
+                    $curlArgs = @(
+                        "-sS", "-L", "--fail",
+                        "--noproxy", "*",
+                        "-o", $partialPath,
+                        $Package.Uri
+                    )
+                    & $curl.Source @curlArgs
+                    if ($LASTEXITCODE -ne 0) {
+                        throw "curl.exe exited with code $LASTEXITCODE"
+                    }
+                    Move-Item -LiteralPath $partialPath -Destination $targetPath -Force
+                    break
+                }
+                catch {
+                    $lastError = $_
+                }
+            }
+
+            if ($attempt -lt $MaxAttempts) {
+                Start-Sleep -Seconds ([Math]::Min(10, $attempt * 2))
+            }
+        }
+    }
+
+    if (-not (Test-Path -LiteralPath $targetPath)) {
+        throw $lastError
+    }
 
     (Resolve-Path -LiteralPath $targetPath).Path
 }

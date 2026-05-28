@@ -1,11 +1,11 @@
 {
   "name": "codex-ms-desktop-updater",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Checks the Microsoft Store Codex package via store.rg-adguard.net and downloads or installs MSIX updates.",
   "author": {
-    "name": "Local",
-    "email": "local@example.invalid",
-    "url": "https://store.rg-adguard.net/"
+    "name": "Yuuko",
+    "email": "asunaz5960@gmail.com",
+    "url": "https://github.com/Asunazzz123/"
   },
   "homepage": "https://store.rg-adguard.net/",
   "repository": "local",
@@ -25,6 +25,7 @@
     "defaultPrompt": [
       "Check Codex Desktop update",
       "Download latest Codex MSIX",
+      "Download latest Codex MSIX (no install)",
       "Install downloaded Codex update and restart"
     ],
     "brandColor": "#2563EB"

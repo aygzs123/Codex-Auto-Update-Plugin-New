@@ -30,6 +30,12 @@ Download the newest package without installing:
 powershell -NoProfile -ExecutionPolicy Bypass -File plugins/codex-ms-desktop-updater/scripts/check-codex-update.ps1 -DownloadOnly
 ```
 
+Download the newest package (even if already installed) without installing:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File plugins/codex-ms-desktop-updater/scripts/download-latest-codex-msix.ps1 -NoProxy
+```
+
 Download and install:
 
 ```powershell
@@ -51,7 +57,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File plugins/codex-ms-desktop-upd
 ## Defaults
 
 - Store URL: `https://apps.microsoft.com/detail/9plm9xgg6vks?hl=en-GB&gl=HK`
-- Query endpoint: `https://store.rg-adguard.net/api/GetFiles`
+- Query endpoint: `https://store.rg-adguard.net/api/GetFiles` (falls back to `http://store.rg-adguard.net/api/GetFiles` on TLS/network issues)
 - Ring: `Retail`
 - Architecture: `x64`
 - Download directory: `plugins/codex-ms-desktop-updater/downloads`
