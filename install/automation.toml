@@ -1,0 +1,13 @@
+version = 1
+id = "daily-codex-desktop-update-check"
+kind = "cron"
+name = "Daily Codex Desktop update install"
+prompt = "From {{CODEX_PLUGIN_ROOT}}, run `powershell -NoProfile -ExecutionPolicy Bypass -File {{CODEX_CHECK_SCRIPT}} -InstallWithRestart -NoProxy`. Inspect the command output. If it says `No newer package was found`, do not notify the user. If it starts the detached install-and-restart workflow, let it continue; Codex will close, install the MSIX, and restart after installation."
+status = "ACTIVE"
+rrule = "FREQ=DAILY;BYHOUR=9;BYMINUTE=0;BYSECOND=0"
+model = "gpt-5.4"
+reasoning_effort = "medium"
+execution_environment = "local"
+cwds = ["{{CODEX_PLUGIN_ROOT}}"]
+created_at = 1779417045208
+updated_at = 1780480643752

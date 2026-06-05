@@ -17,8 +17,10 @@ when explicitly requested.
   AppX package.
 - After version checks, automatically removes downloaded `OpenAI.Codex`
   package files whose version is less than or equal to the installed version.
-- Downloads the package only when `-DownloadOnly` or `-Install` is used.
-- Runs `Add-AppxPackage` only when `-Install` is explicitly used.
+- Downloads the package only when `-DownloadOnly`, `-Install`, or
+  `-InstallWithRestart` is used.
+- Runs `Add-AppxPackage` only when `-Install` or `-InstallWithRestart` is
+  explicitly used.
 - Supports `-InstallWithRestart` to start a detached workflow that closes Codex,
   installs the MSIX, and restarts Codex.
 - Supports `-NoProxy` to disable proxy use for the current PowerShell process
@@ -78,9 +80,10 @@ After the script detects the installed local version, it cleans installed-or-old
 `OpenAI.Codex_*.msix` / bundle / AppX packages from that directory. After a
 successful install, it reads the installed version again and repeats the cleanup.
 
-The daily automation runs `-CheckOnly` only. If it detects a newer version, it
-reminds you to manually run `-InstallWithRestart -NoProxy`; it does not close
-the active Codex session automatically.
+The daily automation runs `-InstallWithRestart -NoProxy`. If it detects a newer
+version, it starts the detached workflow that closes Codex, installs the MSIX,
+and restarts Codex after installation. If no newer package is available, it does
+not notify you.
 
 
 ## Local Codex Plugin Install
@@ -118,13 +121,23 @@ Then add this entry to:
 }
 ```
 
-Note:  Afterinstalling this plugin on another device, create the daily automation separately in that device's Codex Desktop. The automation should run:
+Note: After installing this plugin on another device, create the daily automation separately in that device's Codex Desktop. The automation should run:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File <repo>\plugins\codex-ms-desktop-updater\scripts\check-codex-update.ps1 -CheckOnly -NoProxy
+powershell -NoProfile -ExecutionPolicy Bypass -File <repo>\plugins\codex-ms-desktop-updater\scripts\check-codex-update.ps1 -InstallWithRestart -NoProxy
 ```
 
-If the output contains `Update available: True`, manually run:
+If no newer package is available, the script skips download and installation. If
+a newer package is available, it closes Codex, installs the MSIX, and restarts
+Codex after installation.
+
+`install/automation.toml` is a portable template. It uses the
+`{{CODEX_PLUGIN_ROOT}}` and `{{CODEX_CHECK_SCRIPT}}` placeholders instead of
+machine-specific drive-letter paths. When `install/install.ps1` installs it into
+the local `~/.codex` directory, it writes the actual installed plugin and script
+paths for that machine.
+
+You can still run the install workflow manually:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File <repo>\plugins\codex-ms-desktop-updater\scripts\check-codex-update.ps1 -InstallWithRestart -NoProxy
