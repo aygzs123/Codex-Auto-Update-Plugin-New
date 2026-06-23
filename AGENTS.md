@@ -51,27 +51,5 @@ Codex MSIX is available, the script skips download and installation. If an
 update is available, it starts the detached install-and-restart workflow: Codex
 closes, the MSIX is installed, and Codex is restarted after installation.
 
-
-## Version management
-
-Use `plugins\codex-ms-desktop-updater\.codex-plugin\plugin.json` as the source
-of truth for plugin versioning. Before any change is pushed to the remote
-repository, bump its `version` field using numeric SemVer-compatible text such
-as `0.2.2` or `0.2.3`. GitHub CI runs
-`tools\Test-PluginVersionBump.ps1` on pull requests and pushes to `main` to
-verify that the head version is greater than the baseline version. The installed
-plugin self-update logic compares this field against the remote repository, so
-do not rely on npm package versioning for this plugin unless the project later
-becomes an npm-distributed package.
-
-## Verification
-
-After changing the installer or automation template, run:
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File install\Install.Tests.ps1
-powershell -NoProfile -ExecutionPolicy Bypass -File plugins\codex-ms-desktop-updater\tests\CodexStoreUpdater.Tests.ps1
-```
-
 Restart Codex if the plugin or automation does not appear immediately after
 installation.
