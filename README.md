@@ -85,7 +85,14 @@ plugins/codex-ms-desktop-updater/downloads/
 `OpenAI.Codex_*.msix` / bundle / AppX 包。安装完成后会重新读取已安装版本并再清理一次。
 `-InstallWithRestart` 的独立安装流程还会在版本校验通过后删除本次安装使用的包文件。
 
-每日自动化运行 `run-automatic-maintenance.ps1 -NoProxy`。它会先比较本机插件版本和 `Asunazzz123/Codex-Auto-Update-Plugin` 远程仓库中的 `plugin.json` 版本；如果远程版本更高，则下载 GitHub archive 并覆盖更新本机插件，同时保留 `downloads` 缓存。随后它会检查 Codex Desktop，如果检测到新版本，就启动独立安装流程：关闭 Codex、安装 MSIX，并在安装结束后重启 Codex。如果没有新版本，则不通知。
+每日自动化运行 `run-automatic-maintenance.ps1 -NoProxy`。它会先比较本机插件版本和
+`Asunazzz123/Codex-Auto-Update-Plugin` 远程仓库中的 `plugin.json` 版本。
+如果插件远程版本更高，则下载 GitHub archive 并覆盖更新本机插件，同时保留
+`downloads` 缓存；如果插件没有新版本，则跳过插件下载和更新。
+
+随后它会检查 Codex Desktop。如果检测到新的 Codex MSIX，就启动独立安装流程：关闭
+Codex、安装 MSIX、校验已安装版本、删除本次安装使用的包文件，并在安装结束后重启
+Codex。如果 Codex Desktop 没有新版本，则跳过 MSIX 下载和安装，并且不通知。
 
 
 
@@ -138,7 +145,9 @@ PR 和 push 到 `main` 时运行 `tools/Test-PluginVersionBump.ps1`，校验 hea
 powershell -NoProfile -ExecutionPolicy Bypass -File <repo>\plugins\codex-ms-desktop-updater\scripts\run-automatic-maintenance.ps1 -NoProxy
 ```
 
-如果没有新版本，脚本会跳过下载和安装。如果有新版本，它会关闭 Codex、安装 MSIX，并在安装结束后重启 Codex。
+自动化会先检查插件自更新，再检查 Codex Desktop 更新。如果插件没有新版本，会跳过插件下载和更新；
+如果 Codex Desktop 没有新版本，会跳过 MSIX 下载和安装。如果有新的 Codex MSIX，
+它会关闭 Codex、安装 MSIX、校验已安装版本、删除本次安装使用的包文件，并在安装结束后重启 Codex。
 
 `install/automation.toml` 是可迁移模板，使用 `{{CODEX_PLUGIN_ROOT}}` 和
 `{{CODEX_MAINTENANCE_SCRIPT}}` 占位符，不包含个人设备盘符。运行 `install/install.ps1`
