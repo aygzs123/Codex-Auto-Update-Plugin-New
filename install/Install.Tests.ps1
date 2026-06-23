@@ -31,7 +31,7 @@ $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("codex-install-test-" +
 $repoAutomationTemplateText = Get-Content -LiteralPath $repoAutomationTemplate -Raw
 Assert-True -Condition (-not ($repoAutomationTemplateText -match '[A-Za-z]:\\+')) -Message "repo automation template is portable and has no drive-letter paths"
 Assert-True -Condition ($repoAutomationTemplateText.Contains("{{CODEX_PLUGIN_ROOT}}")) -Message "repo automation template keeps plugin root placeholder"
-Assert-True -Condition ($repoAutomationTemplateText.Contains("{{CODEX_CHECK_SCRIPT}}")) -Message "repo automation template keeps check script placeholder"
+Assert-True -Condition ($repoAutomationTemplateText.Contains("{{CODEX_MAINTENANCE_SCRIPT}}")) -Message "repo automation template keeps maintenance script placeholder"
 
 New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
 
@@ -47,6 +47,7 @@ try {
 
     Set-Content -LiteralPath (Join-Path $sourcePlugin ".codex-plugin/plugin.json") -Value "{}"
     Set-Content -LiteralPath (Join-Path $sourcePlugin "scripts/check-codex-update.ps1") -Value "Write-Host check"
+    Set-Content -LiteralPath (Join-Path $sourcePlugin "scripts/run-automatic-maintenance.ps1") -Value "Write-Host maintenance"
     Set-Content -LiteralPath (Join-Path $sourcePlugin "skills/codex-ms-desktop-updater/SKILL.md") -Value "# Skill"
     Set-Content -LiteralPath (Join-Path $sourcePlugin "downloads/local.msix") -Value "do not copy"
 
@@ -55,7 +56,7 @@ version = 1
 id = "daily-codex-desktop-update-check"
 kind = "cron"
 name = "Daily Codex Desktop update install"
-prompt = "From {{CODEX_PLUGIN_ROOT}}, run `powershell -NoProfile -ExecutionPolicy Bypass -File {{CODEX_CHECK_SCRIPT}} -InstallWithRestart -NoProxy`. Inspect the command output. If it says `No newer package was found`, do not notify the user. If it starts the detached install-and-restart workflow, let it continue; Codex will close, install the MSIX, and restart after installation."
+prompt = "From {{CODEX_PLUGIN_ROOT}}, execute `powershell -NoProfile -ExecutionPolicy Bypass -File {{CODEX_MAINTENANCE_SCRIPT}} -NoProxy` directly. Do not present the PowerShell command as an instruction to the user. The maintenance script first updates this plugin from GitHub when a newer plugin.json version exists, then checks Codex Desktop and starts the detached install-and-restart workflow when a newer MSIX is available. If it says `No newer package was found`, do not notify the user."
 status = "ACTIVE"
 rrule = "FREQ=DAILY;BYHOUR=9;BYMINUTE=0;BYSECOND=0"
 model = "gpt-5.4"
@@ -74,21 +75,25 @@ updated_at = 1780480643752
     $installedPlugin = Join-Path $codexHome "plugin/codex-ms-desktop-updater"
     $installedAutomation = Join-Path $codexHome "automations/daily-codex-desktop-update-check/automation.toml"
     $installedScript = Join-Path $installedPlugin "scripts/check-codex-update.ps1"
+    $installedMaintenanceScript = Join-Path $installedPlugin "scripts/run-automatic-maintenance.ps1"
 
     Assert-True -Condition (Test-Path -LiteralPath (Join-Path $installedPlugin ".codex-plugin/plugin.json")) -Message "copies plugin manifest"
     Assert-True -Condition (Test-Path -LiteralPath $installedScript) -Message "copies plugin scripts"
+    Assert-True -Condition (Test-Path -LiteralPath $installedMaintenanceScript) -Message "copies automatic maintenance script"
     Assert-True -Condition (-not (Test-Path -LiteralPath (Join-Path $installedPlugin "downloads"))) -Message "does not copy downloads cache"
     Assert-True -Condition (Test-Path -LiteralPath $installedAutomation) -Message "installs automation toml"
 
     $automationText = Get-Content -LiteralPath $installedAutomation -Raw
     $expectedPluginTomlPath = $installedPlugin.Replace("\", "\\")
-    $expectedScriptTomlPath = $installedScript.Replace("\", "\\")
+    $expectedMaintenanceTomlPath = $installedMaintenanceScript.Replace("\", "\\")
 
     Assert-True -Condition ($automationText.Contains("cwds = [`"$expectedPluginTomlPath`"]")) -Message "sets cwd to installed plugin path"
-    Assert-True -Condition ($automationText.Contains("-File $expectedScriptTomlPath -InstallWithRestart -NoProxy")) -Message "uses installed script path for automatic install command"
+    Assert-True -Condition ($automationText.Contains("-File $expectedMaintenanceTomlPath -NoProxy")) -Message "uses installed maintenance script for automatic workflow"
+    Assert-True -Condition ($automationText.Contains("execute ``powershell")) -Message "asks automation to execute directly"
+    Assert-True -Condition ($automationText.Contains("Do not present the PowerShell command as an instruction")) -Message "prevents command-only notification behavior"
     Assert-True -Condition (-not $automationText.Contains("{{CODEX_PLUGIN_ROOT}}")) -Message "replaces plugin root placeholder"
-    Assert-True -Condition (-not $automationText.Contains("{{CODEX_CHECK_SCRIPT}}")) -Message "replaces check script placeholder"
-    Assert-True -Condition (-not $automationText.Contains("-File $expectedScriptTomlPath -CheckOnly -NoProxy")) -Message "does not leave automation in check-only mode"
+    Assert-True -Condition (-not $automationText.Contains("{{CODEX_MAINTENANCE_SCRIPT}}")) -Message "replaces maintenance script placeholder"
+    Assert-True -Condition (-not $automationText.Contains("-CheckOnly -NoProxy")) -Message "does not leave automation in check-only mode"
     Assert-True -Condition (-not $automationText.Contains("manual install command")) -Message "does not describe installation as manual"
     Assert-True -Condition (-not $automationText.Contains("D:\\Git\\codex")) -Message "removes repo-local escaped path"
     Assert-True -Condition (-not $automationText.Contains("D:\Git\codex")) -Message "removes repo-local path"

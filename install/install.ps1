@@ -91,14 +91,14 @@ if (-not (Test-Path -LiteralPath $automationTemplate)) {
 $installedPluginRoot = Join-Path (Join-Path $codexHomePath "plugin") $pluginName
 $automationDirectory = Join-Path (Join-Path $codexHomePath "automations") $automationId
 $installedAutomationPath = Join-Path $automationDirectory "automation.toml"
-$installedCheckScript = Join-Path $installedPluginRoot "scripts/check-codex-update.ps1"
+$installedMaintenanceScript = Join-Path $installedPluginRoot "scripts/run-automatic-maintenance.ps1"
 
 Copy-PluginWithoutDownloads -Source $sourcePluginRoot -Destination $installedPluginRoot
 
 New-Item -ItemType Directory -Path $automationDirectory -Force | Out-Null
 
-$installCommand = "powershell -NoProfile -ExecutionPolicy Bypass -File $installedCheckScript -InstallWithRestart -NoProxy"
-$prompt = "From $installedPluginRoot, run ``$installCommand``. Inspect the command output. If it says ``No newer package was found``, do not notify the user. If it starts the detached install-and-restart workflow, let it continue; Codex will close, install the MSIX, and restart after installation."
+$installCommand = "powershell -NoProfile -ExecutionPolicy Bypass -File $installedMaintenanceScript -NoProxy"
+$prompt = "From $installedPluginRoot, execute ``$installCommand`` directly. Do not present the PowerShell command as an instruction to the user. The maintenance script first updates this plugin from GitHub when a newer plugin.json version exists, then checks Codex Desktop and starts the detached install-and-restart workflow when a newer MSIX is available. If it says ``No newer package was found``, do not notify the user."
 
 $automationLines = (Get-Content -LiteralPath $automationTemplate -Raw) -split "\r?\n"
 $automationLines = Set-TomlLine -Lines $automationLines -Key "prompt" -Value "`"$(ConvertTo-TomlStringLiteral $prompt)`""

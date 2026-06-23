@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: PowerShell tests and version guard
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine version baseline
+        id: baseline
+        shell: pwsh
+        run: |
+          if ("${{ github.event_name }}" -eq "pull_request") {
+            "base=${{ github.event.pull_request.base.sha }}" >> $env:GITHUB_OUTPUT
+          } elseif ("${{ github.event_name }}" -eq "push") {
+            "base=${{ github.event.before }}" >> $env:GITHUB_OUTPUT
+          } else {
+            "base=" >> $env:GITHUB_OUTPUT
+          }
+
+      - name: Require plugin version bump
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tools\Test-PluginVersionBump.ps1 -BaseRef "${{ steps.baseline.outputs.base }}" -HeadRef "${{ github.sha }}"
+
+      - name: Install workflow tests
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File install\Install.Tests.ps1
+
+      - name: Plugin updater tests
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File plugins\codex-ms-desktop-updater\tests\CodexStoreUpdater.Tests.ps1

@@ -95,6 +95,17 @@ finally {
     Remove-Item -LiteralPath $tempDownloadDirectory -Recurse -Force -ErrorAction SilentlyContinue
 }
 
+Assert-True -Condition (Test-IsPluginUpdateAvailable -InstalledVersion "0.1.1" -AvailableVersion "0.2.0") -Message "detects newer plugin version"
+Assert-True -Condition (-not (Test-IsPluginUpdateAvailable -InstalledVersion "0.2.0" -AvailableVersion "0.2.0")) -Message "does not update equal plugin version"
+
+$invalidPluginVersionThrew = $false
+try {
+    ConvertTo-CodexPluginVersion -VersionText "0.2.0-beta" | Out-Null
+}
+catch {
+    $invalidPluginVersionThrew = $true
+}
+Assert-True -Condition $invalidPluginVersionThrew -Message "requires numeric plugin versions"
 $appUserModelId = Get-CodexAppUserModelId -PackageFamilyName "OpenAI.Codex_2p2nqsd0c76g0" -AppId "Codex"
 Assert-Equal "OpenAI.Codex_2p2nqsd0c76g0!Codex" $appUserModelId "builds Codex AppUserModelId"
 
@@ -108,5 +119,21 @@ $checkScript = Join-Path $pluginRoot "scripts/check-codex-update.ps1"
 $checkScriptText = Get-Content -LiteralPath $checkScript -Raw
 Assert-True -Condition ($checkScriptText -match '\[switch\]\$InstallWithRestart') -Message "check script exposes install-with-restart mode"
 Assert-True -Condition ($checkScriptText -match 'install-codex-msix-and-restart\.ps1') -Message "check script invokes install-and-restart script"
+
+$pluginUpdateScript = Join-Path $pluginRoot "scripts/update-installed-plugin.ps1"
+Assert-True -Condition (Test-Path -LiteralPath $pluginUpdateScript) -Message "provides plugin self-update script"
+$pluginUpdateScriptText = Get-Content -LiteralPath $pluginUpdateScript -Raw
+Assert-True -Condition ($pluginUpdateScriptText -match 'Asunazzz123') -Message "plugin update script defaults to repository owner"
+Assert-True -Condition ($pluginUpdateScriptText -match 'Codex-Auto-Update-Plugin') -Message "plugin update script defaults to remote repository"
+Assert-True -Condition ($pluginUpdateScriptText -match 'raw\.githubusercontent\.com') -Message "plugin update script reads remote manifest"
+Assert-True -Condition ($pluginUpdateScriptText -match 'codeload\.github\.com') -Message "plugin update script downloads repository archive"
+Assert-True -Condition ($pluginUpdateScriptText -match 'Copy-PluginWithoutDownloads') -Message "plugin update script skips downloads cache"
+
+$maintenanceScript = Join-Path $pluginRoot "scripts/run-automatic-maintenance.ps1"
+Assert-True -Condition (Test-Path -LiteralPath $maintenanceScript) -Message "provides automatic maintenance script"
+$maintenanceScriptText = Get-Content -LiteralPath $maintenanceScript -Raw
+Assert-True -Condition ($maintenanceScriptText -match 'update-installed-plugin\.ps1') -Message "maintenance script updates plugin first"
+Assert-True -Condition ($maintenanceScriptText -match 'check-codex-update\.ps1') -Message "maintenance script checks Codex package"
+Assert-True -Condition ($maintenanceScriptText -match 'InstallWithRestart') -Message "maintenance script installs Codex update with restart"
 
 Write-Host "All CodexStoreUpdater tests passed."

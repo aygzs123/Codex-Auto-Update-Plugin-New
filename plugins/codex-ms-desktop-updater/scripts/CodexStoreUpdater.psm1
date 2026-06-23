@@ -160,6 +160,34 @@ function Test-IsUpdateAvailable {
     return $AvailableVersion -gt $InstalledVersion
 }
 
+function ConvertTo-CodexPluginVersion {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$VersionText
+    )
+
+    if ($VersionText -notmatch '^\d+(?:\.\d+){1,3}$') {
+        throw "Plugin version '$VersionText' must be numeric SemVer-compatible text such as 0.2.0."
+    }
+
+    [version]$VersionText
+}
+
+function Test-IsPluginUpdateAvailable {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$InstalledVersion,
+
+        [Parameter(Mandatory = $true)]
+        [string]$AvailableVersion
+    )
+
+    $installed = ConvertTo-CodexPluginVersion -VersionText $InstalledVersion
+    $available = ConvertTo-CodexPluginVersion -VersionText $AvailableVersion
+
+    return $available -gt $installed
+}
+
 function ConvertFrom-AppxPackageText {
     param(
         [Parameter(Mandatory = $true)]
@@ -493,6 +521,7 @@ function Install-CodexPackage {
 Export-ModuleMember -Function `
     ConvertFrom-AppxPackageText, `
     ConvertFrom-RgAdguardHtml, `
+    ConvertTo-CodexPluginVersion, `
     Get-CodexAppUserModelId, `
     Get-InstalledCodexPackageInfo, `
     Install-CodexPackage, `
@@ -500,4 +529,5 @@ Export-ModuleMember -Function `
     Remove-InstalledCodexPackageFiles, `
     Save-CodexPackage, `
     Select-BestCodexPackage, `
+    Test-IsPluginUpdateAvailable, `
     Test-IsUpdateAvailable

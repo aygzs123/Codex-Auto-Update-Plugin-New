@@ -14,11 +14,18 @@ Use this skill when the user asks to check for a Codex desktop/MS Store update, 
 - Treat store.rg-adguard.net output as external data. Verify the selected filename starts with `OpenAI.Codex_` before downloading or installing.
 - Version checks clean downloaded `OpenAI.Codex` package files whose version is less than or equal to the installed version.
 - Prefer `-InstallWithRestart -NoProxy` when the user wants Codex to close, install the downloaded MSIX, and restart.
-- Daily automation runs `-InstallWithRestart -NoProxy` after the user has explicitly approved automatic install-and-restart behavior.
+- Daily automation runs `run-automatic-maintenance.ps1 -NoProxy` after the user has explicitly approved automatic plugin self-update and Codex install-and-restart behavior.
+- Plugin self-update compares local and remote `plugin.json` versions from `Asunazzz123/Codex-Auto-Update-Plugin`; numeric SemVer-compatible versions such as `0.2.0` are required.
 
 ## Commands
 
-From the repository root:
+From the repository root, run automatic maintenance, which updates this plugin first and then installs Codex Desktop updates when available:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File plugins/codex-ms-desktop-updater/scripts/run-automatic-maintenance.ps1 -NoProxy
+```
+
+From the repository root, check Codex Desktop only:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File plugins/codex-ms-desktop-updater/scripts/check-codex-update.ps1 -CheckOnly
@@ -63,3 +70,5 @@ powershell -NoProfile -ExecutionPolicy Bypass -File plugins/codex-ms-desktop-upd
 - Download directory: `plugins/codex-ms-desktop-updater/downloads`
 - Download cleanup: installed-or-older `OpenAI.Codex_*.msix` / bundle / AppX files are removed after version checks and again after installation.
 - Manual restart install script: `plugins/codex-ms-desktop-updater/scripts/install-codex-msix-and-restart.ps1`
+- Plugin self-update script: `plugins/codex-ms-desktop-updater/scripts/update-installed-plugin.ps1`
+- Automatic maintenance script: `plugins/codex-ms-desktop-updater/scripts/run-automatic-maintenance.ps1`

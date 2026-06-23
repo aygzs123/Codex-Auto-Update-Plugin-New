@@ -2,7 +2,7 @@ version = 1
 id = "daily-codex-desktop-update-check"
 kind = "cron"
 name = "Daily Codex Desktop update install"
-prompt = "From {{CODEX_PLUGIN_ROOT}}, run `powershell -NoProfile -ExecutionPolicy Bypass -File {{CODEX_CHECK_SCRIPT}} -InstallWithRestart -NoProxy`. Inspect the command output. If it says `No newer package was found`, do not notify the user. If it starts the detached install-and-restart workflow, let it continue; Codex will close, install the MSIX, and restart after installation."
+prompt = "From {{CODEX_PLUGIN_ROOT}}, execute `powershell -NoProfile -ExecutionPolicy Bypass -File {{CODEX_MAINTENANCE_SCRIPT}} -NoProxy` directly. Do not present the PowerShell command as an instruction to the user. The maintenance script first updates this plugin from GitHub when a newer plugin.json version exists, then checks Codex Desktop and starts the detached install-and-restart workflow when a newer MSIX is available. If it says `No newer package was found`, do not notify the user."
 status = "ACTIVE"
 rrule = "FREQ=DAILY;BYHOUR=9;BYMINUTE=0;BYSECOND=0"
 model = "gpt-5.4"

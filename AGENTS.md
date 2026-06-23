@@ -27,7 +27,7 @@ Keep `install\automation.toml` portable. It must use these placeholders instead
 of machine-specific paths:
 
 - `{{CODEX_PLUGIN_ROOT}}`
-- `{{CODEX_CHECK_SCRIPT}}`
+- `{{CODEX_MAINTENANCE_SCRIPT}}`
 
 During install, `install\install.ps1` rewrites the installed automation's
 `prompt` and `cwds` entries to the target machine's real `%USERPROFILE%\.codex`
@@ -36,15 +36,33 @@ paths. Do not commit drive-letter paths such as `D:\...` into
 
 ## Automation behavior
 
-The installed automation runs:
+The installed automation runs the maintenance script directly rather than showing a PowerShell command for the user to run:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File <installed-plugin>\scripts\check-codex-update.ps1 -InstallWithRestart -NoProxy
+powershell -NoProfile -ExecutionPolicy Bypass -File <installed-plugin>\scripts\run-automatic-maintenance.ps1 -NoProxy
 ```
 
-If no newer Codex MSIX is available, the script skips download and installation.
-If an update is available, it starts the detached install-and-restart workflow:
-Codex closes, the MSIX is installed, and Codex is restarted after installation.
+The maintenance script first checks whether the installed plugin is older than
+`plugins\codex-ms-desktop-updater\.codex-plugin\plugin.json` on the remote
+`Asunazzz123/Codex-Auto-Update-Plugin` repository. If the remote version is
+newer, it downloads the GitHub archive and updates the local plugin while
+preserving the `downloads` cache. It then checks Codex Desktop. If no newer
+Codex MSIX is available, the script skips download and installation. If an
+update is available, it starts the detached install-and-restart workflow: Codex
+closes, the MSIX is installed, and Codex is restarted after installation.
+
+
+## Version management
+
+Use `plugins\codex-ms-desktop-updater\.codex-plugin\plugin.json` as the source
+of truth for plugin versioning. Before any change is pushed to the remote
+repository, bump its `version` field using numeric SemVer-compatible text such
+as `0.2.1` or `0.2.2`. GitHub CI runs
+`tools\Test-PluginVersionBump.ps1` on pull requests and pushes to `main` to
+verify that the head version is greater than the baseline version. The installed
+plugin self-update logic compares this field against the remote repository, so
+do not rely on npm package versioning for this plugin unless the project later
+becomes an npm-distributed package.
 
 ## Verification
 

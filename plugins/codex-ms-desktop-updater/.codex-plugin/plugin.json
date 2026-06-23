@@ -1,21 +1,21 @@
 {
   "name": "codex-ms-desktop-updater",
-  "version": "0.1.1",
-  "description": "Checks the Microsoft Store Codex package via store.rg-adguard.net and downloads or installs MSIX updates.",
+  "version": "0.2.1",
+  "description": "Checks for Codex Desktop MSIX updates and keeps the local updater plugin current from GitHub.",
   "author": {
     "name": "Yuuko",
     "email": "asunaz5960@gmail.com",
     "url": "https://github.com/Asunazzz123/"
   },
   "homepage": "https://store.rg-adguard.net/",
-  "repository": "local",
+  "repository": "https://github.com/Asunazzz123/Codex-Auto-Update-Plugin",
   "license": "MIT",
   "keywords": ["codex", "microsoft-store", "msix", "updater"],
   "skills": "./skills/",
   "interface": {
     "displayName": "Codex MS Desktop Updater",
     "shortDescription": "Check, download, and optionally install Codex MSIX updates.",
-    "longDescription": "Provides a PowerShell-based workflow for querying store.rg-adguard.net for the Codex Microsoft Store package, comparing versions, downloading MSIX packages, and installing only when explicitly requested.",
+    "longDescription": "Provides a PowerShell-based workflow for querying store.rg-adguard.net for the Codex Microsoft Store package, comparing versions, downloading MSIX packages, installing updates when requested, and keeping the local updater plugin current from GitHub by comparing plugin.json versions.",
     "developerName": "Local",
     "category": "Developer Tools",
     "capabilities": ["Interactive", "Write"],
@@ -23,6 +23,7 @@
     "privacyPolicyURL": "https://store.rg-adguard.net/",
     "termsOfServiceURL": "https://store.rg-adguard.net/",
     "defaultPrompt": [
+      "Run automatic Codex maintenance",
       "Check Codex Desktop update",
       "Download latest Codex MSIX",
       "Download latest Codex MSIX (no install)",
