@@ -18,6 +18,7 @@ Microsoft Store 安装包，下载并安装较新的 MSIX 包。
 - 只有使用 `-DownloadOnly`、`-Install` 或 `-InstallWithRestart` 时才会下载包。
 - 只有明确使用 `-Install` 或 `-InstallWithRestart` 时才会运行 `Add-AppxPackage`。
 - 可使用 `-InstallWithRestart` 启动独立安装流程，关闭 Codex、安装 MSIX 后再重启 Codex。
+- 安装完成后会校验已安装版本不低于下载包版本，校验通过后删除已安装的 MSIX/AppX 包文件以节约存储空间。
 - 可使用 `-NoProxy` 让本次 PowerShell 进程下载 MSIX 时不走代理。
 - 可通过 `run-automatic-maintenance.ps1` 先根据 GitHub 远程仓库的 `plugin.json` 版本更新本插件，再自动检查并安装 Codex Desktop 更新。
 
@@ -82,6 +83,7 @@ plugins/codex-ms-desktop-updater/downloads/
 
 每次检查到本机已安装版本后，脚本都会清理该目录中已安装版本及更旧版本的
 `OpenAI.Codex_*.msix` / bundle / AppX 包。安装完成后会重新读取已安装版本并再清理一次。
+`-InstallWithRestart` 的独立安装流程还会在版本校验通过后删除本次安装使用的包文件。
 
 每日自动化运行 `run-automatic-maintenance.ps1 -NoProxy`。它会先比较本机插件版本和 `Asunazzz123/Codex-Auto-Update-Plugin` 远程仓库中的 `plugin.json` 版本；如果远程版本更高，则下载 GitHub archive 并覆盖更新本机插件，同时保留 `downloads` 缓存。随后它会检查 Codex Desktop，如果检测到新版本，就启动独立安装流程：关闭 Codex、安装 MSIX，并在安装结束后重启 Codex。如果没有新版本，则不通知。
 

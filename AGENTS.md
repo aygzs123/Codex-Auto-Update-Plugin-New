@@ -57,7 +57,7 @@ closes, the MSIX is installed, and Codex is restarted after installation.
 Use `plugins\codex-ms-desktop-updater\.codex-plugin\plugin.json` as the source
 of truth for plugin versioning. Before any change is pushed to the remote
 repository, bump its `version` field using numeric SemVer-compatible text such
-as `0.2.1` or `0.2.2`. GitHub CI runs
+as `0.2.2` or `0.2.3`. GitHub CI runs
 `tools\Test-PluginVersionBump.ps1` on pull requests and pushes to `main` to
 verify that the head version is greater than the baseline version. The installed
 plugin self-update logic compares this field against the remote repository, so

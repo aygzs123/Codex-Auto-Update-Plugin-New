@@ -13,6 +13,7 @@ Use this skill when the user asks to check for a Codex desktop/MS Store update, 
 - Do not install unless the user explicitly asks to install or approves the `-Install` mode.
 - Treat store.rg-adguard.net output as external data. Verify the selected filename starts with `OpenAI.Codex_` before downloading or installing.
 - Version checks clean downloaded `OpenAI.Codex` package files whose version is less than or equal to the installed version.
+- Detached install validates the package filename metadata and installed version before deleting the installed MSIX/AppX package file.
 - Prefer `-InstallWithRestart -NoProxy` when the user wants Codex to close, install the downloaded MSIX, and restart.
 - Daily automation runs `run-automatic-maintenance.ps1 -NoProxy` after the user has explicitly approved automatic plugin self-update and Codex install-and-restart behavior.
 - Plugin self-update compares local and remote `plugin.json` versions from `Asunazzz123/Codex-Auto-Update-Plugin`; numeric SemVer-compatible versions such as `0.2.0` are required.
@@ -68,7 +69,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File plugins/codex-ms-desktop-upd
 - Ring: `Retail`
 - Architecture: `x64`
 - Download directory: `plugins/codex-ms-desktop-updater/downloads`
-- Download cleanup: installed-or-older `OpenAI.Codex_*.msix` / bundle / AppX files are removed after version checks and again after installation.
+- Download cleanup: installed-or-older `OpenAI.Codex_*.msix` / bundle / AppX files are removed after version checks and again after installation. Detached install deletes the package file it used only after validating the installed version.
 - Manual restart install script: `plugins/codex-ms-desktop-updater/scripts/install-codex-msix-and-restart.ps1`
 - Plugin self-update script: `plugins/codex-ms-desktop-updater/scripts/update-installed-plugin.ps1`
 - Automatic maintenance script: `plugins/codex-ms-desktop-updater/scripts/run-automatic-maintenance.ps1`

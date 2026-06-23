@@ -57,6 +57,10 @@ Assert-Equal 3 $packages.Count "extracts only Codex package links"
 Assert-Equal "26.506.3741.0" $packages[0].Version.ToString() "extracts version from package filename"
 Assert-Equal "x64" $packages[0].Architecture "extracts architecture from package filename"
 
+$metadata = Get-CodexPackageMetadata -FileName "OpenAI.Codex_26.512.10.0_x64.msix" -Uri "C:\Downloads\OpenAI.Codex_26.512.10.0_x64.msix"
+Assert-Equal "OpenAI.Codex" $metadata.Name "parses package metadata name for install validation"
+Assert-Equal "26.512.10.0" $metadata.Version.ToString() "parses package metadata version for cleanup validation"
+
 $selected = Select-BestCodexPackage -Packages $packages -Architecture "x64"
 Assert-Equal "OpenAI.Codex_26.512.10.0_x64.msix" $selected.FileName "selects newest matching architecture package"
 
@@ -114,6 +118,9 @@ Assert-True -Condition (Test-Path -LiteralPath $installRestartScript) -Message "
 $installRestartScriptText = Get-Content -LiteralPath $installRestartScript -Raw
 Assert-True -Condition ($installRestartScriptText -match '\[switch\]\$Worker') -Message "install-and-restart script has detached worker mode"
 Assert-True -Condition ($installRestartScriptText -match 'Add-AppxPackage') -Message "install-and-restart script installs MSIX package"
+Assert-True -Condition ($installRestartScriptText -match 'Get-CodexPackageMetadata') -Message "install-and-restart script validates package metadata"
+Assert-True -Condition ($installRestartScriptText -match 'installedVersion -lt') -Message "install-and-restart script verifies installed version before cleanup"
+Assert-True -Condition ($installRestartScriptText -match 'Remove-Item -LiteralPath \$resolvedPackagePath') -Message "install-and-restart script removes installed package file"
 
 $checkScript = Join-Path $pluginRoot "scripts/check-codex-update.ps1"
 $checkScriptText = Get-Content -LiteralPath $checkScript -Raw

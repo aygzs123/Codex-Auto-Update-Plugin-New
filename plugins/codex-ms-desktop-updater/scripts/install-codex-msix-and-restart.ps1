@@ -38,6 +38,14 @@ if (-not (Test-Path -LiteralPath $resolvedPackagePath)) {
     throw "Package path does not exist: $PackagePath"
 }
 
+$packageMetadata = Get-CodexPackageMetadata -FileName (Split-Path -Leaf $resolvedPackagePath) -Uri $resolvedPackagePath
+if ($null -eq $packageMetadata) {
+    throw "Package filename does not include parseable Codex metadata: $resolvedPackagePath"
+}
+if ($packageMetadata.Name -ne $PackageName) {
+    throw "Refusing to install package '$($packageMetadata.Name)' when '$PackageName' was expected."
+}
+
 if (-not $Worker) {
     $powershellPath = Join-Path $PSHOME "powershell.exe"
     $arguments = @(
@@ -99,6 +107,24 @@ $installedPackage = Get-AppxPackage -Name $PackageName -ErrorAction SilentlyCont
     Select-Object -First 1
 if ($null -eq $installedPackage) {
     throw "Installed package '$PackageName' was not found after install."
+}
+
+$installedVersion = [version]$installedPackage.Version
+if ($installedVersion -lt $packageMetadata.Version) {
+    throw "Installed package version '$installedVersion' is older than downloaded package version '$($packageMetadata.Version)'. Keeping package file for inspection: $resolvedPackagePath"
+}
+
+try {
+    Remove-Item -LiteralPath $resolvedPackagePath -Force
+    if (Test-Path -LiteralPath $resolvedPackagePath) {
+        Write-InstallLog ("Package cleanup verification failed; file still exists: {0}" -f $resolvedPackagePath)
+    }
+    else {
+        Write-InstallLog ("Removed installed package file: {0}" -f $resolvedPackagePath)
+    }
+}
+catch {
+    Write-InstallLog ("Package cleanup failed for {0}: {1}" -f $resolvedPackagePath, $_.Exception.Message)
 }
 
 $appUserModelId = Get-CodexAppUserModelId -PackageFamilyName $installedPackage.PackageFamilyName -AppId $AppId

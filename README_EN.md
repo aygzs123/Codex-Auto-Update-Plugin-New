@@ -23,6 +23,8 @@ when explicitly requested.
   explicitly used.
 - Supports `-InstallWithRestart` to start a detached workflow that closes Codex,
   installs the MSIX, and restarts Codex.
+- After install, verifies the installed version is not older than the downloaded
+  package and removes the installed MSIX/AppX package file to save storage.
 - Supports `-NoProxy` to disable proxy use for the current PowerShell process
   while downloading the MSIX.
 
@@ -87,6 +89,7 @@ plugins/codex-ms-desktop-updater/downloads/
 After the script detects the installed local version, it cleans installed-or-older
 `OpenAI.Codex_*.msix` / bundle / AppX packages from that directory. After a
 successful install, it reads the installed version again and repeats the cleanup.
+The `-InstallWithRestart` detached workflow also removes the package file used for that install after version verification passes.
 
 The daily automation runs `run-automatic-maintenance.ps1 -NoProxy`. It first compares the local plugin version with `plugin.json` in the remote `Asunazzz123/Codex-Auto-Update-Plugin` repository. If the remote version is newer, it downloads the GitHub archive and updates the local plugin while preserving the `downloads` cache. It then checks Codex Desktop. If a newer package is available, it starts the detached workflow that closes Codex, installs the MSIX, and restarts Codex after installation. If no newer package is available, it does not notify you.
 

@@ -522,6 +522,7 @@ Export-ModuleMember -Function `
     ConvertFrom-AppxPackageText, `
     ConvertFrom-RgAdguardHtml, `
     ConvertTo-CodexPluginVersion, `
+    Get-CodexPackageMetadata, `
     Get-CodexAppUserModelId, `
     Get-InstalledCodexPackageInfo, `
     Install-CodexPackage, `
