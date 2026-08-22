@@ -72,7 +72,7 @@ updated_at = 1780480643752
         -SourcePluginPath $sourcePlugin `
         -AutomationTemplatePath $templatePath
 
-    $installedPlugin = Join-Path $codexHome "plugin/codex-ms-desktop-updater"
+    $installedPlugin = Join-Path $codexHome "plugins/codex-ms-desktop-updater"
     $installedAutomation = Join-Path $codexHome "automations/daily-codex-desktop-update-check/automation.toml"
     $installedScript = Join-Path $installedPlugin "scripts/check-codex-update.ps1"
     $installedMaintenanceScript = Join-Path $installedPlugin "scripts/run-automatic-maintenance.ps1"

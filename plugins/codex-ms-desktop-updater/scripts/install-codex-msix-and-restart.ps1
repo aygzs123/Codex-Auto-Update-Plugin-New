@@ -5,7 +5,7 @@ param(
 
     [string]$PackageName = "OpenAI.Codex",
 
-    [string]$AppId = "Codex",
+    [string]$AppId = "App",
 
     [int]$StartDelaySeconds = 3,
 
@@ -71,7 +71,7 @@ Start-Sleep -Seconds $StartDelaySeconds
 $codexProcesses = @(
     Get-Process -ErrorAction SilentlyContinue |
         Where-Object {
-            ($_.ProcessName -eq "Codex" -or $_.ProcessName -eq "codex") -and
+            # 进程名可能是 ChatGPT.exe / codex.exe 等，统一按包路径匹配
             $_.Path -like "*\WindowsApps\$PackageName`_*"
         }
 )
@@ -89,7 +89,7 @@ if ($codexProcesses.Count -gt 0) {
 $remainingCodexProcesses = @(
     Get-Process -ErrorAction SilentlyContinue |
         Where-Object {
-            ($_.ProcessName -eq "Codex" -or $_.ProcessName -eq "codex") -and
+            # 进程名可能是 ChatGPT.exe / codex.exe 等，统一按包路径匹配
             $_.Path -like "*\WindowsApps\$PackageName`_*"
         }
 )
@@ -127,7 +127,22 @@ catch {
     Write-InstallLog ("Package cleanup failed for {0}: {1}" -f $resolvedPackagePath, $_.Exception.Message)
 }
 
-$appUserModelId = Get-CodexAppUserModelId -PackageFamilyName $installedPackage.PackageFamilyName -AppId $AppId
+# 从已安装包 manifest 动态解析真实 AppId（当前为 App，避免硬编码漂移）
+$resolvedAppId = $AppId
+try {
+    $manifestPath = Join-Path $installedPackage.InstallLocation "AppxManifest.xml"
+    if (Test-Path -LiteralPath $manifestPath) {
+        [xml]$manifest = Get-Content -LiteralPath $manifestPath -Raw
+        $manifestAppId = @($manifest.Package.Applications.Application | Select-Object -First 1 -ExpandProperty Id)
+        if (-not [string]::IsNullOrWhiteSpace($manifestAppId)) {
+            $resolvedAppId = $manifestAppId
+        }
+    }
+}
+catch {
+    Write-InstallLog ("Failed to resolve AppId from manifest, using '{0}': {1}" -f $resolvedAppId, $_.Exception.Message)
+}
+$appUserModelId = Get-CodexAppUserModelId -PackageFamilyName $installedPackage.PackageFamilyName -AppId $resolvedAppId
 Write-InstallLog ("Restarting Codex with AppUserModelId: {0}" -f $appUserModelId)
 Start-Process -FilePath "explorer.exe" -ArgumentList ("shell:AppsFolder\{0}" -f $appUserModelId)
 Write-InstallLog ("Restart requested. Installed version: {0}" -f $installedPackage.Version)

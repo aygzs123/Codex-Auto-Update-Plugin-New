@@ -88,7 +88,7 @@ if (-not (Test-Path -LiteralPath $automationTemplate)) {
     throw "Automation template does not exist: $automationTemplate"
 }
 
-$installedPluginRoot = Join-Path (Join-Path $codexHomePath "plugin") $pluginName
+$installedPluginRoot = Join-Path (Join-Path $codexHomePath "plugins") $pluginName
 $automationDirectory = Join-Path (Join-Path $codexHomePath "automations") $automationId
 $installedAutomationPath = Join-Path $automationDirectory "automation.toml"
 $installedMaintenanceScript = Join-Path $installedPluginRoot "scripts/run-automatic-maintenance.ps1"
