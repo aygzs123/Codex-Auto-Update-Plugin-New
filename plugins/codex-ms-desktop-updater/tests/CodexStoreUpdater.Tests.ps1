@@ -130,8 +130,8 @@ Assert-True -Condition ($checkScriptText -match 'install-codex-msix-and-restart\
 $pluginUpdateScript = Join-Path $pluginRoot "scripts/update-installed-plugin.ps1"
 Assert-True -Condition (Test-Path -LiteralPath $pluginUpdateScript) -Message "provides plugin self-update script"
 $pluginUpdateScriptText = Get-Content -LiteralPath $pluginUpdateScript -Raw
-Assert-True -Condition ($pluginUpdateScriptText -match 'Asunazzz123') -Message "plugin update script defaults to repository owner"
-Assert-True -Condition ($pluginUpdateScriptText -match 'Codex-Auto-Update-Plugin') -Message "plugin update script defaults to remote repository"
+Assert-True -Condition ($pluginUpdateScriptText -match 'aygzs123') -Message "plugin update script defaults to repository owner"
+Assert-True -Condition ($pluginUpdateScriptText -match 'Codex-Auto-Update-Plugin-New') -Message "plugin update script defaults to remote repository"
 Assert-True -Condition ($pluginUpdateScriptText -match 'raw\.githubusercontent\.com') -Message "plugin update script reads remote manifest"
 Assert-True -Condition ($pluginUpdateScriptText -match 'codeload\.github\.com') -Message "plugin update script downloads repository archive"
 Assert-True -Condition ($pluginUpdateScriptText -match 'Copy-PluginWithoutDownloads') -Message "plugin update script skips downloads cache"

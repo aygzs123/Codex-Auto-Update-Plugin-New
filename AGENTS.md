@@ -15,7 +15,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File install\install.ps1
 The installer copies:
 
 - `plugins\codex-ms-desktop-updater` to
-  `%USERPROFILE%\.codex\plugin\codex-ms-desktop-updater`
+  `%USERPROFILE%\.codex\plugins\codex-ms-desktop-updater`
 - `install\automation.toml` to
   `%USERPROFILE%\.codex\automations\daily-codex-desktop-update-check\automation.toml`
 
@@ -44,7 +44,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File <installed-plugin>\scripts\r
 
 The maintenance script first checks whether the installed plugin is older than
 `plugins\codex-ms-desktop-updater\.codex-plugin\plugin.json` on the remote
-`Asunazzz123/Codex-Auto-Update-Plugin` repository. If the remote version is
+`aygzs123/Codex-Auto-Update-Plugin-New` repository. If the remote version is
 newer, it downloads the GitHub archive and updates the local plugin while
 preserving the `downloads` cache. It then checks Codex Desktop. If no newer
 Codex MSIX is available, the script skips download and installation. If an

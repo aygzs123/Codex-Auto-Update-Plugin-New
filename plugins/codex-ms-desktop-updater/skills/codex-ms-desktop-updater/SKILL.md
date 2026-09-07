@@ -16,7 +16,7 @@ Use this skill when the user asks to check for a Codex desktop/MS Store update, 
 - Detached install validates the package filename metadata and installed version before deleting the installed MSIX/AppX package file.
 - Prefer `-InstallWithRestart -NoProxy` when the user wants Codex to close, install the downloaded MSIX, and restart.
 - Daily automation runs `run-automatic-maintenance.ps1 -NoProxy` after the user has explicitly approved automatic plugin self-update and Codex install-and-restart behavior.
-- Plugin self-update compares local and remote `plugin.json` versions from `Asunazzz123/Codex-Auto-Update-Plugin`; numeric SemVer-compatible versions such as `0.2.0` are required.
+- Plugin self-update compares local and remote `plugin.json` versions from `aygzs123/Codex-Auto-Update-Plugin-New`; numeric SemVer-compatible versions such as `0.2.0` are required.
 
 ## Commands
 

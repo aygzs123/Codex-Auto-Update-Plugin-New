@@ -1,14 +1,14 @@
 {
   "name": "codex-ms-desktop-updater",
-  "version": "0.2.4",
+  "version": "0.3.0",
   "description": "Checks for Codex Desktop MSIX updates and keeps the local updater plugin current from GitHub.",
   "author": {
-    "name": "Yuuko",
-    "email": "asunaz5960@gmail.com",
-    "url": "https://github.com/Asunazzz123/"
+    "name": "lijunyuan",
+    "email": "lijunyuan@zhizh.com",
+    "url": "https://github.com/aygzs123/"
   },
   "homepage": "https://store.rg-adguard.net/",
-  "repository": "https://github.com/Asunazzz123/Codex-Auto-Update-Plugin",
+  "repository": "https://github.com/aygzs123/Codex-Auto-Update-Plugin-New",
   "license": "MIT",
   "keywords": ["codex", "microsoft-store", "msix", "updater"],
   "skills": "./skills/",

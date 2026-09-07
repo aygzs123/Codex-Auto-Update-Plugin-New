@@ -2,8 +2,8 @@
 param(
     [switch]$CheckOnly,
     [switch]$NoProxy,
-    [string]$RepositoryOwner = "Asunazzz123",
-    [string]$RepositoryName = "Codex-Auto-Update-Plugin",
+    [string]$RepositoryOwner = "aygzs123",
+    [string]$RepositoryName = "Codex-Auto-Update-Plugin-New",
     [string]$Branch = "main",
     [string]$PluginName = "codex-ms-desktop-updater",
     [string]$PluginRoot,
