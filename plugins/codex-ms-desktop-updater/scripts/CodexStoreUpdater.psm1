@@ -225,7 +225,147 @@ function Get-InstalledCodexPackageInfo {
         Version = [version]$package.Version
         Architecture = $package.Architecture
         PackageFullName = $package.PackageFullName
+        PackageFamilyName = $package.PackageFamilyName
+        InstallLocation = $package.InstallLocation
     }
+}
+
+# ---------- Desktop health detection ----------
+#
+# The Microsoft Store (MSIX) build relocates its bundled resources into the
+# user cache at first launch. On some versions the relocation silently fails
+# (encrypted-copy bug): the app keeps running but the main window never
+# appears. These helpers let callers detect that state without launching the
+# app, by checking whether the versioned bundle directories exist.
+
+# Bundle id algorithm (shared with docs/codex-desktop-encrypted-copy-fix):
+# SHA256( concat over descriptors of (relPath + NUL + sha256hex + NUL) ),
+# then take the first 16 hex chars. Works on Windows PowerShell 5.1 too.
+function Get-Sha256Hex([string]$Path) {
+    $hash = Get-FileHash -LiteralPath $Path -Algorithm SHA256
+    return $hash.Hash.ToLowerInvariant()
+}
+
+function Get-BundleIdText([string]$Root, [string[]]$RelativePaths) {
+    $builder = New-Object System.Text.StringBuilder
+    foreach ($rp in $RelativePaths) {
+        $file = Join-Path $Root ($rp.Replace('/', '\'))
+        if (-not (Test-Path -LiteralPath $file)) { throw "Source file missing for bundle id: $file" }
+        [void]$builder.Append($rp)
+        [void]$builder.Append([char]0)
+        [void]$builder.Append((Get-Sha256Hex $file))
+        [void]$builder.Append([char]0)
+    }
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($builder.ToString())
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $hashBytes = $sha.ComputeHash($bytes)
+    }
+    finally {
+        $sha.Dispose()
+    }
+    return [System.BitConverter]::ToString($hashBytes).Replace('-', '').ToLowerInvariant().Substring(0, 16)
+}
+
+function Get-CodexRelocationHealth {
+    param([string]$PackageName = 'OpenAI.Codex')
+
+    $pkg = Get-AppxPackage -Name $PackageName -ErrorAction SilentlyContinue |
+        Sort-Object Version -Descending |
+        Select-Object -First 1
+
+    if ($null -eq $pkg) {
+        return [pscustomobject]@{
+            Installed = $false
+            Version = $null
+            Overall = 'not-installed'
+            Components = @()
+        }
+    }
+
+    $res = Join-Path $pkg.InstallLocation 'app\resources'
+    $localRoot = Join-Path $env:LOCALAPPDATA 'OpenAI\Codex'
+    $codexHome = Join-Path $env:USERPROFILE '.codex'
+
+    $specs = @(
+        [pscustomobject]@{ Name = 'win-cli'; Root = $res; Rel = @('codex.exe', 'codex-code-mode-host.exe', 'codex-windows-sandbox-setup.exe', 'codex-command-runner.exe'); Dest = (Join-Path $localRoot 'bin') }
+        [pscustomobject]@{ Name = 'win-rg'; Root = $res; Rel = @('rg.exe'); Dest = (Join-Path $localRoot 'bin') }
+        [pscustomobject]@{ Name = 'wsl-cli'; Root = $res; Rel = @('codex', 'codex-code-mode-host'); Dest = (Join-Path $codexHome 'bin\wsl') }
+        [pscustomobject]@{ Name = 'wsl-rg'; Root = $res; Rel = @('rg'); Dest = (Join-Path $codexHome 'bin\wsl') }
+        [pscustomobject]@{ Name = 'cua_node'; Root = (Join-Path $res 'cua_node'); Rel = @('manifest.json', 'bin/node.exe', 'bin/node_repl.exe'); Dest = (Join-Path $localRoot 'runtimes\cua_node') }
+    )
+
+    $components = foreach ($spec in $specs) {
+        $id = $null
+        try {
+            $id = Get-BundleIdText -Root $spec.Root -RelativePaths $spec.Rel
+        }
+        catch {
+            [pscustomobject]@{ Name = $spec.Name; Id = ''; State = 'error'; Path = ''; StagingCount = 0; Note = $_.Exception.Message }
+            continue
+        }
+        $destDir = Join-Path $spec.Dest $id
+        $present = Test-Path -LiteralPath $destDir
+        $stagingCount = 0
+        if (Test-Path -LiteralPath $spec.Dest) {
+            $stagingCount = @(
+                Get-ChildItem -LiteralPath $spec.Dest -Directory -ErrorAction SilentlyContinue |
+                    Where-Object { $_.Name -like ('.staging-' + $id + '-*') -or $_.Name -like ('.repair-' + $id + '-*') }
+            ).Count
+        }
+        $state = if ($present) { 'ok' }
+                 elseif ($stagingCount -gt 0) { 'partial' }
+                 else { 'missing' }
+        [pscustomobject]@{ Name = $spec.Name; Id = $id; State = $state; Path = $destDir; StagingCount = $stagingCount; Note = '' }
+    }
+    $components = @($components)
+
+    $pluginsRoot = Join-Path $codexHome '.tmp\bundled-marketplaces\openai-bundled'
+    $pluginsMaterialized = Test-Path -LiteralPath (Join-Path $pluginsRoot '.materialization-key')
+
+    $bad = @($components | Where-Object { $_.State -ne 'ok' })
+    $overall = if ($bad.Count -eq 0) { 'ok' } else { 'degraded' }
+
+    [pscustomobject]@{
+        Installed = $true
+        Name = $pkg.Name
+        PackageFullName = $pkg.PackageFullName
+        PackageFamilyName = $pkg.PackageFamilyName
+        InstallLocation = $pkg.InstallLocation
+        Version = [string]$pkg.Version
+        Overall = $overall
+        Components = $components
+        PluginsMaterialized = $pluginsMaterialized
+    }
+}
+
+# Launch (optional) and wait for a visible main window. Returns $true when any
+# process of the package owns a main window within the timeout.
+function Test-CodexDesktopWindowUp {
+    param(
+        [string]$PackageName = 'OpenAI.Codex',
+        [string]$AppUserModelId,
+        [int]$Seconds = 20,
+        [switch]$Launch
+    )
+
+    if ($Launch -and $AppUserModelId) {
+        $alreadyRunning = @(Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Path -like ("*\WindowsApps\$PackageName`_*") })
+        if ($alreadyRunning.Count -eq 0) {
+            Start-Process -FilePath 'explorer.exe' -ArgumentList ("shell:AppsFolder\{0}" -f $AppUserModelId)
+        }
+    }
+
+    $deadline = (Get-Date).AddSeconds($Seconds)
+    do {
+        $withWindow = @(
+            Get-Process -ErrorAction SilentlyContinue |
+                Where-Object { $_.Path -like ("*\WindowsApps\$PackageName`_*") -and $_.MainWindowHandle -ne 0 }
+        )
+        if ($withWindow.Count -gt 0) { return $true }
+        Start-Sleep -Milliseconds 750
+    } while ((Get-Date) -lt $deadline)
+    return $false
 }
 
 function Get-CodexAppUserModelId {
@@ -524,11 +664,13 @@ Export-ModuleMember -Function `
     ConvertTo-CodexPluginVersion, `
     Get-CodexPackageMetadata, `
     Get-CodexAppUserModelId, `
+    Get-CodexRelocationHealth, `
     Get-InstalledCodexPackageInfo, `
     Install-CodexPackage, `
     Invoke-RgAdguardQuery, `
     Remove-InstalledCodexPackageFiles, `
     Save-CodexPackage, `
     Select-BestCodexPackage, `
+    Test-CodexDesktopWindowUp, `
     Test-IsPluginUpdateAvailable, `
     Test-IsUpdateAvailable

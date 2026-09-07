@@ -11,6 +11,8 @@ param(
 
     [string]$LogPath,
 
+    [int]$ProbeSeconds = 30,
+
     [switch]$Worker
 )
 
@@ -57,6 +59,7 @@ if (-not $Worker) {
         "-PackageName", $PackageName,
         "-AppId", $AppId,
         "-StartDelaySeconds", $StartDelaySeconds,
+        "-ProbeSeconds", $ProbeSeconds,
         "-LogPath", $LogPath
     )
 
@@ -146,3 +149,36 @@ $appUserModelId = Get-CodexAppUserModelId -PackageFamilyName $installedPackage.P
 Write-InstallLog ("Restarting Codex with AppUserModelId: {0}" -f $appUserModelId)
 Start-Process -FilePath "explorer.exe" -ArgumentList ("shell:AppsFolder\{0}" -f $appUserModelId)
 Write-InstallLog ("Restart requested. Installed version: {0}" -f $installedPackage.Version)
+
+# ---------- post-restart window probe ----------
+# Detects the official "encrypted-resource relocation" bug where the app keeps
+# running but its main window never appears after an update. If the window does
+# not show up within $ProbeSeconds, log a prominent warning and a relocation
+# health snapshot so the failure is visible in the install log.
+Write-InstallLog ("Probing for a visible main window (up to {0} s)..." -f $ProbeSeconds)
+$windowUp = Test-CodexDesktopWindowUp -PackageName $PackageName -Seconds $ProbeSeconds
+
+if ($windowUp) {
+    Write-InstallLog "Window probe OK: Codex main window is visible."
+}
+else {
+    Write-InstallLog "WINDOW_PROBE=FAILED: Codex restarted but NO main window appeared within $ProbeSeconds s."
+    Write-InstallLog "This is the signature of the official encrypted-resource relocation bug."
+
+    try {
+        $health = Get-CodexRelocationHealth -PackageName $PackageName
+        if ($health.Installed) {
+            Write-InstallLog "Relocation health snapshot:"
+            foreach ($component in $health.Components) {
+                Write-InstallLog ("  component {0,-10} state={1}" -f $component.Name, $component.State)
+            }
+            Write-InstallLog ("  bundled plugins materialized: {0}" -f $health.PluginsMaterialized)
+        }
+    }
+    catch {
+        Write-InstallLog ("Could not collect relocation health: {0}" -f $_.Exception.Message)
+    }
+
+    Write-InstallLog "Remedy: run docs/codex-desktop-encrypted-copy-fix/repair-codex-desktop-bundles.ps1 (from the repo root) with pwsh, then relaunch Codex."
+    exit 4
+}
