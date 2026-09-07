@@ -1,0 +1,392 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Codex 更新工具</title>
+<style>
+  :root {
+    --bg: #0b0d12;
+    --panel: #14171f;
+    --panel-2: #1a1e29;
+    --border: #262c3a;
+    --text: #e6e9ef;
+    --muted: #8b93a5;
+    --accent: #2563eb;
+    --accent-hover: #3b78f0;
+    --ok: #2fb870;
+    --err: #e5484d;
+    --mono: "Cascadia Code", Consolas, "Courier New", monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+  header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 18px 28px;
+    border-bottom: 1px solid var(--border);
+    background: var(--panel);
+  }
+  header h1 { font-size: 18px; font-weight: 600; letter-spacing: .3px; }
+  header .logo { font-size: 22px; }
+  #service-state {
+    margin-left: auto;
+    font-size: 12px;
+    padding: 4px 12px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    color: var(--muted);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  #service-state .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); }
+  #service-state.offline .dot { background: var(--err); }
+
+  main {
+    flex: 1;
+    max-width: 1080px;
+    width: 100%;
+    margin: 0 auto;
+    padding: 24px 28px 40px;
+    display: flex;
+    flex-direction: column;
+    gap: 22px;
+  }
+
+  /* 状态卡 */
+  .status-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 14px;
+  }
+  .status-card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 16px 18px;
+  }
+  .status-card .label { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+  .status-card .value { font-size: 18px; font-weight: 600; font-family: var(--mono); }
+  .status-card .value.unknown { color: var(--muted); font-weight: 400; }
+
+  .health-hint {
+    display: flex;
+    gap: 10px;
+    align-items: flex-start;
+    background: rgba(229, 72, 77, .12);
+    border: 1px solid var(--err);
+    border-radius: 12px;
+    padding: 12px 16px;
+    font-size: 13px;
+    line-height: 1.6;
+  }
+  .health-hint code {
+    font-family: var(--mono);
+    background: rgba(255, 255, 255, .06);
+    padding: 1px 6px;
+    border-radius: 5px;
+    font-size: 12px;
+    white-space: pre-wrap;
+    word-break: break-all;
+  }
+  .health-hint[hidden] { display: none; }
+
+  /* 操作按钮 */
+  .actions {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+    gap: 14px;
+  }
+  .action-btn {
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    color: var(--text);
+    font-size: 14px;
+    font-weight: 500;
+    padding: 16px 14px;
+    cursor: pointer;
+    text-align: left;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    transition: border-color .15s, background .15s, transform .05s;
+    font-family: inherit;
+  }
+  .action-btn .icon { font-size: 20px; }
+  .action-btn:hover:not(:disabled) { border-color: var(--accent); background: #1d2231; }
+  .action-btn:active:not(:disabled) { transform: translateY(1px); }
+  .action-btn.primary { border-color: var(--accent); background: rgba(37, 99, 235, .14); }
+  .action-btn:disabled { opacity: .45; cursor: not-allowed; }
+
+  /* 日志区 */
+  .log-panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+  .log-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 18px;
+    border-bottom: 1px solid var(--border);
+    font-size: 13px;
+    font-weight: 600;
+  }
+  .log-head .tools { display: flex; gap: 10px; align-items: center; }
+  .log-head .tools button {
+    background: none;
+    border: 1px solid var(--border);
+    color: var(--muted);
+    border-radius: 6px;
+    font-size: 12px;
+    padding: 3px 10px;
+    cursor: pointer;
+    font-family: inherit;
+  }
+  .log-head .tools button:hover { color: var(--text); border-color: var(--muted); }
+  #log {
+    height: 420px;
+    overflow-y: auto;
+    padding: 14px 18px;
+    font-family: var(--mono);
+    font-size: 12.5px;
+    line-height: 1.65;
+    white-space: pre-wrap;
+    word-break: break-all;
+  }
+  #log .sep { color: var(--accent); font-weight: 600; margin: 8px 0 4px; }
+  #log .line-ok { color: var(--ok); }
+  #log .line-err { color: var(--err); }
+  #log .empty { color: var(--muted); }
+
+  footer {
+    text-align: center;
+    padding: 14px;
+    font-size: 12px;
+    color: var(--muted);
+  }
+  footer code { font-family: var(--mono); }
+</style>
+</head>
+<body>
+<header>
+  <span class="logo">⚡</span>
+  <h1>Codex 更新工具</h1>
+  <span id="service-state"><span class="dot"></span>本地服务</span>
+</header>
+
+<main>
+  <section class="status-grid">
+    <div class="status-card">
+      <div class="label">Codex 已安装版本</div>
+      <div id="codex-version" class="value unknown">读取中…</div>
+    </div>
+    <div class="status-card">
+      <div class="label">运行进程数 / 主窗口</div>
+      <div id="codex-window" class="value unknown">读取中…</div>
+    </div>
+    <div class="status-card">
+      <div class="label">插件版本（本地）</div>
+      <div id="plugin-version" class="value unknown">读取中…</div>
+    </div>
+  </section>
+
+  <div class="health-hint" id="health-hint" hidden>
+    <span>⚠</span>
+    <span><strong>检测到进程在运行但没有主窗口</strong> —— 这是 Codex Desktop（商店版）加密资源搬迁失败的官方 bug 特征。<br>
+    点击上方「健康自检」确认缺失组件，或直接运行仓库内修复脚本（pwsh）：<br>
+    <code>pwsh -File docs/codex-desktop-encrypted-copy-fix/repair-codex-desktop-bundles.ps1</code><br>
+    详细说明见 <code>docs/codex-desktop-encrypted-copy-fix/README.md</code>。</span>
+  </div>
+
+  <section class="actions">
+    <button class="action-btn primary" data-action="check_codex"><span class="icon">🔍</span>检查 Codex 更新</button>
+    <button class="action-btn" data-action="install_restart"><span class="icon">⬇️</span>下载并安装 + 重启</button>
+    <button class="action-btn" data-action="check_plugin"><span class="icon">📦</span>检查插件更新</button>
+    <button class="action-btn" data-action="update_plugin"><span class="icon">🔄</span>更新插件</button>
+    <button class="action-btn primary" data-action="check_health"><span class="icon">🩺</span>健康自检</button>
+    <button class="action-btn" data-action="check_health_probe"><span class="icon">🚀</span>健康自检 + 启动探测</button>
+  </section>
+
+  <section class="log-panel">
+    <div class="log-head">
+      <span>实时日志</span>
+      <div class="tools">
+        <button id="clear-log">清空</button>
+        <button id="refresh-status">刷新状态</button>
+      </div>
+    </div>
+    <div id="log"><span class="empty">就绪 —— 点击上方按钮开始。</span></div>
+  </section>
+</main>
+
+<footer>仅监听本机 <code>127.0.0.1</code> · 无外网依赖 · 由本地服务代执行项目内 PowerShell 脚本</footer>
+
+<script>
+"use strict";
+
+const $ = (id) => document.getElementById(id);
+const logEl = $("log");
+
+/* ---------- 状态 ---------- */
+
+async function loadStatus() {
+  try {
+    const res = await fetch("/api/status");
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const s = await res.json();
+
+    const verEl = $("codex-version");
+    if (s.codex_version) {
+      verEl.textContent = s.codex_version;
+      verEl.classList.remove("unknown");
+    } else {
+      verEl.textContent = "未安装 / 未获取";
+      verEl.classList.add("unknown");
+    }
+
+    const winEl = $("codex-window");
+    const procs = s.codex_processes || 0;
+    const hasWindow = (s.codex_window || 0) > 0;
+    winEl.classList.remove("unknown", "line-ok", "line-err");
+    if (procs === 0) {
+      winEl.textContent = "未运行";
+      winEl.classList.add("unknown");
+    } else if (hasWindow) {
+      winEl.textContent = procs + " 个进程 · 主窗口可见";
+      winEl.classList.add("line-ok");
+    } else {
+      // 进程在跑但没有任何主窗口 —— 加密资源搬迁失败特征
+      winEl.textContent = procs + " 个进程 · 无主窗口 ⚠";
+      winEl.classList.add("line-err");
+    }
+
+    $("health-hint").hidden = procs === 0 || hasWindow;
+
+    const pluginEl = $("plugin-version");
+    if (s.plugin_version) {
+      pluginEl.textContent = s.plugin_version;
+      pluginEl.classList.remove("unknown");
+    } else {
+      pluginEl.textContent = "未知";
+      pluginEl.classList.add("unknown");
+    }
+
+    $("service-state").classList.remove("offline");
+    $("service-state").querySelector("span").textContent = "本地服务";
+  } catch (err) {
+    $("service-state").classList.add("offline");
+    $("service-state").querySelector("span").textContent = "无法连接本地服务";
+    appendLog("⚠ 状态读取失败：" + err.message, "err");
+  }
+}
+
+/* ---------- 日志 ---------- */
+
+function appendLog(text, kind) {
+  if (logEl.querySelector(".empty")) logEl.innerHTML = "";
+  const line = document.createElement("div");
+  line.textContent = text;
+  if (kind === "ok") line.className = "line-ok";
+  else if (kind === "err") line.className = "line-err";
+  else if (kind === "sep") line.className = "sep";
+  logEl.appendChild(line);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+/* ---------- 任务执行 ---------- */
+
+let busy = false;
+
+function setBusy(value) {
+  busy = value;
+  document.querySelectorAll(".action-btn").forEach((b) => (b.disabled = value));
+}
+
+async function runAction(action) {
+  if (busy) return;
+  if (action === "install_restart") {
+    const ok = confirm(
+      "将下载最新 Codex Desktop，安装并自动重启。\n期间 Codex 会短暂关闭，是否继续？"
+    );
+    if (!ok) return;
+  }
+
+  setBusy(true);
+  try {
+    const res = await fetch("/api/run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
+    connectLog(data.task_id);
+  } catch (err) {
+    appendLog("❌ 任务启动失败：" + err.message, "err");
+    setBusy(false);
+  }
+}
+
+function connectLog(taskId) {
+  const es = new EventSource("/api/events?task_id=" + encodeURIComponent(taskId));
+
+  es.addEventListener("start", (e) => {
+    const d = JSON.parse(e.data);
+    appendLog("──── " + d.label + " ────", "sep");
+  });
+
+  es.addEventListener("log", (e) => {
+    const d = JSON.parse(e.data);
+    appendLog(d.line);
+  });
+
+  es.addEventListener("done", (e) => {
+    const d = JSON.parse(e.data);
+    if (d.exit_code === 0) {
+      appendLog("✔ 完成（exit 0）", "ok");
+    } else {
+      appendLog("✘ 失败（exit " + d.exit_code + "）", "err");
+    }
+    es.close();
+    setBusy(false);
+  });
+
+  es.onerror = () => {
+    // 连接中断时兜底恢复按钮（正常完成会先收到 done 并 close）
+    es.close();
+    setBusy(false);
+  };
+}
+
+/* ---------- 绑定 ---------- */
+
+document.querySelectorAll(".action-btn").forEach((btn) => {
+  btn.addEventListener("click", () => runAction(btn.dataset.action));
+});
+
+$("clear-log").addEventListener("click", () => {
+  logEl.innerHTML = "";
+});
+
+$("refresh-status").addEventListener("click", loadStatus);
+
+loadStatus();
+setInterval(loadStatus, 30000);
+</script>
+</body>
+</html>

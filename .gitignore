@@ -1,3 +1,5 @@
-docs/
+# 运行时/缓存产物，不入库
 plugins/codex-ms-desktop-updater/downloads/
-
+webui/__pycache__/
+webui/server.log
+webui/server.err.log
