@@ -34,7 +34,10 @@ const test = (name, fn) => tests.push({ name, fn });
 
 test("忙的判据只有一处，且把所有命令都算进去", () => {
   assert.match(store, /export const isCommandRunning = /, "共享判据必须导出，否则各处又会各写一份");
-  const predicate = store.match(/export const isCommandRunning = \(state: \{[^}]+\}\): boolean =>([\s\S]*?);\n/);
+  // 结尾必须是 `\r?\n` 而不是 `\n`：这条断言读的是工作区里的源码字节，而行尾由检出方式决定。
+  // Git for Windows 默认 core.autocrlf=true，GitHub 的 windows runner 也是 CRLF —— 只写 `\n` 的话
+  // `;` 后面跟着的是 `\r`，正则在 CRLF 检出下永远匹配不上。这正是 CI 上红的那一条。
+  const predicate = store.match(/export const isCommandRunning = \(state: \{[^}]+\}\): boolean =>([\s\S]*?);\r?\n/);
   assert.ok(predicate, "找不到 isCommandRunning 的实现");
   const body = predicate[1];
   for (const signal of ["phase === \"working\"", "probing", "repairing", "checkingUpdate"]) {

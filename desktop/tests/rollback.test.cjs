@@ -222,7 +222,9 @@ test("枚举脚本是只读的，且输出契约带三行固定字段", () => {
 // ---------- 渲染进程 ----------
 
 test("回退是一次命令：算进忙判据，且标志位一定在 finally 里清掉", () => {
-  const predicate = store.match(/export const isCommandRunning = \(state: \{[\s\S]*?\}\): boolean =>([\s\S]*?);\n/);
+  // 和 busy-state.test.cjs 里那条同样的道理：结尾要 `\r?\n`。CI 的 windows runner 用 CRLF 检出，
+  // 只写 `\n` 就会因为 `;` 后面跟的是 `\r` 而匹配不上（这条在 CI 上从没跑到过 —— 链断在前一套）。
+  const predicate = store.match(/export const isCommandRunning = \(state: \{[\s\S]*?\}\): boolean =>([\s\S]*?);\r?\n/);
   assert.ok(predicate, "找不到 isCommandRunning");
   assert.ok(
     predicate[1].includes("rollingBack"),
