@@ -92,8 +92,16 @@ $installedPluginRoot = Join-Path (Join-Path $codexHomePath "plugins") $pluginNam
 $automationDirectory = Join-Path (Join-Path $codexHomePath "automations") $automationId
 $installedAutomationPath = Join-Path $automationDirectory "automation.toml"
 $installedMaintenanceScript = Join-Path $installedPluginRoot "scripts/run-automatic-maintenance.ps1"
+$repairScriptSource = Join-Path $repoRoot "docs/codex-desktop-encrypted-copy-fix/repair-codex-desktop-bundles.ps1"
+$repairScriptDestination = Join-Path $installedPluginRoot "scripts/repair-codex-desktop-bundles.ps1"
 
 Copy-PluginWithoutDownloads -Source $sourcePluginRoot -Destination $installedPluginRoot
+
+# The desktop control center invokes this repair through the installed plugin
+# root, so keep the reviewed script available after installation as well.
+if (Test-Path -LiteralPath $repairScriptSource) {
+    Copy-Item -LiteralPath $repairScriptSource -Destination $repairScriptDestination -Force
+}
 
 New-Item -ItemType Directory -Path $automationDirectory -Force | Out-Null
 

@@ -1,0 +1,77 @@
+name: Build Codex Updater Desktop
+
+on:
+  push:
+    tags:
+      - "desktop-v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows-release:
+    runs-on: windows-latest
+    defaults:
+      run:
+        # 注意：这个默认只作用于 run 步骤，不作用于 uses。所以下面
+        # actions/checkout 的路径是仓库根，而 release 上传用到的
+        # desktop/release/*.exe 必须写全路径。
+        working-directory: desktop
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      # 用 ci 而不是 install：锁文件就在仓库里，install 会在版本对不上时
+      # 悄悄改写它，打出来的包和提交记录的依赖就不是一回事。
+      - name: Install frontend dependencies
+        run: npm ci --no-audit --no-fund
+
+      # 标签和 package.json 的版本必须一致，否则会出现「Release 叫 desktop-v0.2.0，
+      # 装出来的程序版本却是 0.1.0」——用户按 Release 名判断版本，一定会被误导。
+      - name: Verify tag matches package.json version
+        if: startsWith(github.ref, 'refs/tags/desktop-v')
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $expected = $tag -replace '^desktop-v', ''
+          $actual = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          if ($actual -ne $expected) {
+            throw "标签 $tag 要求版本 $expected，但 desktop/package.json 里是 $actual。请先把 package.json 改成 $expected 再重新打标签。"
+          }
+          Write-Host "版本一致：$actual"
+
+      # 测试跑在构建之前：打包一个跑不过测试的 exe 出来发到 Release，比构建失败更糟。
+      - name: Run unit tests
+        run: npm test
+
+      # 安装流程模拟：把真实 worker 写出来的日志行喂进 tailInstallLog，
+      # 断言进度、失败上报和告警。不需要真实下载或安装。
+      - name: Simulate install pipeline
+        run: npm run verify:simulate
+
+      - name: Build and publish NSIS installer
+        run: npm run electron:build
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: desktop/release/*.exe
+          tag_name: ${{ github.ref_name }}
+          name: Codex Updater ${{ github.ref_name }}
+          body: |
+            Windows x64 Electron installer for Codex Updater Desktop.
+
+            The installer is intended for the current Windows user and keeps the existing Codex plugin cache.
+
+            > This build is **not code-signed**. Windows SmartScreen will warn on first run
+            > ("Windows protected your PC") — choose "More info" → "Run anyway".
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

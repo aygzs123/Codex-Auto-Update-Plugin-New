@@ -1,392 +1,57 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Codex 更新工具</title>
+<title>Codex Updater · 安装向导</title>
 <style>
-  :root {
-    --bg: #0b0d12;
-    --panel: #14171f;
-    --panel-2: #1a1e29;
-    --border: #262c3a;
-    --text: #e6e9ef;
-    --muted: #8b93a5;
-    --accent: #2563eb;
-    --accent-hover: #3b78f0;
-    --ok: #2fb870;
-    --err: #e5484d;
-    --mono: "Cascadia Code", Consolas, "Courier New", monospace;
-  }
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  body {
-    background: var(--bg);
-    color: var(--text);
-    font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
-    min-height: 100vh;
-    display: flex;
-    flex-direction: column;
-  }
-  header {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    padding: 18px 28px;
-    border-bottom: 1px solid var(--border);
-    background: var(--panel);
-  }
-  header h1 { font-size: 18px; font-weight: 600; letter-spacing: .3px; }
-  header .logo { font-size: 22px; }
-  #service-state {
-    margin-left: auto;
-    font-size: 12px;
-    padding: 4px 12px;
-    border-radius: 999px;
-    border: 1px solid var(--border);
-    color: var(--muted);
-    display: flex;
-    align-items: center;
-    gap: 6px;
-  }
-  #service-state .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); }
-  #service-state.offline .dot { background: var(--err); }
-
-  main {
-    flex: 1;
-    max-width: 1080px;
-    width: 100%;
-    margin: 0 auto;
-    padding: 24px 28px 40px;
-    display: flex;
-    flex-direction: column;
-    gap: 22px;
-  }
-
-  /* 状态卡 */
-  .status-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-    gap: 14px;
-  }
-  .status-card {
-    background: var(--panel);
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    padding: 16px 18px;
-  }
-  .status-card .label { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
-  .status-card .value { font-size: 18px; font-weight: 600; font-family: var(--mono); }
-  .status-card .value.unknown { color: var(--muted); font-weight: 400; }
-
-  .health-hint {
-    display: flex;
-    gap: 10px;
-    align-items: flex-start;
-    background: rgba(229, 72, 77, .12);
-    border: 1px solid var(--err);
-    border-radius: 12px;
-    padding: 12px 16px;
-    font-size: 13px;
-    line-height: 1.6;
-  }
-  .health-hint code {
-    font-family: var(--mono);
-    background: rgba(255, 255, 255, .06);
-    padding: 1px 6px;
-    border-radius: 5px;
-    font-size: 12px;
-    white-space: pre-wrap;
-    word-break: break-all;
-  }
-  .health-hint[hidden] { display: none; }
-
-  /* 操作按钮 */
-  .actions {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
-    gap: 14px;
-  }
-  .action-btn {
-    background: var(--panel-2);
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    color: var(--text);
-    font-size: 14px;
-    font-weight: 500;
-    padding: 16px 14px;
-    cursor: pointer;
-    text-align: left;
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    transition: border-color .15s, background .15s, transform .05s;
-    font-family: inherit;
-  }
-  .action-btn .icon { font-size: 20px; }
-  .action-btn:hover:not(:disabled) { border-color: var(--accent); background: #1d2231; }
-  .action-btn:active:not(:disabled) { transform: translateY(1px); }
-  .action-btn.primary { border-color: var(--accent); background: rgba(37, 99, 235, .14); }
-  .action-btn:disabled { opacity: .45; cursor: not-allowed; }
-
-  /* 日志区 */
-  .log-panel {
-    background: var(--panel);
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    overflow: hidden;
-    display: flex;
-    flex-direction: column;
-  }
-  .log-head {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 12px 18px;
-    border-bottom: 1px solid var(--border);
-    font-size: 13px;
-    font-weight: 600;
-  }
-  .log-head .tools { display: flex; gap: 10px; align-items: center; }
-  .log-head .tools button {
-    background: none;
-    border: 1px solid var(--border);
-    color: var(--muted);
-    border-radius: 6px;
-    font-size: 12px;
-    padding: 3px 10px;
-    cursor: pointer;
-    font-family: inherit;
-  }
-  .log-head .tools button:hover { color: var(--text); border-color: var(--muted); }
-  #log {
-    height: 420px;
-    overflow-y: auto;
-    padding: 14px 18px;
-    font-family: var(--mono);
-    font-size: 12.5px;
-    line-height: 1.65;
-    white-space: pre-wrap;
-    word-break: break-all;
-  }
-  #log .sep { color: var(--accent); font-weight: 600; margin: 8px 0 4px; }
-  #log .line-ok { color: var(--ok); }
-  #log .line-err { color: var(--err); }
-  #log .empty { color: var(--muted); }
-
-  footer {
-    text-align: center;
-    padding: 14px;
-    font-size: 12px;
-    color: var(--muted);
-  }
-  footer code { font-family: var(--mono); }
+:root{--ink:#e9eef8;--muted:#8d98ad;--dim:#5f6b80;--surface:#121827;--surface-2:#182235;--line:rgba(173,190,218,.17);--cyan:#77e2df;--cyan-strong:#34beba;--amber:#ffc36a;--green:#9ee9bd;--shadow:0 24px 72px rgba(0,0,0,.35);font-family:"Aptos","Segoe UI","Microsoft YaHei",sans-serif;color-scheme:dark}
+*{box-sizing:border-box}body{margin:0;min-height:100vh;color:var(--ink);background:radial-gradient(circle at 77% 14%,rgba(73,139,157,.18),transparent 29rem),radial-gradient(circle at 16% 88%,rgba(67,74,130,.14),transparent 34rem),#0a0f1b}button,input{font:inherit}button{cursor:pointer}.shell{width:min(1160px,calc(100% - 42px));margin:0 auto;padding:24px 0 44px}.topbar{display:flex;justify-content:space-between;align-items:center;gap:18px;margin-bottom:34px}.brand{display:flex;align-items:center;gap:12px}.brand-mark{width:34px;height:34px;display:grid;place-items:center;border:1px solid rgba(119,226,223,.54);border-radius:12px;color:var(--cyan);background:rgba(119,226,223,.11);font-weight:700;letter-spacing:-.06em}.brand-name{font-weight:600;letter-spacing:.02em}.brand-sub{margin-left:8px;color:var(--muted);font-size:12px}.top-actions{display:flex;align-items:center;gap:14px;color:var(--muted);font-size:12px}.top-actions button{border:0;color:var(--muted);background:transparent}.top-actions button:hover{color:var(--ink)}.window{min-height:590px;border:1px solid var(--line);border-radius:24px;background:linear-gradient(140deg,rgba(18,24,39,.97),rgba(13,19,31,.98));box-shadow:var(--shadow);overflow:hidden}.window-head{display:flex;align-items:center;justify-content:space-between;padding:23px 30px;border-bottom:1px solid var(--line)}.window-title{display:flex;align-items:center;gap:10px;font-size:13px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}.live-dot{width:7px;height:7px;border-radius:50%;background:var(--cyan);box-shadow:0 0 0 5px rgba(119,226,223,.1)}.build{color:var(--dim);font-size:12px}.body{padding:34px 42px 40px}.stepper{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:44px}.step{position:relative;display:flex;align-items:center;gap:10px;color:var(--dim);font-size:12px}.step:not(:last-child)::after{content:"";position:absolute;top:13px;left:31px;right:-10px;height:1px;background:var(--line);z-index:0}.step-index,.step-label{position:relative;z-index:1}.step-index{width:26px;height:26px;display:grid;place-items:center;border:1px solid var(--line);border-radius:50%;background:var(--surface)}.step.active{color:var(--ink)}.step.active .step-index{border-color:var(--cyan);background:rgba(119,226,223,.14);color:var(--cyan)}.step.done{color:var(--green)}.step.done .step-index{border-color:rgba(158,233,189,.55);background:rgba(158,233,189,.12)}.step.done:not(:last-child)::after{background:rgba(158,233,189,.45)}.view{display:none;animation:rise .35s ease both}.view.active{display:block}@keyframes rise{from{opacity:0;transform:translateY(7px)}to{opacity:1;transform:translateY(0)}}.eyebrow{margin:0 0 12px;color:var(--cyan);font-size:11px;letter-spacing:.19em;text-transform:uppercase}h1,h2,h3,p{margin-top:0}h1{max-width:560px;margin-bottom:12px;font-size:clamp(28px,4vw,48px);line-height:1.05;letter-spacing:-.045em;font-weight:500}h2{margin-bottom:10px;font-size:27px;letter-spacing:-.03em;font-weight:500}h3{margin-bottom:9px;font-size:15px;font-weight:500}.lede{max-width:610px;margin-bottom:26px;color:var(--muted);font-size:14px;line-height:1.75}.split{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(250px,.75fr);gap:18px;align-items:stretch}.panel{border:1px solid var(--line);border-radius:18px;background:rgba(24,34,53,.62)}.package-card{display:flex;align-items:flex-start;gap:18px;padding:23px}.package-icon{width:52px;height:52px;display:grid;place-items:center;flex:0 0 auto;border-radius:16px;color:var(--cyan);background:rgba(119,226,223,.12);font-size:25px}.package-title{margin-bottom:7px;font-size:16px}.package-meta{display:flex;flex-wrap:wrap;gap:8px 16px;color:var(--muted);font-size:12px}.package-meta span::before{content:"•";margin-right:7px;color:var(--cyan)}.aside-note{padding:21px}.aside-note p{margin-bottom:0;color:var(--muted);font-size:12px;line-height:1.7}.trust{display:flex;align-items:center;gap:9px;margin-top:18px;color:var(--green);font-size:12px}.trust::before{content:"✓";width:18px;height:18px;display:grid;place-items:center;border-radius:50%;background:rgba(158,233,189,.14)}.actions{display:flex;align-items:center;justify-content:space-between;gap:14px;margin-top:27px}.actions-left,.actions-right{display:flex;align-items:center;gap:10px}.btn{min-height:42px;padding:0 18px;border:1px solid var(--line);border-radius:11px;color:var(--ink);background:rgba(255,255,255,.025);transition:.18s ease}.btn:hover{border-color:rgba(119,226,223,.7);transform:translateY(-1px)}.btn.primary{border-color:transparent;color:#10262a;background:var(--cyan);font-weight:600}.btn.primary:hover{background:#a0efea}.btn.ghost{border-color:transparent;color:var(--muted)}.btn:disabled{opacity:.45;cursor:not-allowed;transform:none}.download-state{display:none;margin-top:24px}.download-state.active{display:block}.progress-line{display:flex;justify-content:space-between;margin-bottom:9px;color:var(--muted);font-size:12px}.progress-line strong{color:var(--ink);font-weight:500}.progress-track{height:8px;overflow:hidden;border-radius:99px;background:rgba(255,255,255,.08)}.progress-fill{width:0;height:100%;border-radius:inherit;background:linear-gradient(90deg,var(--cyan-strong),var(--cyan));transition:width .25s ease}.subline{display:flex;justify-content:space-between;margin-top:10px;color:var(--dim);font-size:11px}.path-row{display:flex;gap:10px;align-items:end}.field{flex:1}.field label{display:block;margin:0 0 8px;color:var(--muted);font-size:12px}.field input{width:100%;height:44px;padding:0 13px;border:1px solid var(--line);border-radius:10px;outline:0;color:var(--ink);background:rgba(6,11,20,.5)}.field input:focus{border-color:var(--cyan);box-shadow:0 0 0 3px rgba(119,226,223,.12)}.location-options{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:20px}.option{padding:17px}.option p{margin:0;color:var(--muted);font-size:12px;line-height:1.6}.form-check{display:flex;align-items:flex-start;gap:10px;color:var(--ink);font-size:13px}.form-check input{width:16px;height:16px;margin-top:1px;accent-color:var(--cyan-strong)}.space-meter{margin-top:24px}.space-meter .progress-track{height:5px}.space-meter p{margin:9px 0 0;color:var(--muted);font-size:11px}.install-grid{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(250px,.9fr);gap:20px}.install-panel{padding:23px}.check-list{display:grid;gap:13px;margin-top:22px}.check-row{display:flex;justify-content:space-between;align-items:center;color:var(--muted);font-size:13px}.check-row .state{color:var(--green);font-size:12px}.check-row.pending .state{color:var(--amber)}.log{height:170px;overflow:auto;margin-top:20px;padding:14px;border:1px solid var(--line);border-radius:11px;color:var(--muted);background:rgba(5,10,17,.46);font:11px/1.8 "Cascadia Code",Consolas,monospace}.log .active-line{color:var(--cyan)}.complete-hero{text-align:center;padding:18px 0 6px}.complete-icon{width:76px;height:76px;display:grid;place-items:center;margin:0 auto 22px;border:1px solid rgba(158,233,189,.4);border-radius:24px;color:var(--green);background:rgba(158,233,189,.11);font-size:34px}.complete-hero .lede{margin:0 auto 26px}.complete-options{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));max-width:640px;gap:12px;margin:0 auto;text-align:left}.complete-option{padding:16px}.complete-option small{display:block;margin:7px 0 0 26px;color:var(--muted);font-size:11px;line-height:1.5}.dashboard{display:none}.dashboard.active{display:block;animation:rise .35s ease both}.dash-grid{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(260px,.65fr);gap:18px}.hero-status{position:relative;min-height:248px;padding:26px;overflow:hidden}.hero-status::after{content:"";position:absolute;width:210px;height:210px;right:-70px;bottom:-100px;border:1px solid rgba(119,226,223,.22);border-radius:50%;box-shadow:0 0 0 26px rgba(119,226,223,.04),0 0 0 52px rgba(119,226,223,.025)}.status-badge{display:inline-flex;align-items:center;gap:7px;padding:6px 9px;border-radius:8px;color:var(--green);background:rgba(158,233,189,.1);font-size:11px}.status-badge::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--green)}.hero-status h2{margin-top:27px}.hero-status p{max-width:430px;margin-bottom:0;color:var(--muted);font-size:13px;line-height:1.65}.dash-actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:23px}.side-stack{display:grid;gap:18px}.mini{padding:21px}.mini-label{color:var(--muted);font-size:11px;letter-spacing:.08em;text-transform:uppercase}.mini-value{margin:8px 0 5px;font-size:20px}.mini-detail{color:var(--muted);font-size:11px;line-height:1.5}.activity{margin-top:18px;padding:21px}.activity-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:17px}.activity-head h3{margin:0}.activity-head span{color:var(--dim);font-size:11px}.activity-row{display:flex;gap:12px;padding:13px 0;border-top:1px solid var(--line)}.activity-mark{width:24px;height:24px;display:grid;place-items:center;flex:0 0 auto;border-radius:8px;color:var(--cyan);background:rgba(119,226,223,.1);font-size:11px}.activity-row strong{display:block;margin-bottom:4px;font-size:12px;font-weight:500}.activity-row small{color:var(--muted);font-size:11px}.toast{position:fixed;right:24px;bottom:22px;max-width:310px;padding:13px 15px;border:1px solid rgba(119,226,223,.34);border-radius:12px;color:var(--ink);background:#172235;box-shadow:var(--shadow);opacity:0;transform:translateY(12px);pointer-events:none;transition:.2s ease;font-size:12px}.toast.show{opacity:1;transform:translateY(0)}
+ .signature-status{display:flex;align-items:center;gap:8px;margin:14px 0 16px;padding:9px 10px;border:1px solid var(--line);border-radius:10px;color:var(--muted);font-size:11px}.signature-status::before{content:"";width:8px;height:8px;border-radius:50%;background:var(--dim)}.signature-status.checking{color:var(--amber);border-color:rgba(255,195,106,.35)}.signature-status.checking::before{background:var(--amber);box-shadow:0 0 0 4px rgba(255,195,106,.1)}.signature-status.verified{color:var(--green);border-color:rgba(158,233,189,.35)}.signature-status.verified::before{background:var(--green);box-shadow:0 0 0 4px rgba(158,233,189,.1)}.signature-grid{display:grid;gap:8px}.signature-row{display:flex;justify-content:space-between;gap:12px;color:var(--dim);font-size:11px}.signature-row strong{color:var(--muted);font-weight:500}.signature-status.verified~.signature-grid .signature-row strong{color:var(--green)}
+@media (max-width:760px){.shell{width:min(100% - 26px,620px);padding-top:16px}.topbar{margin-bottom:22px}.brand-sub,.build{display:none}.window-head{padding:18px 19px}.body{padding:25px 19px 28px}.stepper{gap:6px;margin-bottom:32px}.step{display:block;text-align:center;font-size:10px}.step-index{margin:0 auto 7px}.step:not(:last-child)::after{top:13px;left:calc(50% + 13px);right:calc(-50% + 5px)}.split,.install-grid,.dash-grid{grid-template-columns:1fr}.path-row{align-items:stretch;flex-direction:column}.location-options,.complete-options{grid-template-columns:1fr}.actions{align-items:stretch;flex-direction:column-reverse}.actions-left,.actions-right{width:100%}.actions .btn{flex:1}h1{font-size:34px}}
+ .signature-card{display:grid;grid-template-columns:minmax(0,1.3fr) minmax(190px,.7fr);gap:16px;align-items:center;margin-top:18px;padding:21px}.signature-card h3{margin:4px 0 7px}.signature-card p{margin:0;color:var(--muted);font-size:12px;line-height:1.6}.signature-guard-status{justify-self:end;padding:8px 11px;border:1px solid var(--line);border-radius:9px;color:var(--muted);font-size:11px}.signature-guard-status.checking{color:var(--amber);border-color:rgba(184,116,8,.32)}.signature-guard-status.warning{color:#b55737;border-color:rgba(181,87,55,.32);background:rgba(181,87,55,.06)}.signature-guard-status.verified{color:var(--green);border-color:rgba(21,137,87,.28);background:rgba(21,137,87,.06)}.signature-fix-progress{display:none;grid-column:1/-1}.signature-fix-progress.active{display:block}.signature-card .dash-actions{grid-column:1/-1;justify-content:flex-end;margin-top:0}
+/* macOS-like glass surface: quiet chrome, traffic-light window controls, and a blue action accent. */
+:root{--ink:#1f2937;--muted:#687386;--dim:#9aa4b2;--surface:#f7f8fb;--surface-2:#eef1f6;--line:rgba(31,41,55,.14);--cyan:#1677ff;--cyan-strong:#0a64d8;--amber:#b87408;--green:#158957;--shadow:0 28px 80px rgba(55,65,81,.22);font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display","Segoe UI","Microsoft YaHei",sans-serif}
+body{background:radial-gradient(circle at 77% 8%,rgba(130,174,238,.23),transparent 28rem),linear-gradient(135deg,#edf1f7,#f9fafc 56%,#e6ebf3);color:var(--ink)}
+.window{background:rgba(255,255,255,.78);backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px)}
+.window-head{position:relative;padding-left:94px;background:rgba(250,251,253,.64)}
+.window-head::before{content:"";position:absolute;left:31px;top:50%;width:11px;height:11px;border-radius:50%;background:#ff5f57;box-shadow:18px 0 #febc2e,36px 0 #28c840;transform:translateY(-50%)}
+.panel{background:rgba(255,255,255,.64);box-shadow:0 10px 28px rgba(64,78,99,.06)}
+.package-icon{background:rgba(22,119,255,.1);color:var(--cyan)}
+.field input{color:var(--ink);background:rgba(255,255,255,.78)}
+.btn{background:rgba(255,255,255,.54);color:var(--ink);box-shadow:0 2px 5px rgba(64,78,99,.06)}
+.btn.primary{color:#fff;background:var(--cyan);box-shadow:0 5px 14px rgba(22,119,255,.24)}
+.btn.primary:hover{background:#358bff}
+.log{background:rgba(245,247,250,.86);color:#667085}
+.hero-status::after{border-color:rgba(22,119,255,.18);box-shadow:0 0 0 26px rgba(22,119,255,.04),0 0 0 52px rgba(22,119,255,.02)}
+.signature-status.checking{color:var(--amber);border-color:rgba(184,116,8,.32)}
+.signature-status.checking::before{background:var(--amber);box-shadow:0 0 0 4px rgba(184,116,8,.11)}
+.signature-status.verified{color:var(--green);border-color:rgba(21,137,87,.28)}
+.signature-status.verified::before{background:var(--green);box-shadow:0 0 0 4px rgba(21,137,87,.1)}
+@media (max-width:760px){.window-head{padding-left:76px}.window-head::before{left:23px;transform:translateY(-50%) scale(.85)}.signature-card{grid-template-columns:1fr}.signature-guard-status{justify-self:start}.signature-card .dash-actions{justify-content:stretch}.signature-card .dash-actions .btn{flex:1}}
+ .dashboard-tabs{display:flex;gap:4px;margin:22px 0 18px;padding:4px;border:1px solid var(--line);border-radius:11px;background:rgba(255,255,255,.38)}.dashboard-tab{flex:0 0 auto;padding:8px 16px;border:0;border-radius:8px;color:var(--muted);background:transparent;font-size:12px}.dashboard-tab:hover{color:var(--ink)}.dashboard-tab.active{color:var(--ink);background:rgba(255,255,255,.86);box-shadow:0 2px 8px rgba(64,78,99,.12)}.tab-panels{display:none}.tab-panel{padding:21px;border:1px solid var(--line);border-radius:18px;background:rgba(255,255,255,.64);box-shadow:0 10px 28px rgba(64,78,99,.06)}.tab-panel-head{display:flex;align-items:flex-start;justify-content:space-between;gap:18px}.tab-panel-head h3{margin:4px 0 6px}.tab-panel-head p{margin:0;color:var(--muted);font-size:12px;line-height:1.6}.tab-status{padding:6px 9px;border:1px solid var(--line);border-radius:8px;color:var(--muted);font-size:11px;white-space:nowrap}.tab-status.good{color:var(--green);border-color:rgba(21,137,87,.28);background:rgba(21,137,87,.06)}.update-row,.plugin-list{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 0;border-top:1px solid var(--line);color:var(--muted);font-size:12px}.update-row:first-of-type,.plugin-list:first-of-type{margin-top:18px}.update-row strong,.plugin-list strong{color:var(--ink);font-weight:500}.plugin-list small{display:block;margin-top:4px;color:var(--muted);font-size:11px}.good-text{color:var(--green)!important}.diagnostic-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:20px 0}.diagnostic-grid>div{padding:14px;border:1px solid var(--line);border-radius:11px;background:rgba(255,255,255,.42)}.diagnostic-grid strong{display:block;font-size:12px;font-weight:500}.diagnostic-grid small{display:block;margin-top:6px;font-size:11px}.tab-panel>.btn{margin-top:6px}@media(max-width:760px){.dashboard-tabs{overflow:auto}.dashboard-tab{flex:1;padding-left:10px;padding-right:10px}.tab-panel-head{flex-direction:column}.diagnostic-grid{grid-template-columns:1fr}.update-row,.plugin-list{align-items:flex-start;flex-wrap:wrap}.update-row .btn,.plugin-list .btn{margin-left:auto}}
 </style>
 </head>
 <body>
-<header>
-  <span class="logo">⚡</span>
-  <h1>Codex 更新工具</h1>
-  <span id="service-state"><span class="dot"></span>本地服务</span>
-</header>
-
-<main>
-  <section class="status-grid">
-    <div class="status-card">
-      <div class="label">Codex 已安装版本</div>
-      <div id="codex-version" class="value unknown">读取中…</div>
-    </div>
-    <div class="status-card">
-      <div class="label">运行进程数 / 主窗口</div>
-      <div id="codex-window" class="value unknown">读取中…</div>
-    </div>
-    <div class="status-card">
-      <div class="label">插件版本（本地）</div>
-      <div id="plugin-version" class="value unknown">读取中…</div>
-    </div>
-  </section>
-
-  <div class="health-hint" id="health-hint" hidden>
-    <span>⚠</span>
-    <span><strong>检测到进程在运行但没有主窗口</strong> —— 这是 Codex Desktop（商店版）加密资源搬迁失败的官方 bug 特征。<br>
-    点击上方「健康自检」确认缺失组件，或直接运行仓库内修复脚本（pwsh）：<br>
-    <code>pwsh -File docs/codex-desktop-encrypted-copy-fix/repair-codex-desktop-bundles.ps1</code><br>
-    详细说明见 <code>docs/codex-desktop-encrypted-copy-fix/README.md</code>。</span>
-  </div>
-
-  <section class="actions">
-    <button class="action-btn primary" data-action="check_codex"><span class="icon">🔍</span>检查 Codex 更新</button>
-    <button class="action-btn" data-action="install_restart"><span class="icon">⬇️</span>下载并安装 + 重启</button>
-    <button class="action-btn" data-action="check_plugin"><span class="icon">📦</span>检查插件更新</button>
-    <button class="action-btn" data-action="update_plugin"><span class="icon">🔄</span>更新插件</button>
-    <button class="action-btn primary" data-action="check_health"><span class="icon">🩺</span>健康自检</button>
-    <button class="action-btn" data-action="check_health_probe"><span class="icon">🚀</span>健康自检 + 启动探测</button>
-  </section>
-
-  <section class="log-panel">
-    <div class="log-head">
-      <span>实时日志</span>
-      <div class="tools">
-        <button id="clear-log">清空</button>
-        <button id="refresh-status">刷新状态</button>
-      </div>
-    </div>
-    <div id="log"><span class="empty">就绪 —— 点击上方按钮开始。</span></div>
-  </section>
-</main>
-
-<footer>仅监听本机 <code>127.0.0.1</code> · 无外网依赖 · 由本地服务代执行项目内 PowerShell 脚本</footer>
-
+<div class="shell"><header class="topbar"><div class="brand"><div class="brand-mark">cx</div><div><span class="brand-name">Codex Updater</span><span class="brand-sub">Desktop 安装向导</span></div></div><div class="top-actions"><span>Windows 11 · x64</span><button id="reset-btn" type="button">重置演示</button></div></header><main class="window" aria-live="polite"><div class="window-head"><div class="window-title"><span class="live-dot"></span><span id="window-label">安装新版本</span></div><span class="build">Setup 0.48.2</span></div><div class="body">
+<nav class="stepper" aria-label="安装步骤"><div class="step active" data-step="1"><span class="step-index">1</span><span class="step-label">获取安装包</span></div><div class="step" data-step="2"><span class="step-index">2</span><span class="step-label">选择位置</span></div><div class="step" data-step="3"><span class="step-index">3</span><span class="step-label">正在安装</span></div><div class="step" data-step="4"><span class="step-index">4</span><span class="step-label">完成</span></div></nav>
+<section class="view active" data-view="1"><p class="eyebrow">Step 01 / Download</p><h1>把 Codex 带到<br>你的桌面。</h1><p class="lede">下载安装包，确认来源与签名后再继续。整个过程不会覆盖现有配置，插件和自动化任务会被保留。</p><div class="split"><div class="panel package-card"><div class="package-icon">↓</div><div><div class="package-title">Codex Desktop for Windows</div><div class="package-meta"><span>版本 0.48.2</span><span>86.4 MB</span><span>win-x64</span></div></div></div><div class="panel aside-note"><h3>安全校验</h3><div class="signature-status" id="signature-status">等待下载安装包</div><div class="signature-grid"><div class="signature-row"><span>发布者</span><strong>OpenAI, L.L.C.</strong></div><div class="signature-row"><span>数字签名</span><strong id="signature-value">待验证</strong></div><div class="signature-row"><span>SHA-256</span><strong id="hash-value">待计算</strong></div></div></div></div><div class="download-state" id="download-state"><div class="progress-line"><span id="download-label">准备下载…</span><strong id="download-percent">0%</strong></div><div class="progress-track"><div class="progress-fill" id="download-fill"></div></div><div class="subline"><span id="download-speed">等待连接</span><span id="download-size">0 / 86.4 MB</span></div></div><div class="actions"><div class="actions-left"><button class="btn ghost" id="cancel-download" type="button" hidden>取消下载</button></div><div class="actions-right"><button class="btn primary" id="download-btn" type="button">下载并继续</button></div></div></section>
+<section class="view" data-view="2"><p class="eyebrow">Step 02 / Location</p><h2>选择安装位置</h2><p class="lede">默认安装到当前用户目录。你可以换到其他磁盘，至少需要 180 MB 可用空间。</p><div class="panel" style="padding:23px"><div class="path-row"><div class="field"><label for="install-path">安装目录</label><input id="install-path" value="C:\\Users\\你\\AppData\\Local\\Codex" aria-label="安装目录"></div><button class="btn" id="browse-btn" type="button">浏览…</button></div><div class="location-options"><div class="panel option"><label class="form-check"><input id="current-user" type="checkbox" checked><span>仅为当前用户安装</span></label><p>不需要管理员权限，配置保存在你的用户目录。</p></div><div class="panel option"><label class="form-check"><input id="shortcut" type="checkbox" checked><span>创建桌面快捷方式</span></label><p>稍后可以在设置中再次修改。</p></div></div><div class="space-meter"><div class="progress-line"><span>目标磁盘可用空间</span><strong>42.7 GB 可用</strong></div><div class="progress-track"><div class="progress-fill" style="width:18%"></div></div><p>安装后预计占用 180 MB</p></div></div><div class="actions"><div class="actions-left"><button class="btn ghost back-btn" type="button">返回</button></div><div class="actions-right"><button class="btn primary" id="install-btn" type="button">开始安装</button></div></div></section>
+<section class="view" data-view="3"><p class="eyebrow">Step 03 / Install</p><h2>正在把 Codex 安装到你的电脑</h2><p class="lede" id="install-caption">正在解压核心文件，请稍候。你可以继续查看安装日志。</p><div class="install-grid"><div class="panel install-panel"><div class="progress-line"><span id="install-phase">初始化安装程序</span><strong id="install-percent">0%</strong></div><div class="progress-track"><div class="progress-fill" id="install-fill"></div></div><div class="check-list"><div class="check-row" id="check-core"><span>复制核心文件</span><span class="state">等待中</span></div><div class="check-row pending" id="check-plugin"><span>保留插件与自动化</span><span class="state">等待中</span></div><div class="check-row pending" id="check-shortcut"><span>创建快捷方式</span><span class="state">等待中</span></div></div></div><div class="panel install-panel"><h3>安装日志</h3><div class="log" id="install-log" aria-label="安装日志"></div></div></div><div class="actions"><div class="actions-left"><span style="color:var(--muted);font-size:12px">请勿关闭此窗口</span></div><div class="actions-right"><button class="btn primary" id="finish-install-btn" type="button" disabled>继续</button></div></div></section>
+<section class="view" data-view="4"><div class="complete-hero"><div class="complete-icon">✓</div><p class="eyebrow">Step 04 / Ready</p><h2>安装完成，准备出发</h2><p class="lede">Codex Desktop 已经安装好了。选择接下来要做什么，然后进入你的更新控制台。</p></div><div class="complete-options"><div class="panel complete-option"><label class="form-check"><input id="open-codex" type="checkbox" checked><span>安装完成后打开 Codex</span></label><small>首次启动可能需要几秒钟完成资源准备。</small></div><div class="panel complete-option"><label class="form-check"><input id="open-dashboard" type="checkbox" checked><span>打开更新控制台</span></label><small>管理 Codex、插件版本和健康检查。</small></div></div><div class="actions"><div class="actions-left"><button class="btn ghost" id="show-folder-btn" type="button">打开安装目录</button></div><div class="actions-right"><button class="btn primary" id="launch-btn" type="button">进入控制台</button></div></div></section>
+<section class="dashboard" data-view="dashboard"><p class="eyebrow">Control Center / Overview</p><h2>一切正常，保持更新。</h2><p class="lede">Codex Desktop 和更新插件都在你的掌控中。这里是你之后每天打开的功能界面。</p><div class="dash-grid"><div class="panel hero-status"><span class="status-badge">Codex Desktop 已是最新</span><h2>0.48.2 <span style="color:var(--muted);font-size:15px">· Windows x64</span></h2><p>上次检查：刚刚。你的安装路径、插件缓存和自动化任务均已保留。</p><div class="dash-actions"><button class="btn primary dashboard-action" type="button">检查更新</button><button class="btn dashboard-action" type="button">健康自检</button></div></div><div class="side-stack"><div class="panel mini"><div class="mini-label">插件版本</div><div class="mini-value">0.3.0</div><div class="mini-detail">已启用 · 自动维护每天运行</div></div><div class="panel mini"><div class="mini-label">安装位置</div><div class="mini-value" style="font-size:14px">当前用户目录</div><div class="mini-detail">C:\\Users\\你\\AppData\\Local\\Codex</div></div></div></div><div class="panel signature-card"><div><p class="mini-label">OpenAI Signature Guard</p><h3>OpenAI 签名错误修复</h3><p>检查本地签名链与 Codex 缓存状态。发现异常后，可修复用户目录中的缓存副本，不修改 WindowsApps 原包。</p></div><div class="signature-guard-status" id="signature-guard-status">尚未检查签名</div><div class="dash-actions"><button class="btn" id="signature-check-btn" type="button">检查签名</button><button class="btn primary" id="signature-fix-btn" type="button" disabled>修复 OpenAI 签名错误</button></div><div class="signature-fix-progress" id="signature-fix-progress"><div class="progress-line"><span id="signature-fix-label">等待操作</span><strong id="signature-fix-percent">0%</strong></div><div class="progress-track"><div class="progress-fill" id="signature-fix-fill"></div></div></div></div><div class="panel activity"><div class="activity-head"><h3>最近活动</h3><span>今天</span></div><div class="activity-row"><div class="activity-mark">↓</div><div><strong>完成 Codex Desktop 安装</strong><small>版本 0.48.2 · 刚刚</small></div></div><div class="activity-row"><div class="activity-mark">✓</div><div><strong>插件与自动化配置已保留</strong><small>本地缓存未被覆盖</small></div></div><div class="activity-row"><div class="activity-mark">⌁</div><div><strong>安装包签名校验通过</strong><small>OpenAI 官方分发源</small></div></div></div></section>
+</div></main><div class="toast" id="toast" role="status"></div></div>
 <script>
 "use strict";
-
-const $ = (id) => document.getElementById(id);
-const logEl = $("log");
-
-/* ---------- 状态 ---------- */
-
-async function loadStatus() {
-  try {
-    const res = await fetch("/api/status");
-    if (!res.ok) throw new Error("HTTP " + res.status);
-    const s = await res.json();
-
-    const verEl = $("codex-version");
-    if (s.codex_version) {
-      verEl.textContent = s.codex_version;
-      verEl.classList.remove("unknown");
-    } else {
-      verEl.textContent = "未安装 / 未获取";
-      verEl.classList.add("unknown");
-    }
-
-    const winEl = $("codex-window");
-    const procs = s.codex_processes || 0;
-    const hasWindow = (s.codex_window || 0) > 0;
-    winEl.classList.remove("unknown", "line-ok", "line-err");
-    if (procs === 0) {
-      winEl.textContent = "未运行";
-      winEl.classList.add("unknown");
-    } else if (hasWindow) {
-      winEl.textContent = procs + " 个进程 · 主窗口可见";
-      winEl.classList.add("line-ok");
-    } else {
-      // 进程在跑但没有任何主窗口 —— 加密资源搬迁失败特征
-      winEl.textContent = procs + " 个进程 · 无主窗口 ⚠";
-      winEl.classList.add("line-err");
-    }
-
-    $("health-hint").hidden = procs === 0 || hasWindow;
-
-    const pluginEl = $("plugin-version");
-    if (s.plugin_version) {
-      pluginEl.textContent = s.plugin_version;
-      pluginEl.classList.remove("unknown");
-    } else {
-      pluginEl.textContent = "未知";
-      pluginEl.classList.add("unknown");
-    }
-
-    $("service-state").classList.remove("offline");
-    $("service-state").querySelector("span").textContent = "本地服务";
-  } catch (err) {
-    $("service-state").classList.add("offline");
-    $("service-state").querySelector("span").textContent = "无法连接本地服务";
-    appendLog("⚠ 状态读取失败：" + err.message, "err");
-  }
-}
-
-/* ---------- 日志 ---------- */
-
-function appendLog(text, kind) {
-  if (logEl.querySelector(".empty")) logEl.innerHTML = "";
-  const line = document.createElement("div");
-  line.textContent = text;
-  if (kind === "ok") line.className = "line-ok";
-  else if (kind === "err") line.className = "line-err";
-  else if (kind === "sep") line.className = "sep";
-  logEl.appendChild(line);
-  logEl.scrollTop = logEl.scrollHeight;
-}
-
-/* ---------- 任务执行 ---------- */
-
-let busy = false;
-
-function setBusy(value) {
-  busy = value;
-  document.querySelectorAll(".action-btn").forEach((b) => (b.disabled = value));
-}
-
-async function runAction(action) {
-  if (busy) return;
-  if (action === "install_restart") {
-    const ok = confirm(
-      "将下载最新 Codex Desktop，安装并自动重启。\n期间 Codex 会短暂关闭，是否继续？"
-    );
-    if (!ok) return;
-  }
-
-  setBusy(true);
-  try {
-    const res = await fetch("/api/run", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action }),
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
-    connectLog(data.task_id);
-  } catch (err) {
-    appendLog("❌ 任务启动失败：" + err.message, "err");
-    setBusy(false);
-  }
-}
-
-function connectLog(taskId) {
-  const es = new EventSource("/api/events?task_id=" + encodeURIComponent(taskId));
-
-  es.addEventListener("start", (e) => {
-    const d = JSON.parse(e.data);
-    appendLog("──── " + d.label + " ────", "sep");
-  });
-
-  es.addEventListener("log", (e) => {
-    const d = JSON.parse(e.data);
-    appendLog(d.line);
-  });
-
-  es.addEventListener("done", (e) => {
-    const d = JSON.parse(e.data);
-    if (d.exit_code === 0) {
-      appendLog("✔ 完成（exit 0）", "ok");
-    } else {
-      appendLog("✘ 失败（exit " + d.exit_code + "）", "err");
-    }
-    es.close();
-    setBusy(false);
-  });
-
-  es.onerror = () => {
-    // 连接中断时兜底恢复按钮（正常完成会先收到 done 并 close）
-    es.close();
-    setBusy(false);
-  };
-}
-
-/* ---------- 绑定 ---------- */
-
-document.querySelectorAll(".action-btn").forEach((btn) => {
-  btn.addEventListener("click", () => runAction(btn.dataset.action));
-});
-
-$("clear-log").addEventListener("click", () => {
-  logEl.innerHTML = "";
-});
-
-$("refresh-status").addEventListener("click", loadStatus);
-
-loadStatus();
-setInterval(loadStatus, 30000);
+const $=id=>document.getElementById(id);let downloadTimer=null,installTimer=null;
+function toast(message){const el=$("toast");el.textContent=message;el.classList.add("show");clearTimeout(el._timer);el._timer=setTimeout(()=>el.classList.remove("show"),2600)}
+function setStep(step){document.querySelectorAll(".view").forEach(v=>v.classList.toggle("active",v.dataset.view===String(step)));document.querySelectorAll(".step").forEach(item=>{const n=Number(item.dataset.step);item.classList.toggle("active",n===step);item.classList.toggle("done",n<step)});$("window-label").textContent=step<4?"安装新版本":"准备就绪"}
+function runDownload(){if(downloadTimer)return;$("download-state").classList.add("active");$("download-btn").disabled=true;$("cancel-download").hidden=false;$("signature-status").className="signature-status checking";$("signature-status").textContent="正在下载并准备签名校验";$("signature-value").textContent="等待安装包";$("hash-value").textContent="等待安装包";let progress=0;downloadTimer=setInterval(()=>{progress=Math.min(100,progress+Math.round(Math.random()*11+7));$("download-fill").style.width=progress+"%";$("download-percent").textContent=progress+"%";$("download-label").textContent=progress<100?"正在下载安装包…": "下载完成，正在验证签名…";$("download-speed").textContent=progress<100?(Math.random()*3+4).toFixed(1)+" MB/s":"正在计算 SHA-256";$("download-size").textContent=Math.round(86.4*progress/100)+" / 86.4 MB";if(progress>=100){clearInterval(downloadTimer);downloadTimer=null;setTimeout(()=>{$("signature-status").className="signature-status verified";$("signature-status").textContent="签名有效 · 文件可信";$("signature-value").textContent="已验证";$("hash-value").textContent="匹配";$("download-label").textContent="下载完成，校验通过";$("download-speed").textContent="Authenticode + SHA-256";$("download-btn").disabled=false;$("download-btn").textContent="继续选择位置";$("download-btn").onclick=()=>setStep(2);$("cancel-download").hidden=true},700)}},280)}
+function startInstall(){setStep(3);let progress=0;$("install-log").innerHTML="";$("finish-install-btn").disabled=true;installTimer=setInterval(()=>{progress=Math.min(100,progress+Math.round(Math.random()*12+8));$("install-fill").style.width=progress+"%";$("install-percent").textContent=progress+"%";const lines=["准备安装目录","解压 Codex Desktop.exe","复制本地运行时","保留插件与自动化配置","注册开始菜单快捷方式","清理临时文件"],line=lines[Math.min(lines.length-1,Math.floor(progress/18))];$("install-phase").textContent=progress<100?line:"安装完成";$("install-log").innerHTML+='<div class="active-line">› '+line+"</div>";$("install-log").scrollTop=$("install-log").scrollHeight;if(progress>28){$("check-core").querySelector(".state").textContent="已完成";$("check-core").classList.remove("pending")}if(progress>58){$("check-plugin").querySelector(".state").textContent="已保留";$("check-plugin").classList.remove("pending")}if(progress>82){$("check-shortcut").querySelector(".state").textContent="已创建";$("check-shortcut").classList.remove("pending")}if(progress>=100){clearInterval(installTimer);installTimer=null;$("install-caption").textContent="所有文件已写入，插件和自动化配置保持不变。";$("finish-install-btn").disabled=false;$("finish-install-btn").textContent="查看完成选项"}},360)}
+$("download-btn").addEventListener("click",runDownload);$("cancel-download").addEventListener("click",()=>{clearInterval(downloadTimer);downloadTimer=null;$("download-state").classList.remove("active");$("download-btn").disabled=false;$("download-btn").textContent="下载并继续";$("cancel-download").hidden=true;$("signature-status").className="signature-status";$("signature-status").textContent="等待下载安装包";$("signature-value").textContent="待验证";$("hash-value").textContent="待计算";toast("已取消下载")});$("install-btn").addEventListener("click",startInstall);$("finish-install-btn").addEventListener("click",()=>setStep(4));document.querySelectorAll(".back-btn").forEach(btn=>btn.addEventListener("click",()=>setStep(1)));$("browse-btn").addEventListener("click",()=>{const value=prompt("输入安装目录",$("install-path").value);if(value){$("install-path").value=value;toast("安装位置已更新")}});$("show-folder-btn").addEventListener("click",()=>toast("已在资源管理器中打开安装目录（演示）"));$("launch-btn").addEventListener("click",()=>{document.querySelectorAll(".view").forEach(v=>v.classList.remove("active"));$(".dashboard").classList.add("active");document.querySelectorAll(".step").forEach(item=>item.classList.add("done"));$("window-label").textContent="更新控制台";toast($("open-codex").checked?"Codex Desktop 正在启动":"已进入更新控制台")});document.querySelectorAll(".dashboard-action").forEach(btn=>btn.addEventListener("click",()=>toast(btn.textContent+"已完成（演示）")));$("signature-check-btn").addEventListener("click",()=>{const status=$("signature-guard-status");status.className="signature-guard-status checking";status.textContent="正在检查签名链…";$("signature-check-btn").disabled=true;setTimeout(()=>{status.className="signature-guard-status warning";status.textContent="发现本地签名缓存异常";$("signature-fix-btn").disabled=false;$("signature-check-btn").disabled=false;toast("检测到可修复的 OpenAI 签名错误")},900)});$("signature-fix-btn").addEventListener("click",()=>{const status=$("signature-guard-status"),fill=$("signature-fix-fill"),progress=$("signature-fix-progress"),label=$("signature-fix-label"),percent=$("signature-fix-percent");progress.classList.add("active");$("signature-fix-btn").disabled=true;$("signature-check-btn").disabled=true;let p=0;const timer=setInterval(()=>{p=Math.min(100,p+20);fill.style.width=p+"%";percent.textContent=p+"%";label.textContent=p<100?"重建本地签名缓存…":"签名缓存已修复";if(p>=100){clearInterval(timer);status.className="signature-guard-status verified";status.textContent="OpenAI 签名链已修复";$("signature-check-btn").disabled=false;toast("修复完成，可重新启动 Codex")}},260)});$("reset-btn").addEventListener("click",()=>location.reload());
+</script>
+<script>
+(() => { const dashboard = document.querySelector(".dashboard"); if (!dashboard) return; const lede = dashboard.querySelector(".lede"); const tabs = document.createElement("nav"); tabs.className = "dashboard-tabs"; tabs.setAttribute("aria-label", "控制台功能"); tabs.innerHTML = '<button class="dashboard-tab active" type="button" data-tab="overview">总览</button><button class="dashboard-tab" type="button" data-tab="updates">更新</button><button class="dashboard-tab" type="button" data-tab="plugins">插件</button><button class="dashboard-tab" type="button" data-tab="diagnostics">诊断</button>'; lede.after(tabs); const panels = document.createElement("div"); panels.className = "tab-panels"; panels.innerHTML = '<section class="tab-panel" data-tab-panel="updates"><div class="tab-panel-head"><div><p class="mini-label">Desktop Update</p><h3>版本更新</h3><p>当前版本 0.48.2，最近一次检查刚刚完成。</p></div><span class="tab-status good">已是最新</span></div><div class="update-row"><span>Codex Desktop</span><strong>0.48.2</strong><button class="btn primary dashboard-action" type="button">再次检查</button></div><div class="update-row"><span>安装包签名</span><strong class="good-text">已验证</strong><button class="btn dashboard-action" type="button">查看详情</button></div></section><section class="tab-panel" data-tab-panel="plugins"><div class="tab-panel-head"><div><p class="mini-label">Plugin Center</p><h3>插件与自动化</h3><p>维护任务每天运行，缓存目录不会被覆盖。</p></div><span class="tab-status good">运行中</span></div><div class="plugin-list"><div><strong>codex-ms-desktop-updater</strong><small>0.3.0 · 已启用</small></div><button class="btn dashboard-action" type="button">检查插件更新</button></div><div class="plugin-list"><div><strong>每日自动维护</strong><small>下次运行：明天 09:00</small></div><button class="btn dashboard-action" type="button">查看计划</button></div></section><section class="tab-panel" data-tab-panel="diagnostics"><div class="tab-panel-head"><div><p class="mini-label">Diagnostics</p><h3>健康诊断</h3><p>快速定位无窗口、签名缓存和资源搬迁问题。</p></div><span class="tab-status">3 项检查</span></div><div class="diagnostic-grid"><div><strong>主窗口</strong><small class="good-text">正常</small></div><div><strong>资源缓存</strong><small class="good-text">完整</small></div><div><strong>签名链</strong><small class="good-text">可验证</small></div></div><button class="btn primary dashboard-action" type="button">运行完整诊断</button></section>'; tabs.after(panels); const overview = dashboard.querySelectorAll(".dash-grid,.signature-card,.activity"); const showTab = (name) => { overview.forEach((node) => { node.style.display = name === "overview" ? "" : "none"; }); panels.style.display = name === "overview" ? "none" : "block"; panels.querySelectorAll(".tab-panel").forEach((panel) => { panel.style.display = panel.dataset.tabPanel === name ? "block" : "none"; }); tabs.querySelectorAll(".dashboard-tab").forEach((tab) => tab.classList.toggle("active", tab.dataset.tab === name)); }; tabs.addEventListener("click", (event) => { const tab = event.target.closest(".dashboard-tab"); if (tab) showTab(tab.dataset.tab); }); panels.addEventListener("click", (event) => { const action = event.target.closest(".dashboard-action"); if (action) toast(action.textContent + "已完成（演示）"); }); showTab("overview"); })();
 </script>
 </body>
 </html>

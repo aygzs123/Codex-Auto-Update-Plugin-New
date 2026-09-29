@@ -1,0 +1,230 @@
+/* 设计语言沿用原型的浅色玻璃拟态：蓝色主色 #1677ff、绿色成功 #158957、圆角面板与
+   柔和阴影。这里只保留单页一键流程真正用到的类，原型里那套四步向导的样式
+   （.stepper / .dashboard-* / .complete-* 等）已随流程一起删除。 */
+
+:root {
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", "Microsoft YaHei", sans-serif;
+  color: #1f2937;
+  background: #edf1f7;
+  font-synthesis: none;
+}
+* { box-sizing: border-box; }
+/* 整窗只有内容区滚动，顶栏固定在窗口顶部。所以这里必须掐掉 body 自身的滚动条，
+   高度也改成 100% 而不是 min-height —— 否则内容一长，顶栏照样被推走。 */
+html, body, #root { height: 100%; }
+body {
+  margin: 0;
+  min-width: 320px;
+  overflow: hidden;
+  background: radial-gradient(circle at 78% 8%, rgba(130, 174, 238, .22), transparent 28rem),
+    linear-gradient(135deg, #edf1f7, #f9fafc 56%, #e6ebf3);
+}
+button, input { font: inherit; }
+button { cursor: pointer; }
+h1, h2, h3, p { margin-top: 0; }
+h1 { max-width: 620px; margin-bottom: 12px; font-size: clamp(27px, 3.4vw, 40px); line-height: 1.1; letter-spacing: -.04em; font-weight: 500; }
+h3 { margin-bottom: 9px; font-size: 15px; font-weight: 500; }
+
+/* 竖向三段布局：固定顶栏 / 可滚动内容 / （浮层提示）。 */
+.app-shell { display: flex; flex-direction: column; height: 100%; overflow: hidden; }
+.app-scroll { flex: 1 1 auto; min-height: 0; padding: 22px 0 44px; overflow-y: auto; overscroll-behavior: contain; }
+
+/* ---------- 顶栏 ---------- */
+/* 固定在窗口顶部不随内容滚动，所以宽度铺满整窗，不再跟着内容限宽居中。
+   position/z-index 二者缺一不可：backdrop-filter 会给顶栏建一个自己的层叠上下文，
+   菜单的 z-index 就被关在这个上下文里了；而内容区的 .window 同样带 backdrop-filter
+   也是个层叠上下文，两者同层时按文档顺序比大小 —— 内容在后面，就会连菜单一起盖住
+   顶栏。给顶栏一个正 z-index 才能把它整体提到内容之上。 */
+.topbar { position: relative; z-index: 30; display: flex; flex: 0 0 auto; justify-content: space-between; align-items: center; gap: 12px; height: 48px; padding: 0 8px 0 20px; border-bottom: 1px solid rgba(31, 41, 55, .12); background: rgba(250, 251, 253, .88); box-shadow: 0 1px 12px rgba(55, 65, 81, .06); backdrop-filter: blur(20px); user-select: none; cursor: move; }
+.brand, .top-actions, .window-title, .progress-line, .subline, .path-row, .signature-row, .health-row, .rollback-row, .dash-actions, .cta-row, .settings-links { display: flex; align-items: center; }
+.brand { gap: 11px; font-size: 14px; }
+.brand-mark { display: grid; place-items: center; width: 34px; height: 34px; border: 1px solid rgba(22, 119, 255, .32); border-radius: 11px; color: #1677ff; background: rgba(22, 119, 255, .08); font-weight: 600; }
+.top-actions, .build, .mini-label, .tab-detail { color: #687386; font-size: 12px; }
+.top-actions { gap: 14px; }
+.app-menu { display: flex; align-items: center; gap: 2px; margin-left: 12px; margin-right: auto; -webkit-app-region: no-drag; }
+.menu-group { position: relative; }
+.menu-trigger { padding: 7px 10px; border: 0; border-radius: 8px; color: #687386; background: transparent; font-size: 12px; }
+.menu-trigger:hover, .menu-trigger.active { color: #1677ff; background: rgba(22, 119, 255, .08); }
+.menu-popover { position: absolute; top: 100%; left: 0; z-index: 20; min-width: 200px; padding: 6px; border: 1px solid rgba(31, 41, 55, .13); border-radius: 12px; background: rgba(255, 255, 255, .96); box-shadow: 0 14px 35px rgba(55, 65, 81, .18); backdrop-filter: blur(18px); }
+.menu-popover button { display: block; width: 100%; padding: 9px 10px; border: 0; border-radius: 7px; color: #445064; background: transparent; text-align: left; font-size: 12px; }
+.menu-popover button:hover:not(:disabled) { color: #1677ff; background: rgba(22, 119, 255, .08); }
+/* 有命令在跑时，会真跑命令的菜单项置灰。:hover 必须一起排除 —— disabled 的按钮
+   仍然会命中 :hover，不排除的话鼠标划过照样变蓝，看起来就是「能点」。 */
+.menu-popover button:disabled { cursor: not-allowed; color: #a9b2c0; }
+/* 真正能操作窗口的三个按钮，按 Windows 习惯贴在最右侧：无底色、hover 才亮，
+   关闭键整块变红。图标是 SVG（见 TitleBar.tsx），尺寸和基线不受字体影响。 */
+.window-controls { display: flex; flex: 0 0 auto; gap: 2px; align-items: center; -webkit-app-region: no-drag; }
+.window-control { display: grid; place-items: center; width: 40px; height: 30px; padding: 0; border: 0; border-radius: 8px; color: #4a5568; background: transparent; transition: background .14s ease, color .14s ease; }
+.window-control:hover { color: #1f2937; background: rgba(31, 41, 55, .09); }
+.window-control:active { background: rgba(31, 41, 55, .15); }
+.window-control.close:hover { color: #fff; background: #e5484d; }
+.window-control.close:active { background: #cf3b40; }
+.window-control:focus-visible { outline: 2px solid #1677ff; outline-offset: 2px; }
+.window-control svg { display: block; }
+
+/* ---------- 主窗口 ---------- */
+/* 限宽居中从 .app-shell 挪到这里：顶栏要铺满整窗，内容区仍然收窄到 1000px。 */
+.window { width: min(1000px, calc(100% - 42px)); margin: 0 auto; overflow: hidden; border: 1px solid rgba(31, 41, 55, .14); border-radius: 24px; background: rgba(255, 255, 255, .78); box-shadow: 0 28px 80px rgba(55, 65, 81, .22); backdrop-filter: blur(24px); }
+.window-head { position: relative; display: flex; justify-content: space-between; align-items: center; padding: 20px 30px 20px 94px; border-bottom: 1px solid rgba(31, 41, 55, .12); background: rgba(250, 251, 253, .62); user-select: none; cursor: move; }
+/* 卡片标题栏上的三个圆点是**装饰**，照原型 .window-head::before 的配色与位置
+   （红=关闭、黄=最小化、绿=最大化）。它们不是按钮、不接事件：真正能关窗口的是
+   顶栏右上角那三个按钮 —— 这张卡片在滚动容器里，往下滚圆点就跟着走了，
+   让它们承担窗口操作会得到一个「滚到底就关不掉窗口」的界面。 */
+.window-head::before { content: ""; position: absolute; left: 31px; top: 50%; width: 11px; height: 11px; border-radius: 50%; background: #ff5f57; box-shadow: 18px 0 #febc2e, 36px 0 #28c840; transform: translateY(-50%); }
+.window-title { gap: 9px; color: #687386; font-size: 12px; letter-spacing: .12em; text-transform: uppercase; }
+.window-title i { width: 7px; height: 7px; border-radius: 50%; background: #1677ff; box-shadow: 0 0 0 5px rgba(22, 119, 255, .1); }
+.body { display: grid; gap: 18px; padding: 30px 34px 34px; }
+
+.panel { border: 1px solid rgba(31, 41, 55, .14); border-radius: 16px; background: rgba(255, 255, 255, .64); box-shadow: 0 10px 28px rgba(64, 78, 99, .06); }
+.eyebrow { margin: 0 0 12px; color: #1677ff; font-size: 11px; letter-spacing: .19em; text-transform: uppercase; }
+.lede { max-width: 660px; margin-bottom: 24px; color: #687386; font-size: 14px; line-height: 1.75; }
+.mini-label { margin: 0 0 4px; }
+.tab-detail { margin: 0 0 16px; line-height: 1.6; }
+
+/* ---------- 主区 ---------- */
+.hero-card { padding: 30px; animation: rise .28s ease both; }
+.cta-row { display: flex; flex-wrap: wrap; gap: 12px; }
+@keyframes rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+
+.button { min-height: 42px; padding: 0 18px; border: 1px solid rgba(31, 41, 55, .14); border-radius: 11px; color: #1f2937; background: rgba(255, 255, 255, .54); box-shadow: 0 2px 5px rgba(64, 78, 99, .06); transition: .18s ease; }
+.button:hover:not(:disabled) { border-color: rgba(22, 119, 255, .55); transform: translateY(-1px); }
+.button.primary { border-color: transparent; color: #fff; background: #1677ff; box-shadow: 0 5px 14px rgba(22, 119, 255, .24); }
+.button.large { min-height: 50px; padding: 0 28px; font-size: 15px; }
+.button:disabled { cursor: not-allowed; opacity: .45; transform: none; }
+.link-button { padding: 0; border: 0; color: #1677ff; background: transparent; font-size: 12px; text-decoration: underline; }
+
+/* ---------- 进度 ---------- */
+.activity-card { padding: 22px 24px; }
+.progress-line { justify-content: space-between; gap: 12px; color: #687386; font-size: 12px; }
+.progress-line { margin-bottom: 9px; }
+.progress-line strong { color: #1f2937; font-weight: 500; }
+.progress-track { height: 8px; overflow: hidden; border-radius: 99px; background: rgba(31, 41, 55, .1); }
+.progress-fill { height: 100%; border-radius: inherit; background: linear-gradient(90deg, #0a64d8, #4b9cff); transition: width .25s ease; }
+/* 下载阶段总字节数未知，用滑动条纹表示「进行中」而不是编造百分比。 */
+.progress-track.indeterminate .progress-fill { width: 35%; animation: slide 1.4s ease-in-out infinite; }
+@keyframes slide { from { transform: translateX(-100%); } to { transform: translateX(300%); } }
+.subline { justify-content: space-between; gap: 12px; margin-top: 10px; color: #9aa4b2; font-size: 11px; }
+.log-details { margin-top: 18px; }
+.log-details summary { color: #687386; font-size: 12px; cursor: pointer; }
+.log { height: 190px; overflow: auto; margin-top: 12px; padding: 14px; border: 1px solid rgba(31, 41, 55, .12); border-radius: 11px; color: #687386; background: rgba(245, 247, 250, .86); font: 11px/1.8 Consolas, "Cascadia Mono", monospace; }
+.log-time { color: #9aa4b2; }
+
+/* ---------- 结果与提示 ---------- */
+.signature-summary { padding: 20px 22px; }
+.signature-status { display: inline-flex; align-items: center; gap: 8px; margin-bottom: 14px; padding: 9px 10px; border: 1px solid rgba(31, 41, 55, .14); border-radius: 9px; color: #687386; font-size: 11px; }
+.signature-status::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: #9aa4b2; }
+.signature-status.warning { color: #b55737; border-color: rgba(181, 87, 55, .32); background: rgba(181, 87, 55, .06); }
+.signature-status.warning::before { background: #b55737; }
+.signature-status.verified { color: #158957; border-color: rgba(21, 137, 87, .28); background: rgba(21, 137, 87, .05); }
+.signature-status.verified::before { background: #158957; }
+.signature-grid { display: grid; gap: 8px; }
+.signature-row { justify-content: space-between; gap: 12px; color: #9aa4b2; font-size: 11px; }
+.signature-row strong { max-width: 74%; color: #687386; font-weight: 500; text-align: right; overflow-wrap: anywhere; }
+.mono { font-family: Consolas, "Cascadia Mono", monospace; }
+.ok-card, .warn-card { padding: 20px 22px; }
+.ok-card { border-color: rgba(21, 137, 87, .3); background: rgba(21, 137, 87, .05); }
+.ok-card h3 { color: #158957; }
+.warn-card { border-color: rgba(181, 87, 55, .3); background: rgba(181, 87, 55, .05); }
+.warn-card h3 { color: #b55737; }
+.ok-card p, .warn-card p { margin: 0; color: #687386; font-size: 12px; line-height: 1.65; }
+.error-text { margin: 0; padding: 12px 14px; border: 1px solid rgba(181, 87, 55, .3); border-radius: 10px; color: #b55737; background: rgba(181, 87, 55, .06); font-size: 12px; line-height: 1.6; white-space: pre-wrap; }
+.error-text.soft { color: #b87408; border-color: rgba(184, 116, 8, .3); background: rgba(184, 116, 8, .06); }
+.raw-output { margin: 10px 0 0; padding: 11px 13px; overflow-x: auto; border: 1px solid rgba(31, 41, 55, .12); border-radius: 10px; color: #687386; background: rgba(245, 247, 250, .9); font: 11px/1.7 Consolas, "Cascadia Mono", monospace; white-space: pre-wrap; }
+
+/* ---------- 高级设置 ---------- */
+.settings-card { padding: 0; }
+.settings-card > summary { padding: 17px 22px; color: #687386; font-size: 13px; cursor: pointer; list-style: none; }
+.settings-card > summary::-webkit-details-marker { display: none; }
+.settings-card > summary::before { content: "▸"; display: inline-block; width: 14px; color: #9aa4b2; transition: transform .16s ease; }
+.settings-card[open] > summary::before { transform: rotate(90deg); }
+.settings-card > summary:hover { color: #1677ff; }
+.settings-body { padding: 0 22px 22px; }
+.field-label { display: block; margin-bottom: 8px; color: #687386; font-size: 12px; }
+.field-help { margin: 9px 0 0; color: #9aa4b2; font-size: 11px; line-height: 1.6; }
+/* 输入框吃掉剩余宽度、按钮永远按内容宽度显示：否则窄窗口下按钮被挤成两行
+   「浏 / 览…」。min-width:0 是让 flex 子项真的允许收缩，不然输入框会把按钮顶出去。 */
+.path-row { gap: 10px; align-items: center; }
+.path-row .field-input { flex: 1 1 auto; width: auto; min-width: 0; }
+.path-row .button { flex: 0 0 auto; white-space: nowrap; }
+.field-input { width: 100%; height: 44px; padding: 0 13px; border: 1px solid rgba(31, 41, 55, .14); border-radius: 10px; outline: none; color: #687386; background: rgba(255, 255, 255, .82); }
+.field-input:focus { border-color: #1677ff; box-shadow: 0 0 0 3px rgba(22, 119, 255, .12); }
+.settings-links { display: flex; gap: 18px; margin-top: 16px; }
+
+/* ---------- 诊断 ---------- */
+.health-card { padding: 22px 24px; }
+.health-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
+.verdict { flex: 0 0 auto; padding: 7px 11px; border: 1px solid rgba(31, 41, 55, .14); border-radius: 9px; color: #687386; background: rgba(255, 255, 255, .6); font-size: 11px; }
+.verdict.ok { color: #158957; border-color: rgba(21, 137, 87, .28); background: rgba(21, 137, 87, .06); }
+.verdict.degraded { color: #b55737; border-color: rgba(181, 87, 55, .32); background: rgba(181, 87, 55, .06); }
+.health-grid { display: grid; gap: 8px; margin: 18px 0 4px; }
+/* 版本历史的行沿用健康行同一套外壳，但**不带 .health-row 这个类**：渲染冒烟测试按
+   .health-row 的个数断言「健康诊断渲染了 5 个组件行」，复用它会让那条断言数到 8。 */
+.health-row, .rollback-row { gap: 12px; padding: 11px 13px; border: 1px solid rgba(31, 41, 55, .1); border-radius: 11px; background: rgba(255, 255, 255, .5); }
+.health-dot { flex: 0 0 auto; width: 8px; height: 8px; border-radius: 50%; background: #9aa4b2; }
+.health-row.ok .health-dot { background: #158957; }
+.health-row.missing .health-dot, .health-row.error .health-dot { background: #b55737; }
+.health-row.partial .health-dot { background: #b87408; }
+.health-labels { min-width: 0; flex: 1; }
+.health-labels strong, .health-labels small { display: block; }
+.health-labels strong { font-size: 12px; font-weight: 500; }
+.health-labels small { margin-top: 3px; overflow: hidden; color: #9aa4b2; font: 10px/1.5 Consolas, "Cascadia Mono", monospace; text-overflow: ellipsis; white-space: nowrap; }
+.health-state { flex: 0 0 auto; color: #158957; font-size: 11px; }
+.health-row.missing .health-state, .health-row.error .health-state { color: #b55737; }
+.health-row.partial .health-state { color: #b87408; }
+.health-state em { font-style: normal; color: #9aa4b2; }
+.dash-actions { flex-wrap: wrap; gap: 10px; margin-top: 18px; }
+
+/* ---------- 版本历史 / 回退 ---------- */
+.rollback-card { padding: 22px 24px; }
+/* 行沿用健康行的骨架（圆点 / 版本信息 / 右侧状态），但右边多一颗按钮，
+   所以内容要比健康行宽一档：窄窗口下按钮会折到信息下面，见文件末尾的媒体查询。 */
+.rollback-row { flex-wrap: wrap; gap: 12px; }
+/* 可回退的那一行用蓝色圆点：它是这张卡片上唯一「有动作」的行。
+   当前已安装保持中性灰，已下载未安装（比当前新）用琥珀色。 */
+.rollback-row.older .health-dot { background: #1677ff; }
+.rollback-row.older .health-state { color: #1677ff; }
+.rollback-row.newer .health-dot { background: #b87408; }
+.rollback-row.newer .health-state { color: #b87408; }
+.rollback-row.installed .health-state { color: #687386; }
+.rollback-row .health-state { flex: 0 0 auto; }
+.rollback-action { min-height: 34px; padding: 0 14px; margin-left: auto; font-size: 12px; flex: 0 0 auto; }
+/* 卡片右上角的「当前 X」。样式上跟健康面板的结论徽章一致，但不复用 .verdict 这个类。 */
+.rollback-current { flex: 0 0 auto; padding: 6px 11px; border-radius: 999px; color: #687386; background: rgba(31, 41, 55, .06); font-size: 12px; }
+
+/* ---------- 结果对话框 ---------- */
+/* 命令的结论必须看得见。以前是右下角 toast：用户点完按钮眼睛还在主区，正好是视线的
+   另一头，很容易整个错过——而这里弹的是「装完了 / 已经是最新版本」这类命令唯一的
+   反馈。所以改成模态：浮在正中、压暗背景、有明确的确认按钮。 */
+.modal-backdrop { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; padding: 24px; background: rgba(15, 23, 42, .38); animation: fade .16s ease both; }
+.modal-dialog { width: min(440px, 100%); padding: 24px; border: 1px solid rgba(31, 41, 55, .14); border-radius: 18px; background: #fff; box-shadow: 0 28px 80px rgba(55, 65, 81, .3); animation: rise .2s ease both; }
+.modal-dialog h3 { margin-bottom: 10px; font-size: 16px; }
+.modal-dialog p { margin-bottom: 0; color: #687386; font-size: 13px; line-height: 1.7; overflow-wrap: anywhere; }
+.modal-actions { display: flex; justify-content: flex-end; margin-top: 20px; }
+@keyframes fade { from { opacity: 0; } to { opacity: 1; } }
+
+@media (max-width: 760px) {
+  .topbar { padding: 0 6px 0 14px; gap: 8px; }
+  .app-scroll { padding-top: 14px; }
+  .window { width: calc(100% - 26px); }
+  /* 只收掉可有可无的信息，菜单必须留着：它是「检查更新 / 一键安装 / 诊断」这些命令
+     唯一的可见入口（窗口是无边框的，原生菜单栏并不显示）。老实现里这里写的是
+     .app-menu { display: none }，那是顶栏还限宽在 620px 里的时候留下的，现在顶栏
+     铺满整窗，760px 下把菜单压紧一点就放得下。 */
+  .top-actions { display: none; }
+  .menu-trigger { padding: 6px 8px; }
+  /* 卡片收窄后给装饰圆点留的空位也跟着收，否则标题被挤到右边去。 */
+  .window-head { padding: 17px 19px 17px 76px; }
+  .window-head::before { left: 23px; transform: translateY(-50%) scale(.85); }
+  .body { padding: 22px 18px 26px; }
+  .hero-card { padding: 22px; }
+  .cta-row, .path-row { align-items: stretch; flex-direction: column; }
+  .cta-row .button { width: 100%; }
+  /* 链接按钮竖排时保持左对齐：stretch 会让它们撑满整行、文字居中，看着像两个标题。 */
+  .settings-links { align-items: flex-start; flex-direction: column; gap: 10px; }
+  .health-head { flex-direction: column; }
+  .signature-row strong { max-width: 60%; }
+  /* 版本行右边那颗按钮在窄窗口里放不下，让它整行落到信息下面并撑满宽度：
+     挤在同一行会被压成两三行文字，或者溢出容器到点不到。 */
+  .rollback-row { align-items: flex-start; }
+  .rollback-action { width: 100%; margin-left: 0; }
+}

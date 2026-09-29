@@ -1,4 +1,4 @@
-$script:PackageExtensions = @(".msixbundle", ".msix", ".appxbundle", ".appx")
+﻿$script:PackageExtensions = @(".msixbundle", ".msix", ".appxbundle", ".appx")
 
 function Get-CodexPackageMetadata {
     param(
@@ -339,6 +339,53 @@ function Get-CodexRelocationHealth {
     }
 }
 
+# 找出属于某个 MSIX 包的所有进程。
+#
+# 为什么不能按字面量 "*\WindowsApps\<包名>_*" 匹配：MSIX 的安装位置并不保证叫
+# WindowsApps，也不保证在系统盘（可以装到别的盘、别的路径）。写死这个目录名，
+# 在那些机器上就永远匹配不到进程 —— 表现是「Codex 明明在跑，探测却说没有」，
+# 于是把正常状态报成故障，甚至反过来把该关掉的进程留着去锁文件。
+# 安装位置一律从 Get-AppxPackage 的 InstallLocation 现取（与修复脚本同一套做法）。
+function Get-CodexPackageProcess {
+    param(
+        [string]$PackageName = 'OpenAI.Codex',
+
+        # 调用方已经解析过包时可以传进来，省一次 Get-AppxPackage。
+        [string]$InstallLocation
+    )
+
+    if ([string]::IsNullOrWhiteSpace($InstallLocation)) {
+        $package = Get-AppxPackage -Name $PackageName -ErrorAction SilentlyContinue |
+            Sort-Object Version -Descending |
+            Select-Object -First 1
+        if ($package) { $InstallLocation = $package.InstallLocation }
+    }
+
+    $prefix = $null
+    if (-not [string]::IsNullOrWhiteSpace($InstallLocation)) {
+        $prefix = $InstallLocation.TrimEnd('\') + '\'
+    }
+
+    @(
+        Get-Process -ErrorAction SilentlyContinue | Where-Object {
+            # .Path 对受保护 / 提权进程会抛「拒绝访问」。调用方普遍带着
+            # $ErrorActionPreference='Stop'，一个这样的进程就能把整个探测打断，
+            # 所以逐个兜住：取不到路径的进程直接跳过，不让它影响其余进程的判断。
+            $path = $null
+            try { $path = $_.Path } catch { return $false }
+            if ([string]::IsNullOrWhiteSpace($path)) { return $false }
+
+            if ($prefix) {
+                return $path.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)
+            }
+
+            # 包信息取不到时的退路：MSIX 的包目录名形如
+            # <Name>_<Version>_<Arch>__<PublisherId>，按包名匹配。
+            return $path -like ("*\WindowsApps\$PackageName`_*")
+        }
+    )
+}
+
 # Launch (optional) and wait for a visible main window. Returns $true when any
 # process of the package owns a main window within the timeout.
 function Test-CodexDesktopWindowUp {
@@ -350,7 +397,7 @@ function Test-CodexDesktopWindowUp {
     )
 
     if ($Launch -and $AppUserModelId) {
-        $alreadyRunning = @(Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Path -like ("*\WindowsApps\$PackageName`_*") })
+        $alreadyRunning = @(Get-CodexPackageProcess -PackageName $PackageName)
         if ($alreadyRunning.Count -eq 0) {
             Start-Process -FilePath 'explorer.exe' -ArgumentList ("shell:AppsFolder\{0}" -f $AppUserModelId)
         }
@@ -358,10 +405,7 @@ function Test-CodexDesktopWindowUp {
 
     $deadline = (Get-Date).AddSeconds($Seconds)
     do {
-        $withWindow = @(
-            Get-Process -ErrorAction SilentlyContinue |
-                Where-Object { $_.Path -like ("*\WindowsApps\$PackageName`_*") -and $_.MainWindowHandle -ne 0 }
-        )
+        $withWindow = @(Get-CodexPackageProcess -PackageName $PackageName | Where-Object { $_.MainWindowHandle -ne 0 })
         if ($withWindow.Count -gt 0) { return $true }
         Start-Sleep -Milliseconds 750
     } while ((Get-Date) -lt $deadline)
@@ -373,7 +417,10 @@ function Get-CodexAppUserModelId {
         [Parameter(Mandatory = $true)]
         [string]$PackageFamilyName,
 
-        [string]$AppId = "Codex"
+        # 兜底值必须是 AppxManifest.xml 里真实的 Application Id（当前为 "App"）。
+        # 调用方都从 manifest 现取，只有 manifest 读不到时才落到这里 —— 正是最需要
+        # 它正确的时刻：默认值写错的话，启动请求发出去也不会有人接，表现为「点了没反应」。
+        [string]$AppId = "App"
     )
 
     if ([string]::IsNullOrWhiteSpace($PackageFamilyName)) {
@@ -602,25 +649,21 @@ function Save-CodexPackage {
     (Resolve-Path -LiteralPath $targetPath).Path
 }
 
-function Remove-InstalledCodexPackageFiles {
+function Get-CachedCodexPackages {
     param(
         [Parameter(Mandatory = $true)]
         [string]$DownloadDirectory,
 
-        [version]$InstalledVersion,
+        [string]$PackageName = "OpenAI.Codex",
 
-        [string]$PackageName = "OpenAI.Codex"
+        [version]$InstalledVersion
     )
-
-    if ($null -eq $InstalledVersion) {
-        return @()
-    }
 
     if (-not (Test-Path -LiteralPath $DownloadDirectory)) {
         return @()
     }
 
-    $removedPaths = @()
+    $packages = @()
     $files = Get-ChildItem -LiteralPath $DownloadDirectory -File -ErrorAction SilentlyContinue
     foreach ($file in $files) {
         if (-not $file.Name.StartsWith("$PackageName`_", [System.StringComparison]::OrdinalIgnoreCase)) {
@@ -636,10 +679,81 @@ function Remove-InstalledCodexPackageFiles {
             continue
         }
 
-        if ($metadata.Version -le $InstalledVersion) {
-            $removedPaths += $file.FullName
-            Remove-Item -LiteralPath $file.FullName -Force
+        # Relation 是给界面判断「这一行能不能回退」用的。判断留在这一侧，因为这里是
+        # 唯一用 [version] 比较版本号的地方 —— 在 JS 里再写一份比较函数，两边迟早会
+        # 对「26.9 和 26.10 谁大」这种问题给出不同答案。
+        $relation = "unknown"
+        if ($null -ne $InstalledVersion) {
+            if ($metadata.Version -eq $InstalledVersion) {
+                $relation = "installed"
+            }
+            elseif ($metadata.Version -lt $InstalledVersion) {
+                $relation = "older"
+            }
+            else {
+                $relation = "newer"
+            }
         }
+
+        $packages += [pscustomobject]@{
+            Name = $metadata.Name
+            Version = $metadata.Version
+            Architecture = $metadata.Architecture
+            Extension = $metadata.Extension
+            SizeBytes = $file.Length
+            LastWriteTime = $file.LastWriteTime
+            Relation = $relation
+            FullName = $file.FullName
+        }
+    }
+
+    @($packages | Sort-Object -Property @{ Expression = { $_.Version }; Descending = $true })
+}
+
+# 清理下载缓存里「已经被取代」的安装包。
+#
+# 只删到 KeepCount 为止，而不是把不高于已安装版本的包全删掉 —— 这条策略是回退功能的
+# 地基。以前是「版本 <= 已安装版本的都删」，删掉的恰好是用户正在用、且已知能用的那一版
+# 的安装包；而 rg-adguard 只发最新版（三个 ring 都只返回同一个版本），删掉就再也下不回来，
+# 于是「更新完发现有问题想回去」永远无解。
+#
+# 为什么下限是 2 而不是 1：新装上的那一版的安装包，作用是**下一次**更新时的回退目标。
+# 只留 1 个（= 只留刚装上的那个），下次更新完就没有可退的版本，功能等于不存在。
+#
+# 版本高于已安装版本的文件不在管辖范围内：那是「已下载、还没装」的更新包。
+function Remove-SupersededCodexPackageFiles {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$DownloadDirectory,
+
+        [version]$InstalledVersion,
+
+        [string]$PackageName = "OpenAI.Codex",
+
+        [int]$KeepCount = 2
+    )
+
+    if ($null -eq $InstalledVersion) {
+        return @()
+    }
+
+    if ($KeepCount -lt 0) {
+        throw "KeepCount must be >= 0."
+    }
+
+    $candidates = @(
+        Get-CachedCodexPackages `
+            -DownloadDirectory $DownloadDirectory `
+            -PackageName $PackageName `
+            -InstalledVersion $InstalledVersion |
+            Where-Object { $_.Version -le $InstalledVersion } |
+            Sort-Object -Property @{ Expression = { $_.Version }; Descending = $true }
+    )
+
+    $removedPaths = @()
+    foreach ($candidate in ($candidates | Select-Object -Skip $KeepCount)) {
+        Remove-Item -LiteralPath $candidate.FullName -Force
+        $removedPaths += $candidate.FullName
     }
 
     $removedPaths
@@ -648,27 +762,39 @@ function Remove-InstalledCodexPackageFiles {
 function Install-CodexPackage {
     param(
         [Parameter(Mandatory = $true)]
-        [string]$Path
+        [string]$Path,
+
+        # 降级（回退到旧版本）必须显式声明：不加 -ForceUpdateFromAnyVersion 时 Windows
+        # 会拒绝安装版本号低于已安装版本。做成开关而不是默认开启，是为了让「一键更新」
+        # 那条路保持原来的严格行为，也便于从日志里判断这一跑到底是不是降级。
+        [switch]$AllowDowngrade
     )
 
     if (-not (Test-Path -LiteralPath $Path)) {
         throw "Package path does not exist: $Path"
     }
 
-    Add-AppxPackage -Path $Path
+    if ($AllowDowngrade) {
+        Add-AppxPackage -Path $Path -ForceUpdateFromAnyVersion
+    }
+    else {
+        Add-AppxPackage -Path $Path
+    }
 }
 
 Export-ModuleMember -Function `
     ConvertFrom-AppxPackageText, `
     ConvertFrom-RgAdguardHtml, `
     ConvertTo-CodexPluginVersion, `
+    Get-CachedCodexPackages, `
     Get-CodexPackageMetadata, `
     Get-CodexAppUserModelId, `
+    Get-CodexPackageProcess, `
     Get-CodexRelocationHealth, `
     Get-InstalledCodexPackageInfo, `
     Install-CodexPackage, `
     Invoke-RgAdguardQuery, `
-    Remove-InstalledCodexPackageFiles, `
+    Remove-SupersededCodexPackageFiles, `
     Save-CodexPackage, `
     Select-BestCodexPackage, `
     Test-CodexDesktopWindowUp, `

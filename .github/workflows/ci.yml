@@ -40,3 +40,32 @@ jobs:
       - name: Plugin updater tests
         shell: pwsh
         run: powershell -NoProfile -ExecutionPolicy Bypass -File plugins\codex-ms-desktop-updater\tests\CodexStoreUpdater.Tests.ps1
+
+  # 桌面应用单独一个 job，和上面的 PowerShell 测试并行跑。
+  # 以前 CI 里完全没有 Node 步骤，desktop/ 下的 8 套测试一次都没在 CI 上跑过 ——
+  # 只有人记得在本地敲 npm test 时才跑。
+  desktop:
+    name: Desktop updater tests
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Install dependencies
+        working-directory: desktop
+        run: npm ci --no-audit --no-fund
+
+      - name: Unit tests
+        working-directory: desktop
+        run: npm test
+
+      - name: Simulate install pipeline
+        working-directory: desktop
+        run: npm run verify:simulate

@@ -76,10 +76,12 @@ updated_at = 1780480643752
     $installedAutomation = Join-Path $codexHome "automations/daily-codex-desktop-update-check/automation.toml"
     $installedScript = Join-Path $installedPlugin "scripts/check-codex-update.ps1"
     $installedMaintenanceScript = Join-Path $installedPlugin "scripts/run-automatic-maintenance.ps1"
+    $installedRepairScript = Join-Path $installedPlugin "scripts/repair-codex-desktop-bundles.ps1"
 
     Assert-True -Condition (Test-Path -LiteralPath (Join-Path $installedPlugin ".codex-plugin/plugin.json")) -Message "copies plugin manifest"
     Assert-True -Condition (Test-Path -LiteralPath $installedScript) -Message "copies plugin scripts"
     Assert-True -Condition (Test-Path -LiteralPath $installedMaintenanceScript) -Message "copies automatic maintenance script"
+    Assert-True -Condition (Test-Path -LiteralPath $installedRepairScript) -Message "copies signature repair script"
     Assert-True -Condition (-not (Test-Path -LiteralPath (Join-Path $installedPlugin "downloads"))) -Message "does not copy downloads cache"
     Assert-True -Condition (Test-Path -LiteralPath $installedAutomation) -Message "installs automation toml"
 

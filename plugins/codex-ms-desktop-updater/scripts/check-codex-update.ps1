@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [switch]$CheckOnly,
     [switch]$DownloadOnly,
@@ -56,12 +56,12 @@ Write-Host ("Available version: {0}" -f $selected.Version)
 Write-Host ("Selected package: {0}" -f $selected.FileName)
 Write-Host ("Update available: {0}" -f $updateAvailable)
 
-$removedPackagePaths = Remove-InstalledCodexPackageFiles `
+$removedPackagePaths = Remove-SupersededCodexPackageFiles `
     -DownloadDirectory $DownloadDirectory `
     -InstalledVersion $installedVersion `
     -PackageName $PackageName
 if ($removedPackagePaths.Count -gt 0) {
-    Write-Host ("Removed {0} installed-or-older package file(s) from download cache:" -f $removedPackagePaths.Count)
+    Write-Host ("Removed {0} superseded package file(s) from download cache:" -f $removedPackagePaths.Count)
     foreach ($removedPackagePath in $removedPackagePaths) {
         Write-Host ("  {0}" -f $removedPackagePath)
     }
@@ -86,12 +86,12 @@ if ($Install) {
 
     $installedAfterInstall = Get-InstalledCodexPackageInfo -PackageName $PackageName
     $installedVersionAfterInstall = if ($null -eq $installedAfterInstall) { $null } else { $installedAfterInstall.Version }
-    $removedAfterInstall = Remove-InstalledCodexPackageFiles `
+    $removedAfterInstall = Remove-SupersededCodexPackageFiles `
         -DownloadDirectory $DownloadDirectory `
         -InstalledVersion $installedVersionAfterInstall `
         -PackageName $PackageName
     if ($removedAfterInstall.Count -gt 0) {
-        Write-Host ("Removed {0} installed-or-older package file(s) after install:" -f $removedAfterInstall.Count)
+        Write-Host ("Removed {0} superseded package file(s) after install:" -f $removedAfterInstall.Count)
         foreach ($removedPackagePath in $removedAfterInstall) {
             Write-Host ("  {0}" -f $removedPackagePath)
         }
@@ -101,5 +101,21 @@ if ($Install) {
 if ($InstallWithRestart) {
     $installRestartScript = Join-Path $scriptRoot "install-codex-msix-and-restart.ps1"
     Write-Host "Starting detached install-and-restart workflow..."
+
+    # 必须自己看退出码。`&` 调用的是**同进程**脚本，而 worker 脚本里那个 trap 会把它
+    # 自己的终止性错误就地吃掉、再 `exit 1` —— 实测这两种收尾方式对调用方的效果完全不同：
+    #   · 没有 trap、直接 throw：错误向上传播，本脚本当场被终止，进程退出码 1（会响）
+    #   · trap + exit 1：只退出子脚本，本脚本照常往下走到底，进程退出码 **0**（不响）
+    # 也就是说 trap 把「会杀掉调用方的错误」换成了「调用方看不见的退出码」。不看这一行，
+    # 「包路径不对 / 不是 Codex 的包」这类前置校验失败就是一次静默成功 —— 自动化每天
+    # 报成功、实际什么都没装。
+    #
+    # 先清零：$LASTEXITCODE 是全局变量，会残留上一个原生命令的值（模块里跑过 curl.exe），
+    # 而子脚本正常 return 时**不会**改它（实测先置 7，子脚本正常返回后读回的还是 7）。
+    # 不清零就会把陈旧的非零值当成这次的失败。
+    $LASTEXITCODE = 0
     & $installRestartScript -PackagePath $packagePath -PackageName $PackageName
+    if ($LASTEXITCODE -ne 0) {
+        throw "install-codex-msix-and-restart.ps1 exited with code $LASTEXITCODE before the install worker could start."
+    }
 }
