@@ -18,8 +18,10 @@ automation template.
 - **Restart after install**: `-InstallWithRestart` starts a detached workflow that
   closes Codex, installs the MSIX, verifies the installed version is not older
   than the downloaded one, then restarts Codex.
-- **Auto cleanup**: after a verified install it removes installed-or-older
-  `OpenAI.Codex` package files to save storage.
+- **Cache retention + rollback**: keeps the two most recent `OpenAI.Codex`
+  installers in the download cache (about 1.67 GB) and prunes older ones, so a
+  problematic update can be rolled back to the previous version (see "Version
+  rollback" below).
 - **Plugin self-update**: compares the local and remote `plugin.json` versions and
   updates this plugin from GitHub when the remote is newer.
 - **Proxy control**: `-NoProxy` disables proxy for the current download process.
@@ -74,7 +76,14 @@ Downloaded files are saved under:
 plugins/codex-ms-desktop-updater/downloads/
 ```
 
-> That directory is a runtime cache and is git-ignored.
+> That directory is a runtime cache and is git-ignored. It deliberately keeps the
+> two most recent installers (~1.67 GB) as rollback targets; see "Version
+> rollback" below.
+
+| Rollback / cache inspection | Command |
+|---------|---------|
+| List cached installers (read-only) | `list-cached-codex-packages.ps1 -DownloadDirectory "<dir>"` |
+| Install a specific package, downgrade allowed | `install-codex-msix-and-restart.ps1 -PackagePath "<path>" -AllowDowngrade` |
 
 ## Install into local Codex
 
@@ -152,6 +161,90 @@ window**, and local plugin version. Logs stream live via SSE.
 
 > Security: the service binds `127.0.0.1` only. Buttons only run fixed project
 > scripts with fixed arguments; no arbitrary command execution surface.
+
+## Version rollback (extension)
+
+Rolling back after a bad update used to be impossible — not "unimplemented", but
+actively prevented by three things working together:
+
+1. the version check deleted every package whose version was **≤ the installed
+   version**, i.e. exactly the one the user was running and knew to be good;
+2. the install workflow deleted the package it had just used;
+3. both install paths called a bare `Add-AppxPackage`, without
+   `-ForceUpdateFromAnyVersion`, so **even if the package survived, Windows
+   refuses to install a lower version**.
+
+The distribution source only serves the newest version (verified here: `Retail`,
+`Slow` and `Fast` all return the same build), so a deleted installer **cannot be
+downloaded again**.
+
+### Retention policy
+
+> Among cached packages whose version is **≤ the installed version**, keep the two
+> newest by version and delete the rest.
+
+- The floor is 2, not 1: the package just installed is the **next** update's
+  rollback target. Keeping only 1 leaves nothing to go back to after the next
+  update, so the feature would not exist.
+- Packages **newer** than the installed version (downloaded, not yet installed)
+  are left alone, as are other apps' packages and `.partial` downloads.
+- At two ~800 MB packages, the cache holds roughly **1.67 GB** at rest.
+
+Pruning happens inside the install worker (the only place that both knows the new
+version and sits in the cache directory), so the cache returns to 2 packages as
+soon as an install finishes, instead of briefly holding 3 (2.5 GB).
+
+### How to use it
+
+- **Desktop app**: the "Version History" card lists the cached installers with a
+  `current / rollback available / newer than current` badge; the rollback-able
+  row has a "Roll back to this version" button, and the same button appears in the
+  failure warning cards when an update goes wrong. Rolling back closes the running
+  Codex, installs, and restarts it.
+- **Plugin side**: see the rollback table in "Manual Codex update control".
+
+### Three implementation points
+
+1. **Downgrade is allowed only on the rollback path.** Only `-AllowDowngrade`
+   adds `-ForceUpdateFromAnyVersion`; one-click update behaves exactly as before,
+   and the log shows which mode a run used.
+2. **The post-downgrade version check uses equality.** When Windows refuses a
+   downgrade the higher version is still installed, which makes the upgrade path's
+   `-lt` check false — reporting a downgrade that never happened as a success. The
+   equality check turns it into a visible error (`Downgrade did not take effect`).
+3. **Rollback verifies the signature first.** An old installer may have been
+   sitting on disk for weeks; the gate is no weaker than for a fresh download.
+
+### One limitation you should know about
+
+Rollback depends on an installer **this tool itself retained**, which means it only
+works for versions downloaded **after the new retention policy took effect**.
+Rolling back to the version you had before installing this feature is not possible:
+that installer was already deleted under the old rule.
+
+Measured on this machine, the packages currently in the three cache directories
+(`26.924.2738.0`, `26.917.6896.0`) are both **newer** than the installed
+`26.901.6511.0`, so neither is a rollback target, and the `26.901.6511.0`
+installer cannot be recovered. The feature first becomes usable after the **next**
+update, when `26.901` is retained. The empty state in the UI says exactly this
+rather than showing an empty box.
+
+### Verifying a real rollback by hand
+
+Whether `-ForceUpdateFromAnyVersion` is accepted for a Store-signed package can
+only be confirmed by actually downgrading once (this machine has no older package,
+so this step has not been done). Reproducible steps:
+
+1. Update normally once, so the cache holds two packages (the new one and the
+   previous one);
+2. confirm with `list-cached-codex-packages.ps1` that the previous one's relation
+   is `older`;
+3. click "Roll back to this version" (or run the `-AllowDowngrade` command above);
+4. check whether the version reported by `Get-AppxPackage` in the install log
+   really went back down after `Add-AppxPackage`.
+
+A refused downgrade does not silently succeed — it surfaces as "the downgrade did
+not take effect, still on X".
 
 ## Health check & window probe (extension)
 
