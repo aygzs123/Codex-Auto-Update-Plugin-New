@@ -1,4 +1,4 @@
-<#
+﻿<#
 ================================================================================
 check-codex-desktop-health.ps1
 ================================================================================
@@ -51,6 +51,10 @@ if (-not $health.Installed) {
 
 Write-Host ("Package  : {0}" -f $health.PackageFullName)
 Write-Host ("Version  : {0}" -f $health.Version)
+# 安装位置现取现报，不猜也不写死。MSIX 可以装在别的盘（用户把「新的应用将保存到」
+# 设成 D: 时就在 D:\WindowsApps），这里打印的是包自己报的路径 —— 界面拿它给用户看，
+# 免得「到底装哪儿了、C 盘是不是被占了」只能靠猜。
+Write-Host ("Location : {0}" -f $health.InstallLocation)
 
 $overall = "ok"
 foreach ($c in $health.Components) {
@@ -83,7 +87,11 @@ try {
     $manifestPath = Join-Path $health.InstallLocation "AppxManifest.xml"
     if (Test-Path -LiteralPath $manifestPath) {
         [xml]$manifest = Get-Content -LiteralPath $manifestPath -Raw
-        $fromManifest = @($manifest.Package.Applications.Application | Select-Object -First 1 -ExpandProperty Id)
+        # Do NOT wrap this in @(): that yields a single-element array, and binding an
+        # array to a [string] parameter fails on Windows PowerShell 5.1 with
+        # "Cannot process argument transformation on parameter 'AppId'". The throw
+        # aborted this script below, so the probe never reported a result at all.
+        $fromManifest = $manifest.Package.Applications.Application | Select-Object -First 1 -ExpandProperty Id
         if (-not [string]::IsNullOrWhiteSpace($fromManifest)) {
             $appId = $fromManifest
         }

@@ -1,4 +1,4 @@
-# Codex 更新工具 Web UI 启动脚本
+﻿# Codex 更新工具 Web UI 启动脚本
 # 双击 webui/start-webui.bat 即可（此脚本由 bat 调用，也可直接运行）。
 
 $ErrorActionPreference = "Stop"
