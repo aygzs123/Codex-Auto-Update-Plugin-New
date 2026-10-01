@@ -201,7 +201,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         set({
           phase: "failed",
           activity: null,
-          error: `安装包签名校验未通过，已中止安装。${signature.message}\n发布者：${signature.publisher}\n状态：${signature.authenticode}`,
+          error: `安装包签名校验未通过，已中止安装。${signature.message}\n${describeSignature(signature)}`,
         });
         return;
       }
@@ -260,7 +260,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         set({
           phase: "failed",
           activity: null,
-          error: `回退包的签名校验未通过，已中止。${signature.message}\n发布者：${signature.publisher}\n状态：${signature.authenticode}`,
+          error: `回退包的签名校验未通过，已中止。${signature.message}\n${describeSignature(signature)}`,
         });
         return;
       }
@@ -472,6 +472,20 @@ export const useAppStore = create<AppState>((set, get) => ({
 function describe(error: unknown): string {
   if (error instanceof Error) return error.message;
   return String(error);
+}
+
+/**
+ * 签名校验失败时的那几行细节。
+ *
+ * 发布者两边都写出来：不一致才是要查的问题，只报一个「发布者」等于没说。
+ * 但两边相同时不重复写 —— 那是「签名无效」，多一行没有信息量的重复反而挡住重点。
+ */
+function describeSignature(signature: SignatureReport): string {
+  const lines = [`发布者：${signature.publisher}`, `状态：${signature.authenticode}`];
+  if (signature.expectedPublisher && signature.expectedPublisher !== signature.publisher) {
+    lines.push(`预期发布者：${signature.expectedPublisher}`);
+  }
+  return lines.join("\n");
 }
 
 /** 在应用启动时订阅一次主进程进度推送。 */

@@ -214,10 +214,14 @@ function registerStubHandlers() {
         return { ...STUB_CACHED_PACKAGES };
       case "verify_download_signature":
         // 回退和安装共用同一道签名闸门。桩回「通过」，让流程能走到安装那一步 ——
-        // 校验失败的分支由 rollback.test.cjs 的源码契约盯着。
+        // 校验失败的分支由 tests/verify.test.cjs 真正执行着判断逻辑。
+        //
+        // 发布者写成真实的 GUID 形式，不是 "CN=OpenAI, ..."：那个假值正是当初把
+        // 「主题里含 openai」这套判断喂出来的东西，留着它等于把 bug 的现场擦干净了。
         return {
           status: "verified",
-          publisher: "CN=OpenAI, O=OpenAI, L=San Francisco, S=California, C=US",
+          publisher: "CN=50BDFD77-8903-4850-9FFE-6E8522F64D5B",
+          expectedPublisher: "CN=50BDFD77-8903-4850-9FFE-6E8522F64D5B",
           authenticode: "Valid",
           sha256: "9f2c4a1d7e5b8036c6f1a2d4e8b70c395a1f6d2e4c8b0a3f5d7e9c1b2a4f608d",
           message: "签名校验通过",

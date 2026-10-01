@@ -16,6 +16,7 @@ const {
 const { join, extname } = require("node:path");
 
 const ps = require("./ps.cjs");
+const { CODEX_PACKAGE_NAME, evaluateSignature } = require("./verify.cjs");
 const {
   parseHealth,
   healthNeedsRepair,
@@ -204,7 +205,19 @@ function sha256(path) {
   });
 }
 
-/** 校验安装包的 Authenticode 签名与 SHA-256。路径经 env 传入，不拼进代码。 */
+/**
+ * 校验安装包的 Authenticode 签名与 SHA-256，并把它的发布者与「本机已安装的 Codex」比对。
+ *
+ * 期望发布者**现取而不是写死**：升级和回退的语义都是「新包必须和你正在用的 Codex 同源」，
+ * 从已安装的包上取正好就是这个意思。判断逻辑本身在 verify.cjs 里（可被执行、有单测）——
+ * 上一版在这里写成「签名者主题里必须含 openai」，而 Store 分发的包发布者 DN 是 CN=<GUID>，
+ * 里面没有 "OpenAI" 字样，于是每一个合法安装包都被拒。详见 verify.cjs 的文件头。
+ *
+ * 发布者查询失败不能算失败：那会把一次查询故障说成「这个包不可信」，正是本次要修的误报。
+ * 查不到就交给 verify.cjs 回落到已登记的常量。
+ *
+ * 路径经 env 传入，不拼进代码。
+ */
 async function verifySignature({ path }) {
   const target = String(path || "");
   if (!existsSync(target)) throw new Error(`安装包不存在：${target}`);
@@ -214,25 +227,56 @@ async function verifySignature({ path }) {
   try {
     const { stdout } = await ps.runCode(
       "$sig = Get-AuthenticodeSignature -LiteralPath $env:CODEX_VERIFY_PATH; " +
-        "[pscustomobject]@{ status = [string]$sig.Status; subject = if ($null -eq $sig.SignerCertificate) { '' } else { [string]$sig.SignerCertificate.Subject } } | ConvertTo-Json -Compress",
-      { env: { CODEX_VERIFY_PATH: target } },
+        "$installedPublisher = ''; " +
+        "try { " +
+        "$installed = Get-AppxPackage -Name $env:CODEX_VERIFY_PACKAGE_NAME -ErrorAction SilentlyContinue | " +
+        "Sort-Object Version -Descending | Select-Object -First 1; " +
+        "if ($null -ne $installed) { $installedPublisher = [string]$installed.Publisher } " +
+        "} catch { $installedPublisher = '' }; " +
+        "[pscustomobject]@{ status = [string]$sig.Status; subject = if ($null -eq $sig.SignerCertificate) { '' } else { [string]$sig.SignerCertificate.Subject }; installedPublisher = $installedPublisher } | ConvertTo-Json -Compress",
+      { env: { CODEX_VERIFY_PATH: target, CODEX_VERIFY_PACKAGE_NAME: CODEX_PACKAGE_NAME } },
     );
     report = JSON.parse(stdout.trim());
   } catch (error) {
-    return { status: "warning", publisher: "未知", authenticode: "校验失败", sha256: hash, message: error.message };
-  }
-
-  const isOpenAi = String(report.subject || "").toLowerCase().includes("openai");
-  if (report.status !== "Valid" || !isOpenAi) {
     return {
       status: "warning",
-      publisher: report.subject || "未知",
-      authenticode: report.status,
+      publisher: "未知",
+      expectedPublisher: "",
+      authenticode: "校验失败",
       sha256: hash,
-      message: "签名无效或发布者不是 OpenAI，请不要继续安装",
+      message: error.message,
     };
   }
-  return { status: "verified", publisher: report.subject, authenticode: "已验证", sha256: hash, message: "OpenAI 签名有效，文件可信" };
+
+  const publisher = String(report.subject || "").trim();
+  const verdict = evaluateSignature({
+    status: report.status,
+    subject: publisher,
+    installedPublisher: report.installedPublisher,
+  });
+
+  if (!verdict.ok) {
+    return {
+      status: "warning",
+      publisher: publisher || "未知",
+      expectedPublisher: verdict.expected,
+      authenticode: report.status,
+      sha256: hash,
+      message:
+        verdict.reason === "unsigned"
+          ? `安装包的数字签名无效（${report.status}），文件可能已损坏或被改动过，请不要继续安装`
+          : "安装包不是由 Codex 的发布者签发的，请不要继续安装",
+    };
+  }
+
+  return {
+    status: "verified",
+    publisher,
+    expectedPublisher: verdict.expected,
+    authenticode: "已验证",
+    sha256: hash,
+    message: "签名有效，发布者与 Codex 的发布者一致",
+  };
 }
 
 // ---------- 安装 ----------

@@ -34,6 +34,8 @@ export type SignatureStatus = "verified" | "warning";
 export interface SignatureReport {
   status: SignatureStatus;
   publisher: string;
+  /** 期望的发布者：正常取自已安装的 Codex，本机没装时取 verify.cjs 里登记的常量。 */
+  expectedPublisher: string;
   authenticode: string;
   sha256: string;
   message: string;

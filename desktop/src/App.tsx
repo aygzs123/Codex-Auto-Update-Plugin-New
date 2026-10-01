@@ -133,6 +133,12 @@ function ResultBanners() {
               <span>发布者</span>
               <strong>{signature.publisher}</strong>
             </div>
+            {signature.expectedPublisher && signature.expectedPublisher !== signature.publisher && (
+              <div className="signature-row">
+                <span>预期发布者</span>
+                <strong>{signature.expectedPublisher}</strong>
+              </div>
+            )}
             <div className="signature-row">
               <span>数字签名</span>
               <strong>{signature.authenticode}</strong>
