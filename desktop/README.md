@@ -40,8 +40,10 @@ npm run electron:build
 - 渲染进程不启用 Node.js，使用 `contextIsolation` 和受控 preload IPC。
 - MSIX 本体装到哪个盘由 Windows 的部署服务决定，本应用改不了（界面上只如实显示）。
   应用自己控制的是安装包缓存目录：安装包（几百 MB）和安装日志放在那里。
-- 下载包检查 Authenticode 发布者是否为 OpenAI，并计算 SHA-256；没有远端摘要清单时
-  不会把「已计算」误报成「摘要匹配」。
+- 下载包检查 Authenticode 签名，并把签名者与**本机已安装的 Codex** 的发布者比对，
+  再计算 SHA-256；没有远端摘要清单时不会把「已计算」误报成「摘要匹配」。
+  期望发布者是现取的，不写死在代码里：Store 分发的包，发布者 DN 是 `CN=<GUID>` 形式
+  （Codex 是 `CN=50BDFD77-8903-4850-9FFE-6E8522F64D5B`），里面并没有 "OpenAI" 字样。
 - 签名修复只操作用户目录缓存，不修改 `WindowsApps`。
 - 关闭 Codex 进程时按**包的安装路径**匹配，绝不按进程名 —— 用户自己的 ChatGPT 桌面版
   进程名相同，按名字杀会误伤。
