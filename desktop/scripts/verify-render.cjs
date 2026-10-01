@@ -64,10 +64,17 @@ const installing = process.argv.includes("--installing");
 // 祖先带了 backdrop-filter），菜单就会连同顶栏一起被压到内容下面 —— 点不到也看不见。
 const menuOpen = process.argv.includes("--menu");
 
-// --launch-no-window：从菜单触发「打开 Codex」，桩返回「进程起来了但没有主窗口」。
-// 这条路径以前是 fire-and-forget：界面上报「已请求启动」，用户屏幕上什么都没有，
-// 看起来就是「点了没反应」。这个场景专门验证那种情况现在会给出结论和补救入口。
+// --launch-no-window：从菜单触发「打开 Codex」，桩返回「进程起来了但没有主窗口」，
+// 且判定为 relocation-bug（资源目录下留着复制失败的中转目录）。这条路径以前是
+// fire-and-forget：界面上报「已请求启动」，用户屏幕上什么都没有，看起来就是
+// 「点了没反应」。这个场景专门验证那种情况现在会给出结论和补救入口。
 const launchNoWindow = process.argv.includes("--launch-no-window");
+
+// --launch-unknown：同样是「没有主窗口」，但判定是 unknown —— 现有证据既不能证明、
+// 也不能排除搬迁 bug。这条场景钉的是「不要指控」：卡片必须如实说判不出原因，
+// **不能**出现「修复资源副本」按钮。2026-10-01 的真实误诊正是这一类：机器完全正常，
+// 只是首次启动在落几百 MB 运行时，界面却断言了搬迁 bug，把用户推去跑修复脚本。
+const launchUnknown = process.argv.includes("--launch-unknown");
 
 // --notice：从菜单触发「检查更新」，验证命令的结论是**居中的模态对话框**。
 // 以前是右下角 toast：用户点完按钮，视线还在主区（视线的另一头），很容易整个错过
@@ -119,6 +126,7 @@ const STUB_HEALTH = notInstalled
       appUserModelId: null,
       probeResult: null,
       probeMessage: null,
+      startupDiagnosis: null,
       needsRepair: false,
       raw: "",
     }
@@ -142,6 +150,7 @@ const STUB_HEALTH = notInstalled
       appUserModelId: null,
       probeResult: null,
       probeMessage: null,
+      startupDiagnosis: null,
       needsRepair: false,
       raw: "",
     };
@@ -244,8 +253,12 @@ function registerStubHandlers() {
           });
         }
         return {};
-      // 「打开 Codex」的失败形态：启动请求发出去了、进程也在跑，但主窗口没出现
-      // （官方加密资源搬迁 bug）。健康数据取自健康脚本真实输出的形状。
+      // 「打开 Codex」的失败形态：启动请求发出去了、进程也在跑，但主窗口没出现。
+      // 桩里按场景给出不同的 startupDiagnosis —— 界面必须据此切换文案与修复入口。
+      //
+      // probeMessage 照抄真实脚本的口径：只收 WARNING 行与判定说明句，
+      // STARTUP_DIAGNOSIS= 是单独一栏，不会混进这里（见 electron/parse.cjs）。
+      // 秒数写 20：这两种判定都没触发「还在落缓存」的延长，探针就是走满了 20 秒。
       case "launch_codex":
         return {
           ok: false,
@@ -254,7 +267,11 @@ function registerStubHandlers() {
           appUserModelId: "OpenAI.Codex_2p2nqsd0c76g0!App",
           probeMessage:
             "WARNING: Codex Desktop processes are up but NO main window appeared within 20 s. " +
-            "This is the signature of the official encrypted-resource relocation bug.",
+            (launchUnknown
+              ? "No cause could be determined from the relocation-health evidence. This is not, by itself, " +
+                "evidence of the encrypted-resource relocation bug."
+              : "This is the signature of the official encrypted-resource relocation bug."),
+          startupDiagnosis: launchUnknown ? "unknown" : "relocation-bug",
           health: {
             ...STUB_HEALTH,
             exitCode: 3,
@@ -262,6 +279,7 @@ function registerStubHandlers() {
             appUserModelId: "OpenAI.Codex_2p2nqsd0c76g0!App",
             probeResult: "window-not-visible",
             probeMessage: "WARNING: Codex Desktop processes are up but NO main window appeared within 20 s.",
+            startupDiagnosis: launchUnknown ? "unknown" : "relocation-bug",
             needsRepair: true,
           },
         };
@@ -403,12 +421,15 @@ async function inspect(window) {
         const card = cards.find((node) => node.textContent.includes("主窗口没有出现"));
         if (!card) return null;
         const heading = card.querySelector("h3");
+        // 卡片正文也要看：判定不出来时必须如实说明，而且**不能**出现修复按钮的文案。
+        const text = card.textContent.replace(/\s+/g, " ").trim();
         const button = card.querySelector("button");
-        if (!button) return { heading: heading ? heading.textContent.trim() : "", missingButton: true };
+        if (!button) return { heading: heading ? heading.textContent.trim() : "", text, missingButton: true };
         const rect = button.getBoundingClientRect();
         const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
         return {
           heading: heading ? heading.textContent.trim() : "",
+          text,
           buttonLabel: button.textContent.trim(),
           buttonDisabled: button.disabled,
           buttonWidth: Math.round(rect.width),
@@ -667,7 +688,7 @@ async function main() {
 
   // 「打开 Codex」场景：从菜单触发真实的动作链路（菜单 → runAction → store.launch
   // → IPC → 桩），而不是直接改 state。这条链路正是用户点的地方。
-  if (launchNoWindow) {
+  if (launchNoWindow || launchUnknown) {
     window.webContents.send("desktop:menu-action", "launch");
     await new Promise((resolve) => setTimeout(resolve, 400));
     report = await inspect(window);
@@ -1004,14 +1025,28 @@ async function main() {
   // 「打开 Codex」：结论必须可见、且下一步必须可点。这两个缺一个，用户看到的就是
   // 「点了没反应」—— 前一个项目 bug 正是两句都缺：只提示「已请求启动」，而进程在跑、
   // 窗口没出现的失败没有任何呈现。
-  if (launchNoWindow) {
+  //
+  // 但「下一步可点」不等于「永远给修复按钮」：只有判定为 relocation-bug 才给。
+  // 判定不出来时给修复按钮，就是 2026-10-01 那次误诊的界面版本 —— 用户拿着一条
+  // 没用的建议白跑一趟，所以那种情况必须没有按钮、并且如实说判不出来。
+  if (launchNoWindow || launchUnknown) {
     const card = report.launchCard;
     if (!card) {
       problems.push("「打开 Codex」既没有给出窗口缺失结论，也没有报错：点击后界面没有任何反馈");
+    } else if (launchUnknown) {
+      if (!card.heading.includes("主窗口没有出现")) problems.push(`窗口缺失横幅标题不正确：${card.heading}`);
+      if (!card.text.includes("未能判定")) problems.push(`判定不出来时横幅必须如实说明，实际：${card.text}`);
+      if (card.text.includes("修复资源副本并重新启动")) {
+        problems.push("判定不出来时不该出现「修复资源副本」按钮：拿不出证据就不能把人推去修");
+      }
+      if (!card.text.includes("OpenAI\\Codex")) problems.push("判定不出来时要给出下一步排查方向（应用日志位置）");
     } else if (card.missingButton) {
       problems.push("窗口缺失横幅里没有修复按钮，用户拿不到下一步");
     } else {
       if (!card.heading.includes("主窗口没有出现")) problems.push(`窗口缺失横幅标题不正确：${card.heading}`);
+      if (card.buttonLabel !== "修复资源副本并重新启动") {
+        problems.push(`判定为搬迁 bug 时横幅里的第一颗按钮应当是修复入口，实际：${card.buttonLabel}`);
+      }
       if (card.buttonDisabled) problems.push("修复按钮不可点击（流程已经结束了）");
       if (card.buttonCovered) {
         problems.push(`修复按钮被盖住（点不到）：顶部 ${card.buttonTop}px，命中到 ${card.hitTag}`);
@@ -1024,6 +1059,9 @@ async function main() {
     if (!report.rawOutputs.some((raw) => raw.includes("NO main window appeared"))) {
       problems.push("页面上没有展示窗口探测的原始诊断输出");
     }
+    // 「判不出来」必须是软提示而不是硬错误：它说明的是一种状态，不是这个应用坏了。
+    // 硬错误色（.error-text:not(.soft)）留给真正的意外失败，冒烟测试在别的场景钉着它为空。
+    if (report.errorText) problems.push(`窗口没出现不该渲染成硬错误：${report.errorText}`);
   }
 
   // 版本历史 / 回退。卡片在每个场景都在页面上，所以这组断言不绑 --rollback：
@@ -1291,8 +1329,10 @@ async function main() {
     ? "命令结论对话框"
     : checkingHold
       ? "命令执行中的交互锁"
-      : launchNoWindow
-        ? "打开 Codex（进程在/窗口不在）"
+      : launchUnknown
+        ? "打开 Codex（判不出原因，不给修复入口）"
+        : launchNoWindow
+          ? "打开 Codex（进程在/窗口不在，判定为搬迁 bug）"
         : rollbackScenario
           ? "版本回退"
           : installing
@@ -1360,6 +1400,11 @@ async function main() {
     console.log(`  窗口缺失横幅：${report.launchCard.heading}`);
     console.log(`  修复入口：${report.launchCard.buttonLabel} ${report.launchCard.buttonWidth}×${report.launchCard.buttonHeight}（可点击=${!report.launchCard.buttonDisabled && !report.launchCard.buttonCovered}）`);
     console.log(`  原始诊断：${report.rawOutputs.length} 段（含窗口探测输出）`);
+  }
+  if (launchUnknown && report.launchCard) {
+    console.log(`  窗口缺失横幅：${report.launchCard.heading}`);
+    console.log(`  判定文案：${report.launchCard.text}`);
+    console.log(`  修复入口：${report.launchCard.missingButton ? "无（符合预期）" : report.launchCard.buttonLabel}（卡内不应出现修复按钮）`);
   }
   if (packaged) console.log(`  内置脚本：${PACKAGED_SCRIPTS.length} 个已就位于 ${packagedScriptsDir}`);
   app.exit(0);

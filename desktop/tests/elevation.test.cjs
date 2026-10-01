@@ -102,8 +102,7 @@ test("worker：提权分支排在「Worker started」之前，且只做关 + 装
   const branchBody = branchMatch[1];
   assert.match(branchBody, /Invoke-CodexInstallSteps/, "提权子进程要真的装包");
   // 从**提权**进程发 explorer.exe shell:AppsFolder 激活请求行为不确定（可能起不来，
-  // 也可能把 Codex 拉成管理员进程），而窗口探测失败还会打出「官方加密资源搬迁 bug」
-  // 那套误导性结论。所以重启与探测必须留在非提权的 worker 里。
+  // 也可能把 Codex 拉成管理员进程）。所以重启与探测必须留在非提权的 worker 里。
   assert.doesNotMatch(branchBody, /explorer\.exe|Test-CodexDesktopWindowUp/, "提权子进程不得负责重启与窗口探测");
 });
 

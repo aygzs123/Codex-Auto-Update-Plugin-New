@@ -1,15 +1,18 @@
 // 「打开 Codex」的接线测试。纯 node，不依赖 electron，用 `npm test` 跑。
 //
 // 这条路径以前的写法是 fire-and-forget：发一条 explorer.exe shell:AppsFolder\...
-// 就返回 { ok: true }，界面提示「已请求启动 Codex」。问题是 Codex Desktop 有个官方
-// bug —— 进程起来了、主窗口永远不出现。此时上面的实现在界面上报的是成功，用户屏幕上
-// 却什么都没有，看起来就是「点了没反应」，而且原因彻底丢失。
+// 就返回 { ok: true }，界面提示「已请求启动 Codex」。问题是启动后主窗口可能迟迟
+// 不出现（资源搬迁真的坏了、运行时还在往本地缓存里落几百 MB、或者被一个启动对话框
+// 挡住），此时上面的实现在界面上报的是成功，用户屏幕上却什么都没有，看起来就是
+// 「点了没反应」，而且原因彻底丢失。
 //
-// 所以这里钉住四件事：
+// 所以这里钉住五件事：
 //   1. 启动必须走健康脚本的 -Probe（= 启动后等主窗口），而不是只发启动请求；
 //   2. 结论必须回给界面（windowVisible / needsRepair），且没窗口时要给补救入口；
-//   3. 等待窗口那 20 秒必须有进度事件，否则等待期又变成「没反应」；
-//   4. 真的没装 Codex 时必须是可读的错误，而不是一句 ok。
+//   3. 等待窗口那段时间必须有进度事件，否则等待期又变成「没反应」；
+//   4. 真的没装 Codex 时必须是可读的错误，而不是一句 ok；
+//   5. **原因只能由脚本的判定给出**：主进程里不得再出现「没等到窗口就是官方那个
+//      加密资源搬迁 bug」这类无条件断言（2026-10-01 的误诊就是这么来的）。
 
 const assert = require("node:assert/strict");
 const { readFileSync } = require("node:fs");
@@ -72,6 +75,28 @@ test("主进程：等待窗口期间推送进度（否则等待期就是「没�
   assert.match(launch, /正在等待主窗口出现/);
 });
 
+test("主进程：没等到窗口时不得自己断言原因", () => {
+  // 2026-10-01 的误诊：主进程在这里写着「若 N 秒内没有出现，就是官方已知的加密资源
+  // 搬迁问题，可用修复资源副本处理」。而当天真实的阻塞是「运行时还在物化」（约 132 秒）
+  // 加一个组织策略对话框 —— 断言是凭空下的，用户照着去修了一遍根本不存在的问题。
+  //
+  // 原因只能来自脚本的判定（startupDiagnosis）。这条断言就是防止那句话再被写回来。
+  assert.doesNotMatch(launch, /就是官方已知的加密资源搬迁问题/);
+  assert.doesNotMatch(launch, /官方已知的加密资源搬迁/);
+  // 判定必须原样带回界面，而不是在这里被翻译成结论。
+  assert.match(launch, /startupDiagnosis:\s*health\.startupDiagnosis/);
+});
+
+test("主进程：等待时长按总预算报，不能只说基础那一段", () => {
+  // 延长是有条件的（只在「还在落运行时缓存」时发生），所以界面上的「最多 N 秒」
+  // 必须报基础值 + 延长值的总和。只报 20 秒的话文案就是在撒谎：
+  // 用户盯着进度条等到第 40 秒，界面却一直说「最多 20 秒」。
+  assert.match(launch, /const extensionSeconds = 150;/);
+  assert.match(launch, /const budgetSeconds = seconds \+ extensionSeconds;/);
+  assert.match(launch, /"-ProbeExtensionSeconds":\s*extensionSeconds/);
+  assert.match(launch, /最多 \$\{budgetSeconds\} 秒/);
+});
+
 test("主进程：launch_codex 必须把进度上报函数传下去", () => {
   // emit 不传的话 launchCodex 内部所有 emit 都是空操作，界面又退回静默等待。
   assert.match(mainSource, /case "launch_codex":[\s\S]{0,200}codex\.launchCodex\(args,\s*emit\)/);
@@ -110,7 +135,9 @@ test("类型：活动 id 覆盖 launch，启动结果与主进程字段对齐", 
   assert.match(typesSource, /ActivityId = [^;]*"launch"/);
   const result = typesSource.match(/interface LaunchResult \{[\s\S]*?\n\}/);
   assert.ok(result, "找不到 LaunchResult");
-  for (const field of ["windowVisible", "probeMessage", "health"]) {
+  // startupDiagnosis 必须在这里：界面靠它选文案、决定给不给修复按钮。
+  // 少一个字段，渲染进程就只能退回「没窗口 = 那个 bug」的默认假设。
+  for (const field of ["windowVisible", "probeMessage", "health", "startupDiagnosis"]) {
     assert.match(result[0], new RegExp(`${field}`), `LaunchResult 缺少 ${field}`);
   }
 });
@@ -125,13 +152,33 @@ test("解析层：真实探测输出 → 无窗口时判定为需要修复", () 
 
   const invisible = parseHealth(
     "OVERALL=ok\nRESULT=window-not-visible\n" +
-      "WARNING: Codex Desktop processes are up but NO main window appeared within 20 s.\n" +
+      "WARNING: Codex Desktop processes are up but NO main window appeared within 180 s.\n" +
+      "STARTUP_DIAGNOSIS=relocation-bug\n" +
       "This is the signature of the official encrypted-resource relocation bug.",
     3,
   );
   assert.equal(invisible.probeResult, "window-not-visible");
   assert.equal(healthNeedsRepair(invisible), true, "无窗口必须触发修复入口");
   assert.match(invisible.probeMessage, /NO main window appeared/, "诊断说明要保留给界面");
+  // 原因来自脚本的判定，界面据此决定要不要提「修复资源副本」。
+  assert.equal(invisible.startupDiagnosis, "relocation-bug");
+});
+
+test("解析层：判定为「还在准备」时同样没窗口，但结论是另一档", () => {
+  // 这条与上一条只差一个词，但它是整个修复的核心：同样是 window-not-visible，
+  // 判定不同则界面文案与修复按钮都不同。两条并排放着，防止有人把判定折叠回
+  // 「没窗口 = 那个 bug」。
+  const { parseHealth } = require("../electron/parse.cjs");
+  const health = parseHealth(
+    "OVERALL=ok\nRESULT=window-not-visible\n" +
+      "WARNING: Codex Desktop processes are up but NO main window appeared within 180 s.\n" +
+      "STARTUP_DIAGNOSIS=still-preparing\n" +
+      "This is NOT the encrypted-resource relocation bug. Codex is still materializing its runtime into the local cache.",
+    3,
+  );
+  assert.equal(health.probeResult, "window-not-visible");
+  assert.equal(health.startupDiagnosis, "still-preparing");
+  assert.match(health.probeMessage, /This is NOT the encrypted-resource relocation bug/);
 });
 
 // ---------- runner ----------

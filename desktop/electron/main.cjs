@@ -188,7 +188,7 @@ function createApplicationMenu() {
         label: "诊断",
         submenu: [
           { label: "健康自检（含窗口探测）", click: () => sendMenuAction("health") },
-          { label: "修复 OpenAI 签名 / 资源搬迁问题", click: () => sendMenuAction("repair") },
+          { label: "修复资源副本（加密资源搬迁）", click: () => sendMenuAction("repair") },
           { type: "separator" },
           { label: "打开日志目录", click: () => sendMenuAction("open-logs") },
           { label: "打开缓存目录", click: () => sendMenuAction("open-cache") },

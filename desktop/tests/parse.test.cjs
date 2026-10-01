@@ -14,6 +14,8 @@ const {
   parseInstallLogLine,
   installLogTerminal,
   creepPercent,
+  normalizeStartupDiagnosis,
+  STARTUP_DIAGNOSIS_VALUES,
 } = require("../electron/parse.cjs");
 
 const tests = [];
@@ -122,9 +124,84 @@ test("健康输出：-Probe 的结果行", () => {
     3,
   );
   assert.equal(invisible.probeResult, "window-not-visible");
-  // 进程在跑但没有窗口，正是加密资源搬迁 bug 的特征 —— 必须给出修复入口。
+  // 进程在跑但没有窗口 —— 这只是**事实**，不再等于加密资源搬迁 bug（2026-10-01 的
+  // 误诊就是这么来的：健康机器首次启动要物化几百 MB，30 秒探针必然超时）。
+  // 修复入口照旧给（修复脚本幂等，用户手动点也无害），但原因由 startupDiagnosis 决定。
   assert.equal(healthNeedsRepair(invisible), true);
   assert.match(invisible.probeMessage, /NO main window appeared/);
+});
+
+// ---------- 启动判定（STARTUP_DIAGNOSIS）----------
+// 三档判定是脚本给出的结论，解析层只负责原样搬运 + 把不认识的值收成 null。
+// 这一层绝不能自己「推断」原因 —— 那正是被修掉的 bug。
+
+test("启动判定：三个合法值都解析出来", () => {
+  assert.deepEqual(STARTUP_DIAGNOSIS_VALUES, ["still-preparing", "relocation-bug", "unknown"]);
+  for (const verdict of STARTUP_DIAGNOSIS_VALUES) {
+    const health = parseHealth(`${REAL_HEALTH_OK}\nRESULT=window-not-visible\nSTARTUP_DIAGNOSIS=${verdict}`, 3);
+    assert.equal(health.startupDiagnosis, verdict);
+  }
+});
+
+test("启动判定：没有这一行时是 null（老脚本、探针成功或没跑判定）", () => {
+  assert.equal(parseHealth(`${REAL_HEALTH_OK}\nOVERALL=ok`, 0).startupDiagnosis, null);
+  // 探针成功的那一跑不会有判定行，别把它当成「缺了什么」。
+  assert.equal(parseHealth(`${REAL_HEALTH_OK}\nRESULT=window-visible`, 0).startupDiagnosis, null);
+});
+
+test("启动判定：不认识的值收成 null，不让它漏到界面上", () => {
+  // 老脚本不会写这一行，但**新脚本 + 老界面**这个组合将来一定出现（用户升级了插件
+  // 但没升级桌面端）。把未知值原样带下去，界面就会拿着一个没有文案映射的字符串去
+  // 查表，最轻是显示空白，最重是当成 relocation-bug 又把人推回误诊。
+  assert.equal(normalizeStartupDiagnosis("some-future-verdict"), null);
+  assert.equal(normalizeStartupDiagnosis(""), null);
+  assert.equal(normalizeStartupDiagnosis(null), null);
+  assert.equal(normalizeStartupDiagnosis(undefined), null);
+  assert.equal(normalizeStartupDiagnosis("RELOCATION-BUG"), null, "大小写不匹配的一律不收");
+  assert.equal(
+    parseHealth(`${REAL_HEALTH_OK}\nRESULT=window-not-visible\nSTARTUP_DIAGNOSIS=some-future-verdict`, 3)
+      .startupDiagnosis,
+    null,
+  );
+});
+
+test("启动判定：健康侧的判定**不**独自触发修复入口", () => {
+  // 修复入口由 healthNeedsRepair 决定（组件状态 + 探针结果），判定只改文案。
+  // 这条钉住「判定与修复入口解耦」：不然后面有人顺手加一条
+  // `|| health.startupDiagnosis === "relocation-bug"`，就等于把误诊又装回来。
+  const health = parseHealth(`${REAL_HEALTH_OK}\nRESULT=window-not-visible\nSTARTUP_DIAGNOSIS=unknown`, 3);
+  assert.equal(health.startupDiagnosis, "unknown");
+  assert.equal(healthNeedsRepair(health), true, "全 OK 的组件 + 无窗口，入口照旧给");
+});
+
+test("启动判定：三档说明句都进 probeMessage，健康面板才看得见「不是搬迁 bug」", () => {
+  // 只收 WARNING 的话，「这不是搬迁 bug」和「判不出原因」这两档在健康面板里就只剩一句
+  // 冷冰冰的 WARNING —— 用户照样会去点「修复资源副本」。
+  const stillPreparing = parseHealth(
+    [
+      REAL_HEALTH_OK,
+      "RESULT=window-not-visible",
+      "WARNING: Codex Desktop processes are up but NO main window appeared within 180 s.",
+      "STARTUP_DIAGNOSIS=still-preparing",
+      "This is NOT the encrypted-resource relocation bug. Codex is still materializing its runtime into the local cache. Recent write activity: written within the last 90 s: C:\\a\\bin.",
+    ].join("\n"),
+    3,
+  );
+  assert.equal(stillPreparing.startupDiagnosis, "still-preparing");
+  assert.match(stillPreparing.probeMessage, /NO main window appeared within 180 s/);
+  assert.match(stillPreparing.probeMessage, /This is NOT the encrypted-resource relocation bug/);
+
+  const unknown = parseHealth(
+    [
+      REAL_HEALTH_OK,
+      "RESULT=window-not-visible",
+      "STARTUP_DIAGNOSIS=unknown",
+      "No cause could be determined from the relocation-health evidence. This is not, by itself, evidence of the encrypted-resource relocation bug. Evidence: none.",
+    ].join("\n"),
+    3,
+  );
+  assert.equal(unknown.startupDiagnosis, "unknown");
+  assert.match(unknown.probeMessage, /No cause could be determined/);
 });
 
 test("健康输出：插件未物化不触发修复入口（修复脚本不修插件）", () => {
@@ -380,6 +457,69 @@ test("安装日志：窗口探测失败是终止状态且不是成功", () => {
   assert.equal(failed.type, "probe-failed");
   assert.equal(installLogTerminal(failed), "window-missing");
   assert.notEqual(installLogTerminal(failed), "success");
+});
+
+test("安装日志：判定行紧跟探针失败，但它自己不是终止状态", () => {
+  // 顺序即契约：`WINDOW_PROBE=FAILED` 在前，`STARTUP_DIAGNOSIS=` 紧跟其后。
+  // 判定行**不是**终态：终态仍由 probe-failed（window-missing）决定，它只是把「为什么」补上。
+  // 若它变成终态，tail 会提前收工，后面那整段窗口清单必然被丢掉 —— 而窗口清单恰恰是
+  // 「30 秒没等到窗口」时最该看的东西。
+  for (const verdict of STARTUP_DIAGNOSIS_VALUES) {
+    const event = parseInstallLogLine(`[2026-09-28 06:22:23] STARTUP_DIAGNOSIS=${verdict}`);
+    assert.equal(event.type, "startup-diagnosis");
+    assert.equal(event.verdict, verdict);
+    assert.equal(installLogTerminal(event), null, `${verdict} 不该是终止状态`);
+    // 也不能带 phase：带了就会走 tail 的阶段推进分支，失败路径上进度条会先跳一次。
+    assert.equal(event.phase, undefined);
+  }
+});
+
+test("安装日志：判定值不认识时 verdict 是 null，类型仍是 startup-diagnosis", () => {
+  const event = parseInstallLogLine("[2026-09-28 06:22:23] STARTUP_DIAGNOSIS=who-knows");
+  assert.equal(event.type, "startup-diagnosis");
+  assert.equal(event.verdict, null);
+  // 类型不退化：退化成 log 的话，`STARTUP_DIAGNOSIS=` 会作为普通日志行渲染出来，
+  // 而 tail 里 `if (event.type === "startup-diagnosis")` 也就永远等不到值。
+  assert.notEqual(event.type, "log");
+});
+
+test("安装日志：三档说明句都识别成 note，且都不驱动任何动作", () => {
+  // 「说明」与「动作」必须分开：动作只看 startup-diagnosis。把说明句也接进动作，
+  // 就等于让一句文案决定要不要建议用户跑修复脚本。
+  const sentences = [
+    "[2026-09-28 06:22:23] This is NOT the encrypted-resource relocation bug. Codex is still materializing its runtime into the local cache. Recent write activity: written within the last 90 s: C:\\Users\\me\\AppData\\Local\\OpenAI\\Codex\\bin (win-cli).",
+    "[2026-09-28 06:22:23] This is the signature of the official encrypted-resource relocation bug.",
+    "[2026-09-28 06:22:23] No cause could be determined from the relocation-health evidence. This is not, by itself, evidence of the encrypted-resource relocation bug. Evidence: none.",
+    "[2026-09-28 06:22:23] Next: check the app's own logs under %LOCALAPPDATA%\\OpenAI\\Codex, and whether a Codex dialog or a crash is blocking the main window.",
+    "[2026-09-28 06:22:23] Window inventory unavailable.",
+  ];
+  for (const line of sentences) {
+    const event = parseInstallLogLine(line);
+    assert.equal(event.type, "note", `${event.message} 应为 note`);
+    assert.equal(installLogTerminal(event), null);
+    assert.equal(event.phase, undefined);
+  }
+  // 最关键的一条：「这不是搬迁 bug」这句**绝不能**被当成补救提示。
+  // 补救提示是界面渲染修复按钮的依据，认错就等于误诊原样复现。
+  const notBug = parseInstallLogLine(
+    "[2026-09-28 06:22:23] This is NOT the encrypted-resource relocation bug. Codex is still materializing its runtime into the local cache.",
+  );
+  assert.equal(notBug.type, "note");
+  assert.equal(notBug.remedy, undefined);
+});
+
+test("安装日志：窗口清单行降级为普通日志，但标题原样保留", () => {
+  // 清单行不进事件类型是有意的：它是给人看的原始证据，界面按普通日志渲染即可。
+  // 但整行内容必须一字不差地传下去 —— 用户的启动对话框标题正是靠它才浮出来。
+  const event = parseInstallLogLine('[2026-09-28 06:22:23]   pid=4212 owned=True class=#32770 title="无法加载组织设置"');
+  assert.equal(event.type, "log");
+  assert.match(event.message, /无法加载组织设置/);
+  assert.equal(installLogTerminal(event), null);
+
+  // 一个窗口都没有时脚本写的是这句。它同样只是普通日志，不是终止、也不带阶段。
+  const none = parseInstallLogLine("[2026-09-28 06:22:23]   (none visible)");
+  assert.equal(none.type, "log");
+  assert.equal(installLogTerminal(none), null);
 });
 
 test("安装日志：SkipLaunch 也是成功终止", () => {

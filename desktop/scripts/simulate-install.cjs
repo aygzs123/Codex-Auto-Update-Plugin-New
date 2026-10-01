@@ -76,9 +76,10 @@ const SCENARIOS = {
   },
 
   "window-missing": {
-    // 官方加密资源搬迁 bug：Codex 起来了但主窗口没出现。这是唯一需要人工介入的结局，
-    // 必须给出补救提示与健康快照。
-    title: "窗口探针失败：Codex 重启了但没有主窗口（官方加密资源搬迁 bug）",
+    // 官方加密资源搬迁 bug：Codex 起来了但主窗口没出现，而且证据确实指向搬迁失败
+    // （cua_node 那组资源留下了复制失败的中转目录、最终副本目录始终没生成）。
+    // 这是三档判定里唯一该给修复提示的一档，所以也必须给出健康快照。
+    title: "窗口探针失败·判定为搬迁 bug：给出证据与修复提示",
     steps: [
       [0, "Worker started for package: C:\\cache\\OpenAI.Codex_26.924.2738.0_x64__2p2nqsd0c76g0.msix"],
       [300, "Closed 1 Codex Desktop process(es)."],
@@ -88,17 +89,105 @@ const SCENARIOS = {
       [300, "Restart requested. Installed version: 26.924.2738.0"],
       [300, "Probing for a visible main window (up to 30 s)..."],
       [900, "WINDOW_PROBE=FAILED: Codex restarted but NO main window appeared within 30 s."],
+      [200, "STARTUP_DIAGNOSIS=relocation-bug"],
       [200, "This is the signature of the official encrypted-resource relocation bug."],
+      [200, "Evidence: cua_node: 11 abandoned staging dir(s), newest 2026-09-07 04:12:03"],
       [200, "Relocation health snapshot:"],
-      [150, "  component win-cli    state=Missing"],
-      [150, "  component win-rg     state=Missing"],
-      [150, "  component wsl-cli    state=Ok"],
-      [150, "  component wsl-rg     state=Ok"],
-      [150, "  component cua_node   state=Missing"],
+      [150, "  component win-cli    state=ok"],
+      [150, "  component win-rg     state=missing"],
+      [150, "  component wsl-cli    state=missing"],
+      [150, "  component wsl-rg     state=ok"],
+      [150, "  component cua_node   state=missing"],
       [150, "  bundled plugins materialized: False"],
+      [150, "Codex top-level windows:"],
+      [150, "  pid=3108 owned=False class=Chrome_WidgetWin_1 title=\"\""],
       [300, "Remedy: run docs/codex-desktop-encrypted-copy-fix/repair-codex-desktop-bundles.ps1 (from the repo root) with pwsh, then relaunch Codex."],
     ],
-    expect: { ok: false, windowMissing: true, finalPercent: 100, remedy: true, expectHealthSnapshot: true },
+    expect: {
+      ok: false,
+      windowMissing: true,
+      finalPercent: 100,
+      remedy: true,
+      expectHealthSnapshot: true,
+      diagnosis: "relocation-bug",
+    },
+  },
+
+  "window-missing-still-preparing": {
+    // 2026-10-01 那台机器的真实形状：探针 30 秒没等到窗口，但资源目录最近还在被写 ——
+    // Codex 正在把几百 MB 运行时物化到用户缓存（实测约 132 秒），纯粹是还没到。
+    // 探针因此延长过一次，所以最终报的是**总预算** 180 秒。
+    //
+    // 这一档绝不能说成搬迁 bug，更**不能**出现 Remedy 行 —— 那正是当初让用户白跑
+    // 一趟修复脚本的误诊。断言里 remedy: false 就是钉住这一点的。
+    title: "窗口探针失败·判定为还在准备：不指控、不给修复提示",
+    steps: [
+      [0, "Worker started for package: C:\\cache\\OpenAI.Codex_26.928.3736.0_x64__2p2nqsd0c76g0.msix"],
+      [300, "Closed 1 Codex Desktop process(es)."],
+      [300, "Installing package with Add-AppxPackage..."],
+      [700, "Install command completed."],
+      [300, "Restart requested. Installed version: 26.928.3736.0"],
+      [300, "Probing for a visible main window (up to 30 s)..."],
+      [600, "Codex is still materializing its runtime into the local cache (written within the last 90 s: C:\\Users\\me\\AppData\\Local\\OpenAI\\Codex\\bin (win-cli)). Extending the window probe by 150 s."],
+      // 延长期间的静默：脚本在等窗口，什么都不写（真实情况下是 150 秒）。
+      [1500, "WINDOW_PROBE=FAILED: Codex restarted but NO main window appeared within 180 s."],
+      [200, "STARTUP_DIAGNOSIS=still-preparing"],
+      [200, "This is NOT the encrypted-resource relocation bug. Codex is still materializing its runtime into the local cache. Recent write activity: written within the last 90 s: C:\\Users\\me\\AppData\\Local\\OpenAI\\Codex\\bin (win-cli)."],
+      [200, "Relocation health snapshot:"],
+      [150, "  component win-cli    state=ok"],
+      [150, "  component win-rg     state=ok"],
+      [150, "  component wsl-cli    state=missing"],
+      [150, "  component wsl-rg     state=ok"],
+      [150, "  component cua_node   state=ok"],
+      [150, "  bundled plugins materialized: False"],
+      [150, "Codex top-level windows:"],
+      [150, "  (none visible)"],
+    ],
+    expect: {
+      ok: false,
+      windowMissing: true,
+      finalPercent: 100,
+      remedy: false,
+      expectHealthSnapshot: true,
+      diagnosis: "still-preparing",
+    },
+  },
+
+  "window-missing-unknown": {
+    // 同样没等到窗口，但既没有近期写入、也没有陈旧残留 —— 拿不出任何证据说明原因。
+    // 这时唯一诚实的输出就是「判不出来」：不指控、不给修复提示，只把原始事实
+    // （健康快照 + 窗口清单）和下一步排查方向摆出来。
+    title: "窗口探针失败·判定不出来：只说事实与排查方向",
+    steps: [
+      [0, "Worker started for package: C:\\cache\\OpenAI.Codex_26.928.3736.0_x64__2p2nqsd0c76g0.msix"],
+      [300, "Closed 1 Codex Desktop process(es)."],
+      [300, "Installing package with Add-AppxPackage..."],
+      [700, "Install command completed."],
+      [300, "Restart requested. Installed version: 26.928.3736.0"],
+      [300, "Probing for a visible main window (up to 30 s)..."],
+      [900, "WINDOW_PROBE=FAILED: Codex restarted but NO main window appeared within 30 s."],
+      [200, "STARTUP_DIAGNOSIS=unknown"],
+      [200, "No cause could be determined from the relocation-health evidence. This is not, by itself, evidence of the encrypted-resource relocation bug. Evidence: no recent bundle writes and no abandoned staging directories."],
+      [200, "Next: check the app's own logs under %LOCALAPPDATA%\\OpenAI\\Codex, and whether a Codex dialog or a crash is blocking the main window."],
+      [200, "Relocation health snapshot:"],
+      [150, "  component win-cli    state=ok"],
+      [150, "  component win-rg     state=ok"],
+      [150, "  component wsl-cli    state=ok"],
+      [150, "  component wsl-rg     state=ok"],
+      [150, "  component cua_node   state=ok"],
+      [150, "  bundled plugins materialized: False"],
+      [150, "Codex top-level windows:"],
+      [150, "  pid=4212 owned=True class=#32770 title=\"无法加载组织设置\""],
+      [150, "  pid=4212 owned=False class=Chrome_WidgetWin_1 title=\"\""],
+    ],
+    expect: {
+      ok: false,
+      windowMissing: true,
+      finalPercent: 100,
+      remedy: false,
+      expectHealthSnapshot: true,
+      diagnosis: "unknown",
+    },
   },
 
   downgrade: {
@@ -286,6 +375,12 @@ async function runScenario(name) {
     if (Boolean(result.remedy) !== Boolean(scenario.expect.remedy)) {
       problems.push(`remedy 期望${scenario.expect.remedy ? "有" : "无"}，实际 ${result.remedy ?? "无"}`);
     }
+    // 判定与修复提示必须**同时**对得上。只钉 remedy 是不够的：三档里有两档都不该有 remedy，
+    // 若把 unknown 误判成 relocation-bug，remedy 就会冒出来 —— 反过来，若把 relocation-bug
+    // 降级成 unknown，remedy 又会消失。两条一起钉，才排得掉「判定错了但提示恰好没错」。
+    if (scenario.expect.diagnosis !== undefined && result.startupDiagnosis !== scenario.expect.diagnosis) {
+      problems.push(`startupDiagnosis 应为 ${scenario.expect.diagnosis}，实际 ${result.startupDiagnosis}`);
+    }
     if (scenario.expect.expectHealthSnapshot && result.healthSnapshot.length !== 5) {
       problems.push(`期望 5 条健康快照，实际 ${result.healthSnapshot.length} 条`);
     }
@@ -334,6 +429,7 @@ async function runScenario(name) {
     console.log(`  第 ${elapsedMs}ms 抛出失败：${failure.message.split("\n")[0]}`);
   } else {
     console.log(`  ok=${result.ok} windowMissing=${result.windowMissing} remedy=${result.remedy ? "有" : "无"}`);
+    if (result.windowMissing) console.log(`  启动判定：${result.startupDiagnosis ?? "（没读到）"}`);
     if (result.version) console.log(`  收尾健康自检读到版本：${result.version}`);
   }
 

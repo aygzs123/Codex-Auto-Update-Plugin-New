@@ -6,6 +6,7 @@ import { NoticeDialog } from "./components/NoticeDialog";
 import { TitleBar } from "./components/TitleBar";
 import { VersionHistory } from "./components/VersionHistory";
 import { isElectronRuntime, subscribeMenuAction } from "./lib/bridge";
+import { diagnosisCopy } from "./lib/diagnosis";
 import { connectProgress, effectiveDownloadDirectory, isCommandRunning, useAppStore } from "./state/app";
 
 const OVERALL_TEXT: Record<string, string> = {
@@ -110,9 +111,12 @@ function ResultBanners() {
   // 用共享判据而不是本地的 repairing：修复途中主按钮同样要点不动，
   // 否则「修复资源副本并重新启动」和「一键安装」能叠在一起跑。
   const busy = useAppStore(isCommandRunning);
-  // 「进程起来了、窗口没出现」是官方已知故障，不是「点了没反应」——
-  // 必须把结论和补救入口一起摆出来，否则用户只能看到屏幕上什么都没有。
+  // 「进程起来了、窗口没出现」是要如实报出来的**事实**，但它不说明原因：可能还在落
+  // 运行时缓存、可能是官方那个搬迁 bug、也可能判不出来。文案与「要不要给修复入口」
+  // 一律走 diagnosisCopy（唯一映射表），这里不再自己下结论。
   const launchWindowMissing = launchResult ? !launchResult.windowVisible : false;
+  const installDiagnosis = diagnosisCopy(installResult?.startupDiagnosis);
+  const launchDiagnosis = diagnosisCopy(launchResult?.startupDiagnosis);
   const repairNeeded = installResult?.windowMissing || status?.needsRepair;
   // 「刚更新完就出问题」正是回退功能要救的场景，所以失败告警里直接给回退按钮，
   // 而不是让用户自己去下面的「版本历史」里找。没有可退的包时按钮不出现。
@@ -155,8 +159,9 @@ function ResultBanners() {
         <section className="panel warn-card">
           <h3>Codex 已安装，但主窗口没有出现</h3>
           <p>
-            安装本身已成功，但启动后等待期内没有出现主窗口。这是官方已知的加密资源搬迁问题的特征，
-            用下面的「修复资源副本」重建用户目录下的资源副本即可。
+            安装本身已成功，但启动后等待期内没有出现主窗口。
+            <strong>{installDiagnosis.title}。</strong>
+            {installDiagnosis.body}
           </p>
           {installResult.remedy && <pre className="raw-output">{installResult.remedy}</pre>}
           {rollbackTarget && (
@@ -179,15 +184,16 @@ function ResultBanners() {
         <section className="panel warn-card">
           <h3>Codex 进程已启动，但主窗口没有出现</h3>
           <p>
+            <strong>{launchDiagnosis.title}。</strong>
             启动请求已经发出，Codex 的进程也确实在运行{launchResult?.version ? `（${launchResult.version}）` : ""}
-            ，但等待期内没有出现主窗口。这是官方已知的加密资源搬迁问题的特征：安装包里的加密资源
-            没能复制到用户目录，启动流程卡在窗口出现之前。重建资源副本即可恢复，修复会先关闭正在运行的 Codex。
-            详细诊断见下方「健康诊断」。
+            ，但等待期内没有出现主窗口。{launchDiagnosis.body} 原始诊断见下方「健康诊断」。
           </p>
           <div className="dash-actions">
-            <button type="button" className="button" disabled={busy} onClick={() => void runRepair()}>
-              {repairing ? "正在重建资源副本…" : "修复资源副本并重新启动"}
-            </button>
+            {launchDiagnosis.showRepair && (
+              <button type="button" className="button" disabled={busy} onClick={() => void runRepair()}>
+                {repairing ? "正在重建资源副本…" : "修复资源副本并重新启动"}
+              </button>
+            )}
             {rollbackButton}
           </div>
         </section>

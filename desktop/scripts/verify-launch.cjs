@@ -33,6 +33,7 @@ app.whenReady().then(async () => {
     console.log(`  AppUserModelId：${result.appUserModelId ?? "未知"}`);
     console.log(`  主窗口出现  ：${result.windowVisible}`);
     console.log(`  建议修复    ：${result.health?.needsRepair}`);
+    console.log(`  启动判定    ：${result.startupDiagnosis ?? "（脚本没给判定）"}`);
     if (result.probeMessage) console.log(`  脚本诊断    ：${result.probeMessage}`);
     console.log(`  用时        ：${((Date.now() - started) / 1000).toFixed(1)}s`);
 
@@ -41,8 +42,16 @@ app.whenReady().then(async () => {
       app.exit(0);
       return;
     }
-    console.log("\n✗ 进程在运行，但主窗口没有出现 —— 官方加密资源搬迁 bug 的特征。");
-    console.log("  用界面上的「修复资源副本并重新启动」，或跑 docs/codex-desktop-encrypted-copy-fix/repair-codex-desktop-bundles.ps1。");
+    console.log("\n✗ 进程在运行，但没有等到主窗口。判定：" + (result.startupDiagnosis ?? "（无）"));
+    if (result.startupDiagnosis === "relocation-bug") {
+      console.log("  证据指向官方加密资源搬迁问题：用界面上的「修复资源副本并重新启动」，");
+      console.log("  或跑 docs/codex-desktop-encrypted-copy-fix/repair-codex-desktop-bundles.ps1。");
+    } else if (result.startupDiagnosis === "still-preparing") {
+      console.log("  只是还在把运行时物化到用户缓存（首次启动要落几百 MB）：等一会儿再试，不用修。");
+    } else {
+      console.log("  现有证据判不出原因，所以不建议直接跑修复脚本。先看应用日志");
+      console.log("  （%LOCALAPPDATA%\\OpenAI\\Codex），并确认屏幕上没有 Codex 的对话框挡住主窗口。");
+    }
     app.exit(3);
   } catch (error) {
     console.error(`\n✗ 启动失败：${error.message}`);

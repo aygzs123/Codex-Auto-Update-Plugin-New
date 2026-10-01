@@ -3,19 +3,22 @@
 check-codex-desktop-health.ps1
 ================================================================================
 Purpose
-    Health check for Codex Desktop (Microsoft Store / MSIX). Detects the
-    "app is running but the main window never appears" state caused by the
-    encrypted-resource relocation failure, without launching the app.
+    Health check for Codex Desktop (Microsoft Store / MSIX). Reports the state
+    of the relocated bundle directories. Every check is read-only, and the
+    component states are reported as facts — they are never used to infer why a
+    main window did or did not appear.
 
     It inspects the five relocated bundle directories under
       %LOCALAPPDATA%\OpenAI\Codex   (bin, runtimes\cua_node)
       %USERPROFILE%\.codex\bin\wsl  (bin\wsl)
     plus leftover .staging-* / .repair-* dirs and the bundled-plugins
-    materialization key. Every check is read-only.
+    materialization key.
 
     With -Probe it additionally launches the app (via its AppUserModelId) and
-    waits up to -ProbeSeconds for a visible main window, which reproduces the
-    reported bug directly.
+    waits up to -ProbeSeconds for a visible main window. If no window appears it
+    reports that as a fact and adds the evidence it managed to collect
+    (STARTUP_DIAGNOSIS= plus a window inventory); it reaches for the official
+    encrypted-resource relocation bug only when the evidence actually says so.
 
 Usage
     pwsh -NoProfile -File check-codex-desktop-health.ps1
@@ -25,7 +28,9 @@ Exit codes
     0  healthy (every component ok; probe, if requested, found a window)
     1  degraded (some bundle missing / partial / plugin key absent)
     2  package not installed
-    3  probe ran but no main window appeared within the timeout
+    3  probe ran but no main window appeared within the timeout. The cause, if
+       one could be evidenced, is in the STARTUP_DIAGNOSIS= line; if it could
+       not be, the line says so rather than guessing.
 ================================================================================
 #>
 
@@ -33,7 +38,11 @@ Exit codes
 param(
     [string]$PackageName = "OpenAI.Codex",
     [switch]$Probe,
-    [int]$ProbeSeconds = 20
+    [int]$ProbeSeconds = 20,
+
+    # 探针失败后，如果诊断说「还在把运行时落到本地缓存」，再等这么久（0 = 不延长）。
+    # 首次启动要落几百 MB（2026-10-01 实测约 132 秒），20 秒的默认探针必然误判。
+    [int]$ProbeExtensionSeconds = 150
 )
 
 $ErrorActionPreference = "Stop"
@@ -104,11 +113,29 @@ catch {
 $appUserModelId = Get-CodexAppUserModelId -PackageFamilyName $health.PackageFamilyName -AppId $appId
 Write-Host ("AppUserModelId: {0}" -f $appUserModelId)
 
+$probeBudgetSeconds = $ProbeSeconds
 $windowUp = Test-CodexDesktopWindowUp `
     -PackageName $PackageName `
     -AppUserModelId $appUserModelId `
     -Seconds $ProbeSeconds `
     -Launch
+
+$diagnosis = $null
+
+if (-not $windowUp -and $ProbeExtensionSeconds -gt 0) {
+    # 复用上面那份 $health（一个 SHA 都不重算）：判定只读 Installed / Id / Path 与
+    # 目录 mtime，这些要么由版本决定、要么现取，跟 snapshot 的新旧无关。
+    $diagnosis = Get-CodexStartupDiagnosis -PackageName $PackageName -Health $health
+    if ($diagnosis.Verdict -eq 'still-preparing') {
+        Write-Host ("Codex is still materializing its runtime into the local cache ({0}). Extending the window probe by {1} s." -f ($diagnosis.Evidence -join '; '), $ProbeExtensionSeconds)
+        $probeBudgetSeconds = $ProbeSeconds + $ProbeExtensionSeconds
+        # 不再传 -Launch：激活请求上面已经发过一次了。
+        $windowUp = Test-CodexDesktopWindowUp `
+            -PackageName $PackageName `
+            -AppUserModelId $appUserModelId `
+            -Seconds $ProbeExtensionSeconds
+    }
+}
 
 if ($windowUp) {
     Write-Host "RESULT=window-visible"
@@ -116,8 +143,50 @@ if ($windowUp) {
     exit 0
 }
 
+# 先把证据采集完，再写第一行日志：Get-CodexWindowInventory 首次要 Add-Type 编译 C#，
+# 耗时数秒；调用方（桌面端）是按「最后一行输出之后一小段静默」判定结果已经落完的，
+# 中间插一段静默编译会把整段窗口清单丢掉。
+if ($null -eq $diagnosis) {
+    $diagnosis = Get-CodexStartupDiagnosis -PackageName $PackageName -Health $health
+}
+$windows = Get-CodexWindowInventory -PackageName $PackageName -InstallLocation $health.InstallLocation
+
 Write-Host "RESULT=window-not-visible"
-Write-Host "WARNING: Codex Desktop processes are up but NO main window appeared within $ProbeSeconds s."
-Write-Host "This is the signature of the official encrypted-resource relocation bug."
-Write-Host "Run the repair script from docs/codex-desktop-encrypted-copy-fix/repair-codex-desktop-bundles.ps1, then launch again."
+Write-Host "WARNING: Codex Desktop processes are up but NO main window appeared within $probeBudgetSeconds s."
+Write-Host ("STARTUP_DIAGNOSIS={0}" -f $diagnosis.Verdict)
+
+$evidenceText = if ($diagnosis.Evidence.Count -gt 0) { $diagnosis.Evidence -join '; ' } else { 'none' }
+switch ($diagnosis.Verdict) {
+    'still-preparing' {
+        Write-Host ("This is NOT the encrypted-resource relocation bug. Codex is still materializing its runtime into the local cache. Recent write activity: {0}." -f $evidenceText)
+        Write-Host "Wait a minute or two and launch it again."
+    }
+    'relocation-bug' {
+        Write-Host "This is the signature of the official encrypted-resource relocation bug."
+        Write-Host ("Evidence: {0}" -f $evidenceText)
+    }
+    default {
+        Write-Host ("No cause could be determined from the relocation-health evidence. This is not, by itself, evidence of the encrypted-resource relocation bug. Evidence: {0}." -f $evidenceText)
+        Write-Host "Next: check the app's own logs under %LOCALAPPDATA%\OpenAI\Codex, and whether a Codex dialog or a crash is blocking the main window."
+    }
+}
+
+if ($null -eq $windows) {
+    Write-Host "Window inventory unavailable."
+}
+else {
+    Write-Host "Codex top-level windows:"
+    if ($windows.Count -eq 0) {
+        Write-Host "  (none visible)"
+    }
+    else {
+        foreach ($window in $windows) {
+            Write-Host ("  pid={0} owned={1} class={2} title={3}" -f $window.ProcessId, $window.Owned, $window.Class, ('"{0}"' -f $window.Title))
+        }
+    }
+}
+
+if ($diagnosis.Verdict -eq 'relocation-bug') {
+    Write-Host "Run the repair script from docs/codex-desktop-encrypted-copy-fix/repair-codex-desktop-bundles.ps1, then launch again."
+}
 exit 3

@@ -14,6 +14,19 @@
 
 const HEALTH_STATES = { OK: "ok", MISS: "missing", PART: "partial", ERR: "error" };
 
+// 窗口探针没等到主窗口时，脚本会给出一个**有据可依**的判定，也可能明确说「判不出来」。
+// 这三个值是脚本侧的文本契约，由 CodexStoreUpdater.psm1 的 Get-CodexStartupDiagnosis 产生，
+// 安装脚本与健康脚本用同一套。
+//
+// 不认识的值一律归一成 null（老日志根本没有这一行）：宁可让界面说「未能判定原因」，
+// 也不能让它照着半懂的字符串去转述一个原因。界面侧的唯一映射表在 src/lib/diagnosis.ts。
+const STARTUP_DIAGNOSIS_VALUES = ["still-preparing", "relocation-bug", "unknown"];
+
+function normalizeStartupDiagnosis(value) {
+  const text = String(value == null ? "" : value).trim();
+  return STARTUP_DIAGNOSIS_VALUES.includes(text) ? text : null;
+}
+
 /**
  * 解析 check-codex-desktop-health.ps1 的输出。
  *
@@ -34,6 +47,7 @@ function parseHealth(stdout, exitCode) {
     appUserModelId: null,
     probeResult: null,
     probeMessage: null,
+    startupDiagnosis: null,
     raw: text,
   };
 
@@ -85,6 +99,13 @@ function parseHealth(stdout, exitCode) {
       continue;
     }
 
+    // 探针失败之后紧跟的判定。没有这一行（老脚本、或探针没失败）时保持 null。
+    const diagnosis = trimmed.match(/^STARTUP_DIAGNOSIS=(\S+)$/);
+    if (diagnosis) {
+      result.startupDiagnosis = normalizeStartupDiagnosis(diagnosis[1]);
+      continue;
+    }
+
     // [OK   ] win-cli      C:\...\bin\8e5b6932251c2c1c
     // [MISS ] win-rg       C:\...  <- staging/repair leftovers: 2
     // 方括号内的状态符号是右对齐补空格的（"OK   " 共 5 字符），所以不能要求它无空格。
@@ -109,8 +130,15 @@ function parseHealth(stdout, exitCode) {
       continue;
     }
 
-    // 探测失败时脚本会给出这几句说明，保留下来当作提示。
-    if (/^WARNING:/.test(trimmed) || /^This is the signature of/.test(trimmed)) {
+    // 探测失败时脚本会给出这几句说明，保留下来当作提示。三档判定各有一句
+    // （见 install-codex-msix-and-restart.ps1 的同名输出），三句都要收 —— 只收签名句的话，
+    // 「这不是搬迁 bug」和「判不出原因」这两档在健康面板里就只剩一句冷冰冰的 WARNING。
+    if (
+      /^WARNING:/.test(trimmed) ||
+      /^This is the signature of/.test(trimmed) ||
+      /^This is NOT the /.test(trimmed) ||
+      /^No cause could be determined/.test(trimmed)
+    ) {
       result.probeMessage = result.probeMessage ? `${result.probeMessage} ${trimmed}` : trimmed;
     }
   }
@@ -344,6 +372,13 @@ function parseInstallLogLine(line) {
     return { type: "probe-failed", ...base, phase: "failed", percent: 100, label: "Codex 已安装，但主窗口没有出现" };
   }
 
+  // 紧跟 WINDOW_PROBE=FAILED 的判定行，三档之一。**不是终止类型**：installLogTerminal
+  // 仍由 probe-failed 决定，这里只是把「为什么」补上。
+  const diagnosis = message.match(/^STARTUP_DIAGNOSIS=(\S+)\s*$/);
+  if (diagnosis) {
+    return { type: "startup-diagnosis", ...base, verdict: normalizeStartupDiagnosis(diagnosis[1]) };
+  }
+
   if (/^Relocation health snapshot:/.test(message)) {
     return { type: "health-snapshot", ...base };
   }
@@ -367,8 +402,14 @@ function parseInstallLogLine(line) {
   }
 
   if (/^Remedy:/.test(message)) return { type: "remedy", ...base, remedy: message.replace(/^Remedy:\s*/, "") };
+  // 三档判定各自的说明句，都只是「说明」，不驱动任何动作（动作由 startup-diagnosis 决定）。
   if (/^This is the signature of the official/.test(message)) return { type: "note", ...base };
+  if (/^This is NOT the /.test(message)) return { type: "note", ...base };
+  if (/^No cause could be determined/.test(message)) return { type: "note", ...base };
+  if (/^Evidence: /.test(message)) return { type: "note", ...base };
+  if (/^Next: /.test(message)) return { type: "note", ...base };
   if (/^Could not collect relocation health/.test(message)) return { type: "note", ...base };
+  if (/^Window inventory unavailable/.test(message)) return { type: "note", ...base };
 
   return { type: "log", ...base };
 }
@@ -398,6 +439,8 @@ function creepPercent(phasePercent, nextPercent, elapsedMs) {
 module.exports = {
   parseHealth,
   healthNeedsRepair,
+  normalizeStartupDiagnosis,
+  STARTUP_DIAGNOSIS_VALUES,
   parseUpdateCheck,
   parseCachedPackages,
   partialNameFor,

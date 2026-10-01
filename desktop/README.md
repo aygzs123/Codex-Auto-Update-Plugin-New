@@ -50,8 +50,7 @@ npm run electron:build
   `Test-CodexPackageRequiresElevation` 读一遍安装包清单：需要提权时由分离的 worker 拉起一个
   **短命的提权子进程**（`-Verb RunAs`，界面会显示「正在请求管理员权限」），只做「关 Codex + 装包」；
   版本校验、缓存剪枝、重启 Codex 与窗口探针仍留在**非提权**的 worker 里 ——
-  从提权进程发 `explorer.exe shell:AppsFolder` 激活请求行为不确定，而且探针失败还会打出
-  「官方加密资源搬迁 bug」那套误导性结论。UAC 被取消只会让提权子进程起不来，worker 会以一条
+  从提权进程发 `explorer.exe shell:AppsFolder` 激活请求行为不确定。UAC 被取消只会让提权子进程起不来，worker 会以一条
   说明「什么都没改动、Codex 没有被关闭」的 FATAL 收场，界面不会卡在「正在安装」。
   提权只加在 worker 里也是必须的：`ps.cjs` 的 `captureScript` 没有超时，UAC 若弹在 launcher
   那个进程里，界面会**永久**停在工作中，既不报错也不超时。

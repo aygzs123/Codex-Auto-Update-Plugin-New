@@ -412,6 +412,267 @@ function Test-CodexDesktopWindowUp {
     return $false
 }
 
+# 启动诊断：窗口探针没等到主窗口时，判断「到底有没有证据说明原因」。
+#
+# 为什么不能拿组件状态推断原因 —— 两条实测证据正反都反着来：
+#   1) 2026-09-07 那次**真实**的搬迁 bug 里（见 docs/codex-desktop-encrypted-copy-fix/README.md
+#      第 4.1 节），win-cli 这组 App 自己物化成功了，主窗口照样永不创建；真正失败的是 cua_node
+#      （留下 11 个 .staging-* 残留，最终目录没落成）。所以「win-cli 是 ok 就不是这个 bug」是错的。
+#   2) 2026-10-01 这台**完全正常**的机器上，wsl-cli 是 missing、PluginsMaterialized 是 False。
+#      所以「任一组件非 ok 就是这个 bug」也是错的。
+# 结论：ok / missing / partial 本身正反两个方向都不能解释「窗口为什么没出现」。
+#
+# 唯一有据可依的失败特征是：目标目录下存在**陈旧、不再推进、且最终目录确实没落成**的
+# .staging-* / .repair-* 残留 —— 即「复制试过、失败了、也没有在继续」。三个条件缺一不可。
+#
+# 陈旧门槛为什么取 180 秒：.staging-<id>-* 顶层目录的 LastWriteTime 在递归深拷贝的中后段
+# **会长时间不推进** —— 它只在自己**直接子项**被创建时更新，而几百 MB 的拷贝后半程一直在往
+# 已存在的子树里写文件。若按「mtime 老 ⇒ 陈旧」判，一次**正在进行的**拷贝就会被指控成 bug，
+# 正好把用户推回我们要修的那个误诊。让 StaleSeconds 等于探针总预算（30 + 150 = 180）就自动
+# 绕开了：本次启动期间创建的 staging 目录，其 mtime 最大也只有 180 秒，永远够不到陈旧门槛。
+# 误判的代价是不对称的，方向必须选对：误判成 still-preparing 只多等 150 秒；误判成
+# relocation-bug 会让用户白跑一趟修复脚本。所以一律偏向「不指控」。
+function Get-CodexStartupDiagnosis {
+    param(
+        [string]$PackageName = 'OpenAI.Codex',
+
+        # 多久之内有过写入就算「还在准备」。
+        [int]$ActivitySeconds = 90,
+
+        # staging 要「老」到多少秒才算失败残留（见上面的不变式）。
+        [int]$StaleSeconds = 180,
+
+        # 调用方已经算过 Get-CodexRelocationHealth 时传进来，省掉一次 SHA-256
+        # （Get-BundleIdText 要对 cua_node\bin\node.exe 这种大文件做哈希）。
+        # 但它只提供 Id / Path / Installed：目录 mtime 与 staging 枚举一律**现取**，
+        # 因为延长探针之后要重新判定，旧快照里的 StagingCount 已经过期。
+        [object]$Health
+    )
+
+    try {
+        $health = $Health
+        if ($null -eq $health) { $health = Get-CodexRelocationHealth -PackageName $PackageName }
+
+        if ($null -eq $health -or -not $health.Installed) {
+            return [pscustomobject]@{
+                Verdict = 'unknown'
+                Evidence = @('the Codex package could not be resolved')
+                Health = $health
+                ActivePaths = @()
+            }
+        }
+
+        $activityCutoff = (Get-Date).AddSeconds(-$ActivitySeconds)
+        $staleCutoff = (Get-Date).AddSeconds(-$StaleSeconds)
+
+        $activePaths = New-Object System.Collections.Generic.List[string]
+        $staleEvidence = New-Object System.Collections.Generic.List[string]
+
+        foreach ($component in $health.Components) {
+            if ([string]::IsNullOrWhiteSpace($component.Path)) { continue }
+
+            # Path 就是 <Dest>\<bundleId>，父目录才是 App 复制时的落点。
+            $destRoot = Split-Path -Parent $component.Path
+
+            $candidates = New-Object System.Collections.Generic.List[object]
+            foreach ($probe in @($destRoot, $component.Path)) {
+                if ([string]::IsNullOrWhiteSpace($probe)) { continue }
+                $item = Get-Item -LiteralPath $probe -ErrorAction SilentlyContinue
+                if ($item) { [void]$candidates.Add($item) }
+            }
+
+            # 只认**当前版本 id** 的残留，跨版本遗留不可见 —— 与 Get-CodexRelocationHealth 同一套过滤。
+            $stagingItems = @()
+            if (Test-Path -LiteralPath $destRoot) {
+                $stagingItems = @(
+                    Get-ChildItem -LiteralPath $destRoot -Directory -ErrorAction SilentlyContinue |
+                        Where-Object { $_.Name -like ('.staging-' + $component.Id + '-*') -or $_.Name -like ('.repair-' + $component.Id + '-*') }
+                )
+            }
+            foreach ($staging in $stagingItems) { [void]$candidates.Add($staging) }
+
+            foreach ($candidate in $candidates) {
+                if ($candidate.LastWriteTime -gt $activityCutoff) {
+                    [void]$activePaths.Add(('{0} ({1})' -f $candidate.FullName, $component.Name))
+                    break
+                }
+            }
+
+            if ($stagingItems.Count -gt 0 -and -not (Test-Path -LiteralPath $component.Path)) {
+                $newest = $stagingItems | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+                if ($newest -and $newest.LastWriteTime -le $staleCutoff) {
+                    [void]$staleEvidence.Add(('{0}: {1} abandoned staging dir(s), newest {2:yyyy-MM-dd HH:mm:ss}' -f `
+                                $component.Name, $stagingItems.Count, $newest.LastWriteTime))
+                }
+            }
+        }
+
+        if ($activePaths.Count -gt 0) {
+            return [pscustomobject]@{
+                Verdict = 'still-preparing'
+                Evidence = @($activePaths | ForEach-Object { 'written within the last {0} s: {1}' -f $ActivitySeconds, $_ })
+                Health = $health
+                ActivePaths = @($activePaths)
+            }
+        }
+
+        if ($staleEvidence.Count -gt 0) {
+            return [pscustomobject]@{
+                Verdict = 'relocation-bug'
+                Evidence = @($staleEvidence)
+                Health = $health
+                ActivePaths = @()
+            }
+        }
+
+        return [pscustomobject]@{
+            Verdict = 'unknown'
+            Evidence = @('no recent bundle writes and no abandoned staging directories')
+            Health = $health
+            ActivePaths = @()
+        }
+    }
+    catch {
+        # 绝不能向上抛：这是失败路径上的诊断，抛出去会把「包已装好」报成崩溃。
+        # 首次启动时 %LOCALAPPDATA%\OpenAI\Codex 可能整个不存在，Get-Item 就会抛。
+        return [pscustomobject]@{
+            Verdict = 'unknown'
+            Evidence = @(('diagnosis failed: {0}' -f $_.Exception.Message))
+            Health = $Health
+            ActivePaths = @()
+        }
+    }
+}
+
+# 枚举属于该包的进程的**可见顶层窗口**，回答「探针失败时桌面上到底有什么」。
+#
+# 为什么必须上 P/Invoke EnumWindows，而不是只用 Process.MainWindowHandle：
+# .NET 的 MainWindowHandle 只认「无属主（GW_OWNER == 0）且可见」的窗口，
+# **被拥有的模态对话框一律看不见** —— 而启动期挡住主窗口的往往正是这种对话框
+# （2026-10-01 那次是「无法加载组织设置」）。反过来，某些无属主的对话框又会被它当成主窗口。
+# 两个方向都会错，所以它只能回答「有没有主窗口」，答不了「桌面上有什么」。
+#
+# 返回值有两种「空」，语义必须分开，调用方要自己分辨：
+#   $null  拿不到（Add-Type 被策略拦、枚举抛错）→ 写一行 unavailable，不影响任何结论与退出码；
+#   @()    枚举成功，但该包进程确实没有可见顶层窗口。
+# 为此返回时用一元逗号包了一层，防止 PowerShell 把空数组解卷成 $null（那样两种空就分不开了）。
+function Get-CodexWindowInventory {
+    param(
+        [string]$PackageName = 'OpenAI.Codex',
+        [string]$InstallLocation
+    )
+
+    try {
+        $processIds = @(
+            Get-CodexPackageProcess -PackageName $PackageName -InstallLocation $InstallLocation |
+                ForEach-Object { $_.Id }
+        )
+        if ($processIds.Count -eq 0) { return , @() }
+
+        if (-not ('CodexWindowInventoryNative' -as [type])) {
+            # 枚举整个放在 C# 里做，而不是把 PowerShell 回调交给 EnumWindows：
+            # PS 5.1 把 scriptblock 转 delegate 时，回调里给外层变量**重新赋值**不生效
+            # （只能改对象内容），这类坑在无人值守的隐藏 worker 里极难查。
+            Add-Type -TypeDefinition @'
+using System;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+using System.Text;
+
+public static class CodexWindowInventoryNative
+{
+    public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    public static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+
+    [DllImport("user32.dll")]
+    public static extern bool IsWindowVisible(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr GetWindow(IntPtr hWnd, uint uCmd);
+
+    // 必须用 ...W 这组：对**其他进程**的窗口，GetWindowText（无 W 后缀）会发 WM_GETTEXT
+    // 同步等待，目标进程一旦卡死就把调用方一起挂住。worker 是隐藏进程、无人值守，
+    // 挂住的表现是界面永久停在 working（electron/ps.cjs 完全没有超时）。带 W 的版本
+    // 只读窗口标题的缓存副本，不跨进程等消息。
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern int GetWindowTextW(IntPtr hWnd, StringBuilder lpString, int nMaxCount);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern int GetClassNameW(IntPtr hWnd, StringBuilder lpClassName, int nMaxCount);
+
+    public static List<IntPtr> Collect(uint[] processIds)
+    {
+        HashSet<uint> wanted = new HashSet<uint>(processIds);
+        List<IntPtr> found = new List<IntPtr>();
+        EnumWindows(delegate(IntPtr hWnd, IntPtr lParam)
+        {
+            uint pid;
+            GetWindowThreadProcessId(hWnd, out pid);
+            if (wanted.Contains(pid)) { found.Add(hWnd); }
+            return true;
+        }, IntPtr.Zero);
+        return found;
+    }
+
+    public static uint ProcessId(IntPtr hWnd)
+    {
+        uint pid;
+        GetWindowThreadProcessId(hWnd, out pid);
+        return pid;
+    }
+
+    public static string Text(IntPtr hWnd)
+    {
+        StringBuilder buffer = new StringBuilder(512);
+        GetWindowTextW(hWnd, buffer, buffer.Capacity);
+        return buffer.ToString();
+    }
+
+    public static string ClassName(IntPtr hWnd)
+    {
+        StringBuilder buffer = new StringBuilder(256);
+        GetClassNameW(hWnd, buffer, buffer.Capacity);
+        return buffer.ToString();
+    }
+}
+'@ -ErrorAction Stop
+        }
+
+        # 注意写 [uint32[]] 而不是 [uint[]]：PowerShell 5.1 的类型加速器里没有 uint
+        # （uint 是 C# 关键字，不是 .NET 类型名），写成 [uint] 会抛「找不到类型 [uint]」。
+        $handles = [CodexWindowInventoryNative]::Collect([uint32[]]$processIds)
+        $windows = New-Object System.Collections.Generic.List[object]
+        foreach ($handle in $handles) {
+            # 只报可见窗口：不可见的基础设施窗口（输入法、crashpad、托盘）会把日志整个淹掉，
+            # 2026-09-07 那次排查就被这批窗口误导过（docs/.../README.md 第 2 节）。
+            if (-not [CodexWindowInventoryNative]::IsWindowVisible($handle)) { continue }
+
+            # GW_OWNER = 4。有属主 = 这是个附属窗口（典型就是模态对话框），
+            # 正是 MainWindowHandle 看不见的那一类。
+            $owner = [CodexWindowInventoryNative]::GetWindow($handle, 4)
+            [void]$windows.Add([pscustomobject]@{
+                    ProcessId = [int][CodexWindowInventoryNative]::ProcessId($handle)
+                    Class = [CodexWindowInventoryNative]::ClassName($handle)
+                    Title = [CodexWindowInventoryNative]::Text($handle)
+                    Owned = ($owner -ne [IntPtr]::Zero)
+                })
+        }
+
+        # 用 .ToArray() 而不是 @($windows)：PS 5.1 下数组子表达式作用在 List[object] 上会抛
+        # ArgumentException「参数类型不匹配」（实测与列表是否为空无关；List[string] / List[int] 反而正常）。
+        # 别把它「简化」成 @($windows)，那会让整条探针失败路径崩掉。
+        return , $windows.ToArray()
+    }
+    catch {
+        return $null
+    }
+}
+
 function Get-CodexAppUserModelId {
     param(
         [Parameter(Mandatory = $true)]
@@ -904,6 +1165,8 @@ Export-ModuleMember -Function `
     Get-CodexAppUserModelId, `
     Get-CodexPackageProcess, `
     Get-CodexRelocationHealth, `
+    Get-CodexStartupDiagnosis, `
+    Get-CodexWindowInventory, `
     Get-InstalledCodexPackageInfo, `
     Install-CodexPackage, `
     Invoke-RgAdguardQuery, `

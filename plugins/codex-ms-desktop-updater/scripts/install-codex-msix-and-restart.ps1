@@ -13,6 +13,13 @@ param(
 
     [int]$ProbeSeconds = 30,
 
+    # 探针失败后，如果诊断说「还在把运行时落到本地缓存」，再等这么久。
+    #
+    # 首次启动要落几百 MB（2026-10-01 实测约 132 秒），30 秒的探针必然误判。这个延长是
+    # 有条件的：只有拿到「最近还有写入」的证据才延长，拿不到就立刻如实报告。
+    # 0 表示不延长。
+    [int]$ProbeExtensionSeconds = 150,
+
     [switch]$SkipLaunch,
 
     # 回退（装一个比当前更旧的版本）必须显式声明。不加这个开关时 Windows 会拒绝降级，
@@ -44,9 +51,8 @@ param(
     #
     # 刻意不复用 -Worker。worker 后面还要做版本校验、剪枝、重启和窗口探测，而重启用的是
     # explorer.exe shell:AppsFolder 激活请求 —— 从一个**提权**进程发出去行为不确定
-    # （可能起不来，也可能把 Codex 拉成管理员进程），而窗口探测失败还会打出「官方加密
-    # 资源搬迁 bug」那套误导性结论。所以提权进程只负责装包这一段，其余照旧留在
-    # 非提权的 worker 里跑。
+    # （可能起不来，也可能把 Codex 拉成管理员进程）。所以提权进程只负责装包这一段，
+    # 其余（含重启与探针）照旧留在非提权的 worker 里跑。
     [switch]$ElevatedWorker
 )
 
@@ -285,6 +291,7 @@ if (-not $Worker -and -not $ElevatedWorker) {
         "-AppId", $AppId,
         "-StartDelaySeconds", $StartDelaySeconds,
         "-ProbeSeconds", $ProbeSeconds,
+        "-ProbeExtensionSeconds", $ProbeExtensionSeconds,
         "-LogPath", $LogPath
     )
 
@@ -488,34 +495,111 @@ Start-Process -FilePath "explorer.exe" -ArgumentList ("shell:AppsFolder\{0}" -f 
 Write-InstallLog ("Restart requested. Installed version: {0}" -f $installedPackage.Version)
 
 # ---------- post-restart window probe ----------
-# Detects the official "encrypted-resource relocation" bug where the app keeps
-# running but its main window never appears after an update. If the window does
-# not show up within $ProbeSeconds, log a prominent warning and a relocation
-# health snapshot so the failure is visible in the install log.
+# 探针只回答一个问题：主窗口出现了没有。它**不**回答「为什么没出现」。
+#
+# 为什么不能顺口给出原因：「进程活着但没有主窗口」这个现象已经被实测证明有多种
+# 互不相干的原因，光看进程和资源目录分不出来 ——
+#   a) 官方的加密资源搬迁失败（真实存在，见 docs/codex-desktop-encrypted-copy-fix）；
+#   b) 首次启动正在把几百 MB 运行时物化到用户缓存，纯粹是**还没到**而已。2026-10-01
+#      实测：21:10:24 发出重启请求，21:10:30 才落下第一个 bundle，21:12:36 才落完
+#      （约 132 秒），而当时探针只等 30 秒；结果界面断言了搬迁 bug，用户白跑一趟修复；
+#   c) 被一个跟资源无关的启动对话框挡住（那次的模态框是「无法加载组织设置」），
+#      用户重试一次就恢复了。
+# 而且 MainWindowHandle 的判据是「无属主（GW_OWNER == 0）且可见」，被拥有的模态
+# 对话框它看不见、无属主的对话框它又会当成主窗口 —— 正反两个方向都会错。
+#
+# 所以这里的规矩是：先按证据决定要不要多等一会儿，再按证据决定要不要说出原因，
+# 说不出来就只报事实，绝不指控。
 Write-InstallLog ("Probing for a visible main window (up to {0} s)..." -f $ProbeSeconds)
 $windowUp = Test-CodexDesktopWindowUp -PackageName $PackageName -Seconds $ProbeSeconds
+
+$probeBudgetSeconds = $ProbeSeconds
+$diagnosis = $null
+
+if (-not $windowUp -and $ProbeExtensionSeconds -gt 0) {
+    $diagnosis = Get-CodexStartupDiagnosis -PackageName $PackageName
+    if ($diagnosis.Verdict -eq 'still-preparing') {
+        Write-InstallLog ("Codex is still materializing its runtime into the local cache ({0}). Extending the window probe by {1} s." -f ($diagnosis.Evidence -join '; '), $ProbeExtensionSeconds)
+        $probeBudgetSeconds = $ProbeSeconds + $ProbeExtensionSeconds
+        # 延长过就必须重判：上面那份快照已经过期。
+        $diagnosis = $null
+        # 不再传 -Launch：激活请求上面已经发过一次，Test-CodexDesktopWindowUp 见已有进程也会自己跳过。
+        $windowUp = Test-CodexDesktopWindowUp -PackageName $PackageName -Seconds $ProbeExtensionSeconds
+    }
+}
 
 if ($windowUp) {
     Write-InstallLog "Window probe OK: Codex main window is visible."
 }
 else {
-    Write-InstallLog "WINDOW_PROBE=FAILED: Codex restarted but NO main window appeared within $ProbeSeconds s."
-    Write-InstallLog "This is the signature of the official encrypted-resource relocation bug."
-
+    # 先把证据全部采集完，再写第一行日志。这条顺序是硬约束：Get-CodexRelocationHealth
+    # 要对 cua_node\bin\node.exe 做 SHA-256、Get-CodexWindowInventory 首次还要 Add-Type
+    # 编译 C#，两者都是数百毫秒到数秒的实打实开销；而桌面端是按「最后一行日志之后
+    # DIAGNOSTIC_QUIET_MS (1200ms) 没有新行」（兜底 6 秒）判定诊断已经落完的 —— 中间插
+    # 一段静默，整段诊断会被丢掉，而这恰恰是最需要诊断的那条路径。
+    $health = $null
+    $healthError = $null
     try {
         $health = Get-CodexRelocationHealth -PackageName $PackageName
-        if ($health.Installed) {
-            Write-InstallLog "Relocation health snapshot:"
-            foreach ($component in $health.Components) {
-                Write-InstallLog ("  component {0,-10} state={1}" -f $component.Name, $component.State)
-            }
-            Write-InstallLog ("  bundled plugins materialized: {0}" -f $health.PluginsMaterialized)
-        }
     }
     catch {
-        Write-InstallLog ("Could not collect relocation health: {0}" -f $_.Exception.Message)
+        $healthError = $_.Exception.Message
     }
 
-    Write-InstallLog "Remedy: run docs/codex-desktop-encrypted-copy-fix/repair-codex-desktop-bundles.ps1 (from the repo root) with pwsh, then relaunch Codex."
+    if ($null -eq $diagnosis) {
+        # 复用刚取的健康快照：判定只读 Installed / Id / Path 与目录 mtime，不读 State，
+        # 所以这份快照既够用，又省掉一次 SHA-256。
+        $diagnosis = Get-CodexStartupDiagnosis -PackageName $PackageName -Health $health
+    }
+
+    $windows = Get-CodexWindowInventory -PackageName $PackageName -InstallLocation $installedPackage.InstallLocation
+
+    Write-InstallLog "WINDOW_PROBE=FAILED: Codex restarted but NO main window appeared within $probeBudgetSeconds s."
+    Write-InstallLog ("STARTUP_DIAGNOSIS={0}" -f $diagnosis.Verdict)
+
+    $evidenceText = if ($diagnosis.Evidence.Count -gt 0) { $diagnosis.Evidence -join '; ' } else { 'none' }
+    switch ($diagnosis.Verdict) {
+        'still-preparing' {
+            Write-InstallLog ("This is NOT the encrypted-resource relocation bug. Codex is still materializing its runtime into the local cache. Recent write activity: {0}." -f $evidenceText)
+        }
+        'relocation-bug' {
+            Write-InstallLog "This is the signature of the official encrypted-resource relocation bug."
+            Write-InstallLog ("Evidence: {0}" -f $evidenceText)
+        }
+        default {
+            Write-InstallLog ("No cause could be determined from the relocation-health evidence. This is not, by itself, evidence of the encrypted-resource relocation bug. Evidence: {0}." -f $evidenceText)
+            Write-InstallLog "Next: check the app's own logs under %LOCALAPPDATA%\OpenAI\Codex, and whether a Codex dialog or a crash is blocking the main window."
+        }
+    }
+
+    if ($null -ne $healthError) {
+        Write-InstallLog ("Could not collect relocation health: {0}" -f $healthError)
+    }
+    elseif ($health -and $health.Installed) {
+        Write-InstallLog "Relocation health snapshot:"
+        foreach ($component in $health.Components) {
+            Write-InstallLog ("  component {0,-10} state={1}" -f $component.Name, $component.State)
+        }
+        Write-InstallLog ("  bundled plugins materialized: {0}" -f $health.PluginsMaterialized)
+    }
+
+    if ($null -eq $windows) {
+        Write-InstallLog "Window inventory unavailable."
+    }
+    else {
+        Write-InstallLog "Codex top-level windows:"
+        if ($windows.Count -eq 0) {
+            Write-InstallLog "  (none visible)"
+        }
+        else {
+            foreach ($window in $windows) {
+                Write-InstallLog ("  pid={0} owned={1} class={2} title={3}" -f $window.ProcessId, $window.Owned, $window.Class, ('"{0}"' -f $window.Title))
+            }
+        }
+    }
+
+    if ($diagnosis.Verdict -eq 'relocation-bug') {
+        Write-InstallLog "Remedy: run docs/codex-desktop-encrypted-copy-fix/repair-codex-desktop-bundles.ps1 (from the repo root) with pwsh, then relaunch Codex."
+    }
     exit 4
 }

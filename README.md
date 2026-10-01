@@ -27,8 +27,9 @@
 - **插件自更新**:对比本机与远端 `plugin.json` 版本,自动从 GitHub 更新插件。
 - **代理控制**:`-NoProxy` 让本次进程下载不走代理。
 - **Web 界面**:本地可视化操作,按钮即命令(见下文「Web 界面」)。
-- **健康自检 + 窗口探测**:检测"进程在跑但主窗口不出现"的官方加密资源搬迁
-  bug(见下文「健康自检与窗口探测」与 `docs/`)。
+- **健康自检 + 窗口探测**:检测"进程在跑但主窗口不出现",并按证据给出判定
+  (还在准备 / 官方加密资源搬迁 bug / 判不出来),三档里只有搬迁 bug 那一档才提示修复脚本
+  (见下文「健康自检与窗口探测」与 `docs/`)。
 
 ## 目录结构
 
@@ -441,8 +442,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -File plugins\codex-ms-desktop-upd
 退出码:`0` 健康 / `1` 组件缺失或降级 / `2` 未安装 / `3` 探测超时未出现主窗口。
 
 - `-InstallWithRestart` 安装后也会自动探测窗口;若未出现主窗口,安装日志会写
-  `WINDOW_PROBE=FAILED` 与搬迁健康快照并提示修复脚本。
-- 若确认为该 bug,运行 `docs\` 下的修复脚本即可恢复(见下)。
+  `WINDOW_PROBE=FAILED`、一行 `STARTUP_DIAGNOSIS=` 判定与 Codex 的可见顶层窗口清单。
+  判定分三档:`still-preparing`(还在把运行时物化到用户缓存,稍等即可)、
+  `relocation-bug`(确为搬迁问题)、`unknown`(现有证据判不出来)。
+- **只有判定为 `relocation-bug` 时**日志才会给出修复脚本那一行。首次启动要物化几百 MB
+  运行时(实测约 132 秒),30 秒的探针本来就可能没等到窗口 —— 那不代表出问题了,所以
+  探针会在拿到「最近仍有写入」的证据时自动延长(最多再等 150 秒)。
+- 若确认是该 bug,运行 `docs\` 下的修复脚本即可恢复(见下)。
 
 ## 修复文档:docs/codex-desktop-encrypted-copy-fix
 

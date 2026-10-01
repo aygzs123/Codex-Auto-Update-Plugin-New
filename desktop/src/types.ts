@@ -24,6 +24,11 @@ export interface HealthReport {
   /** window-visible | window-not-visible | null（未探测） */
   probeResult: string | null;
   probeMessage: string | null;
+  /**
+   * 窗口没出现时，脚本按证据给出的判定；判不出来就是 "unknown"，老脚本/没探测则是 null。
+   * 界面上的文案与「要不要给修复入口」都由它决定（见 src/lib/diagnosis.ts）。
+   */
+  startupDiagnosis: StartupDiagnosis;
   /** 是否值得给出「修复」入口。由主进程按 parse.cjs 的规则判定。 */
   needsRepair: boolean;
   raw: string;
@@ -87,14 +92,32 @@ export type DownloadResult =
 
 export interface InstallResult {
   ok: boolean;
-  /** 已安装但主窗口没出现 —— 官方加密资源搬迁 bug 的特征。 */
+  /**
+   * 已安装但主窗口没出现 —— 这是**事实**，不含原因。
+   * 原因看 startupDiagnosis：它可能说「还在落缓存」、可能说「就是那个搬迁 bug」，
+   * 也可能说「判不出来」。
+   */
   windowMissing: boolean;
+  /**
+   * 三档判定之一。用 `?` 是因为这个字段是后加的：主进程回退桩与老结果里没有它，
+   * 界面必须容忍 undefined（按「判不出来」处理）。
+   */
+  startupDiagnosis?: StartupDiagnosis;
   remedy: string | null;
   healthSnapshot: Array<{ name: string; state: string }>;
   logPath: string;
   version: string | null;
   health: HealthReport | null;
 }
+
+/**
+ * 窗口探针没等到主窗口时的判定。
+ *
+ *   still-preparing  还在把运行时物化到本地缓存（等一会儿就好，别修）
+ *   relocation-bug   官方的加密资源搬迁 bug（这才该修）
+ *   unknown          现有证据判不出原因（只说事实，不指控）
+ */
+export type StartupDiagnosis = "still-preparing" | "relocation-bug" | "unknown" | null;
 
 /**
  * 「打开 Codex」的结果。
@@ -108,8 +131,10 @@ export interface LaunchResult {
   windowVisible: boolean;
   version: string | null;
   appUserModelId: string | null;
-  /** 窗口没出现时脚本给出的说明（官方 bug 的特征描述）。 */
+  /** 窗口没出现时脚本给出的原始说明（脚本 stdout 里的诊断句）。 */
   probeMessage: string | null;
+  /** 原因判定，见 StartupDiagnosis。 */
+  startupDiagnosis: StartupDiagnosis;
   health: HealthReport | null;
 }
 

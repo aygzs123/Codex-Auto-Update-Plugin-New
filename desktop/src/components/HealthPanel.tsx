@@ -1,5 +1,6 @@
 import type { HealthReport } from "../types";
 import { healthComponentText, healthStateText } from "../lib/format";
+import { diagnosisCopy } from "../lib/diagnosis";
 
 const OVERALL_TEXT: Record<string, string> = {
   ok: "资源完整",
@@ -32,6 +33,8 @@ export function HealthPanel({
   onRepair: () => void;
 }) {
   const probeFailed = health?.probeResult === "window-not-visible";
+  // 没等到窗口时说什么、要不要提修复，全部走唯一映射表 —— 这里不再自己下结论。
+  const diagnosis = diagnosisCopy(health?.startupDiagnosis);
 
   return (
     <section className="panel health-card">
@@ -78,12 +81,12 @@ export function HealthPanel({
       )}
 
       {health?.probeResult && (
-        // 用 soft 而不是硬错误样式：窗口没出现是被诊断出来的已知故障，界面同时给出了
-        // 修复入口，它不是「这个应用坏了」。硬错误色留给真正的意外失败 ——
+        // 用 soft 而不是硬错误样式：窗口没出现是被诊断出来的结果，界面同时给出了结论与
+        // 下一步，它不是「这个应用坏了」。硬错误色留给真正的意外失败 ——
         // 渲染冒烟测试也正是用 .error-text:not(.soft) 判定「界面是否显示了错误」。
         <p className={probeFailed ? "error-text soft" : "field-help"}>
           {probeFailed
-            ? "窗口自检：Codex 进程已启动，但等待期内没有出现主窗口。这正是官方加密资源搬迁 bug 的特征，可以用下面的修复重建资源副本。"
+            ? `窗口自检：Codex 进程已启动，但等待期内没有出现主窗口。${diagnosis.title}。${diagnosis.body}`
             : "窗口自检：主窗口已正常出现。"}
         </p>
       )}
@@ -94,6 +97,9 @@ export function HealthPanel({
         <button type="button" className="button" disabled={busy} onClick={onProbe}>
           {probing ? "自检中…" : "运行健康自检"}
         </button>
+        {/* 这颗按钮常驻，不跟着判定走：它是个「我想重建就重建」的手动入口，不是结论。
+            结论里的修复建议只出现在判定确实指向搬迁 bug 的地方（横幅），免得拿不出证据
+            就把人推去修。修复脚本本身幂等，健康时只会打印 SKIP。 */}
         <button type="button" className="button" disabled={busy} onClick={onRepair}>
           {repairing ? "修复中…" : "修复资源副本"}
         </button>

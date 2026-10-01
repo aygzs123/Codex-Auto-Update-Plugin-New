@@ -616,4 +616,216 @@ Assert-True -Condition ($checkScriptText -match '-AllowElevation:\$AllowElevatio
 Assert-True -Condition ($checkScriptText -match '\[switch\]\$AllowElevation') `
     -Message "check script must accept -AllowElevation"
 
+# ---------- 启动诊断：没等到窗口时不许凭空指控「加密资源搬迁 bug」 ----------
+#
+# 2026-10-01 的真实故障：安装本身成功，探针 30 秒没等到主窗口，界面于是断言
+# 「这是官方已知的加密资源搬迁问题的特征」并让用户去跑修复脚本。而实测时间线是：
+# 重启请求 21:10:24 → 21:10:30 win-cli 落盘 → 21:10:54 探针超时断言 bug →
+# 21:12:35~36 cua_node 与 win-rg 才落盘（首次启动要物化约 420 MB，实测 132 秒）→
+# 21:12:58 一个与应用无关的组织策略对话框弹出 → 用户 21:23 重试即恢复。
+# 也就是说：断言是在没有任何证据的情况下下的，用户照着修了一遍根本不存在的问题。
+#
+# 更早的两次实测还证明，旧判据（拿组件状态推断原因）**正反两个方向都是错的**：
+#   · 2026-09-07 那次**真的**搬迁 bug：win-cli 自己物化成功了，主窗口照样没出现；
+#   · 今天这台**正常**机器的健康快照：wsl-cli = missing、PluginsMaterialized = False，
+#     而 Codex 一切正常。
+# 所以判定**完全不读组件状态**，只看两件事：最近有没有写入（还在准备），
+# 以及有没有陈旧且最终目录没落成的 staging 残留（才是 bug）。
+#
+# 下面 6 条行为用例把这个矩阵钉住，第 4 条就是今天这台机器的形状 ——
+# 它必须判 unknown，绝不能判成 bug。
+
+$diagnosisFixtureRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("codex-diagnosis-" + [guid]::NewGuid().ToString("N"))
+try {
+    $bundleId = '8e5b6932251c2c1c'
+    $now = Get-Date
+
+    function New-DiagnosisHealth {
+        param(
+            [object[]]$Components,
+            [bool]$Installed = $true
+        )
+
+        # 只造判定真正读得到的字段。刻意**不**提供 StagingCount：判定必须自己现取目录，
+        # 因为延长探针 150 秒之后要重新判，快照里的旧计数已经过期。
+        [pscustomobject]@{ Installed = $Installed; Components = $Components }
+    }
+
+    function New-DiagnosisComponent {
+        param([string]$Name, [string]$Path)
+
+        [pscustomobject]@{ Name = $Name; Id = $bundleId; Path = $Path; State = 'missing'; Leftovers = 0 }
+    }
+
+    # 1) 落点目录 5 秒前还在写 → 还在准备（首次启动物化运行时的形态）
+    $freshBin = Join-Path $diagnosisFixtureRoot "fresh\bin"
+    New-Item -ItemType Directory -Path $freshBin -Force | Out-Null
+    (Get-Item -LiteralPath $freshBin).LastWriteTime = $now.AddSeconds(-5)
+    $diagnosis = Get-CodexStartupDiagnosis -PackageName 'OpenAI.Codex' -Health (New-DiagnosisHealth -Components @(
+            (New-DiagnosisComponent -Name 'win-cli' -Path (Join-Path $freshBin $bundleId))
+        ))
+    Assert-Equal 'still-preparing' $diagnosis.Verdict "a bundle dir written 5 s ago means Codex is still materializing its runtime"
+    Assert-True -Condition ($diagnosis.ActivePaths.Count -eq 1) "the active path must be reported as evidence"
+    Assert-True -Condition ($diagnosis.ActivePaths[0].Contains($freshBin)) `
+        -Message "the evidence must point at the directory that was just written"
+
+    # 2) 只有 staging 目录新、落点目录本身已经很久没动 → 同样是在准备。
+    #    父目录的 mtime 必须显式压老，否则这条会被父目录的「新」蒙对 ——
+    #    那就证明不了判据真的看了 staging（而 deep copy 的后半程恰恰只动 staging 内部）。
+    $stagingBin = Join-Path $diagnosisFixtureRoot "fresh-staging\bin"
+    $stagingDir = Join-Path $stagingBin ('.staging-' + $bundleId + '-aaa')
+    New-Item -ItemType Directory -Path $stagingDir -Force | Out-Null
+    (Get-Item -LiteralPath $stagingBin).LastWriteTime = $now.AddSeconds(-600)
+    (Get-Item -LiteralPath $stagingDir).LastWriteTime = $now.AddSeconds(-10)
+    $diagnosis = Get-CodexStartupDiagnosis -PackageName 'OpenAI.Codex' -Health (New-DiagnosisHealth -Components @(
+            (New-DiagnosisComponent -Name 'win-cli' -Path (Join-Path $stagingBin $bundleId))
+        ))
+    Assert-Equal 'still-preparing' $diagnosis.Verdict "a staging dir written 10 s ago means the copy is still in flight"
+    Assert-True -Condition ($diagnosis.ActivePaths[0].Contains('.staging-')) `
+        -Message "the evidence must name the staging directory, not the parent"
+
+    # 3) 三个条件同时成立才算 bug：有 staging 残留 + 最终目录没落成 + 残留已经陈旧。
+    $bugBin = Join-Path $diagnosisFixtureRoot "abandoned\bin"
+    $bugStaging = Join-Path $bugBin ('.staging-' + $bundleId + '-bbb')
+    New-Item -ItemType Directory -Path $bugStaging -Force | Out-Null
+    foreach ($item in @($bugBin, $bugStaging)) {
+        (Get-Item -LiteralPath $item).LastWriteTime = $now.AddSeconds(-3600)
+    }
+    $diagnosis = Get-CodexStartupDiagnosis -PackageName 'OpenAI.Codex' -Health (New-DiagnosisHealth -Components @(
+            (New-DiagnosisComponent -Name 'cua_node' -Path (Join-Path $bugBin $bundleId))
+        ))
+    Assert-Equal 'relocation-bug' $diagnosis.Verdict "stale staging leftovers plus a missing destination is the real bug"
+    Assert-True -Condition (($diagnosis.Evidence -join ' ') -match 'abandoned staging') `
+        -Message "the bug verdict must cite the abandoned staging directory"
+    Assert-Equal 0 $diagnosis.ActivePaths.Count "nothing was written recently, so there is no activity evidence"
+
+    # 4) 今天这台机器的形状：什么都没在写、也没有任何残留 → **unknown**。
+    #    这条是本次修复的核心：同样是「窗口没出现」，这里的答案必须是「判不出来」，
+    #    而不是「就是那个 bug」。
+    $healthyBin = Join-Path $diagnosisFixtureRoot "healthy\bin"
+    New-Item -ItemType Directory -Path $healthyBin -Force | Out-Null
+    (Get-Item -LiteralPath $healthyBin).LastWriteTime = $now.AddSeconds(-3600)
+    $diagnosis = Get-CodexStartupDiagnosis -PackageName 'OpenAI.Codex' -Health (New-DiagnosisHealth -Components @(
+            (New-DiagnosisComponent -Name 'win-cli' -Path (Join-Path $healthyBin $bundleId)),
+            # 第二个组件整个不存在，正是今天这台机器上 wsl-cli 的样子 ——
+            # 它绝不能把结论推向任何一边。
+            (New-DiagnosisComponent -Name 'wsl-cli' -Path (Join-Path $diagnosisFixtureRoot "healthy\wsl\deadbeefdeadbeef"))
+        ))
+    Assert-Equal 'unknown' $diagnosis.Verdict "a quiet machine with a missing bundle must NOT be accused of the relocation bug"
+
+    # 5) 拿不到信息时一律 unknown，且**绝不抛错**：这是失败路径上的诊断，抛出去会把
+    #    「包已经装好了」报成崩溃。首次启动时 %LOCALAPPDATA%\OpenAI\Codex 可能整个不存在。
+    $diagnosis = Get-CodexStartupDiagnosis -PackageName 'OpenAI.Codex' -Health (New-DiagnosisHealth -Components @() -Installed $false)
+    Assert-Equal 'unknown' $diagnosis.Verdict "an unresolved package must not be diagnosed"
+    $diagnosis = Get-CodexStartupDiagnosis -PackageName 'OpenAI.Codex' -Health (New-DiagnosisHealth -Components @(
+            (New-DiagnosisComponent -Name 'win-cli' -Path (Join-Path $diagnosisFixtureRoot "does-not-exist\bin\$bundleId"))
+        ))
+    Assert-Equal 'unknown' $diagnosis.Verdict "a wholly missing destination with no leftovers must not be diagnosed"
+    # 整个 health 对象缺失时也要能跑（内部会自己去取，取不到就 unknown）。
+    $diagnosis = Get-CodexStartupDiagnosis -PackageName 'Definitely.Not.Installed' -Health $null
+    Assert-Equal 'unknown' $diagnosis.Verdict "a package that cannot be resolved must not be diagnosed"
+
+    # 6) 不变式：陈旧门槛（180 s）必须等于探针总预算（30 + 150 s）。
+    #    staging 顶层目录的 LastWriteTime 只在**直接子项**被创建时更新，deep copy 的后半程
+    #    一直往已存在的子树里写文件，所以它看起来可以「很久没动」。把门槛压到总预算，
+    #    就保证了本次启动期间创建的 staging 永远够不到陈旧门槛。
+    #    这条用例取中间那段（100 s，既过了 90 s 的活动窗口、又没到 180 s 的陈旧门槛）：
+    #    正确结论是 unknown —— 不指控，而不是误判成 bug。
+    $partialBin = Join-Path $diagnosisFixtureRoot "partial\bin"
+    $partialStaging = Join-Path $partialBin ('.staging-' + $bundleId + '-ccc')
+    New-Item -ItemType Directory -Path $partialStaging -Force | Out-Null
+    (Get-Item -LiteralPath $partialBin).LastWriteTime = $now.AddSeconds(-3600)
+    (Get-Item -LiteralPath $partialStaging).LastWriteTime = $now.AddSeconds(-100)
+    $diagnosis = Get-CodexStartupDiagnosis -PackageName 'OpenAI.Codex' -Health (New-DiagnosisHealth -Components @(
+            (New-DiagnosisComponent -Name 'cua_node' -Path (Join-Path $partialBin $bundleId))
+        )) -ActivitySeconds 90 -StaleSeconds 180
+    Assert-Equal 'unknown' $diagnosis.Verdict "a staging dir between the activity and stale windows must stay undiagnosed"
+}
+finally {
+    if (Test-Path -LiteralPath $diagnosisFixtureRoot) {
+        Remove-Item -LiteralPath $diagnosisFixtureRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+# ---------- 窗口清单：探针失败时桌面上到底有什么 ----------
+#
+# 光知道「没有主窗口」不够。2026-10-01 那次真正挡住主窗口的是一个**有属主**的模态框
+# （「无法加载组织设置」），而 .NET 的 Process.MainWindowHandle 恰恰看不见有属主的窗口，
+# 所以只能上 EnumWindows 自己枚举。
+$inventory = Get-CodexWindowInventory -PackageName 'Definitely.Not.Installed'
+Assert-True -Condition ($null -ne $inventory) `
+    -Message "an unresolvable package must yield an empty inventory, not the 'could not collect' null"
+Assert-Equal 0 $inventory.Count "a package that is not installed owns no windows"
+
+# 真跑一遍 P/Invoke：拿 powershell.exe 自己当「属于该包的进程」。当前进程没有顶层窗口
+# （控制台窗口归 conhost），所以期望是 0 个 —— 但这条会真正编译那段 C#、真正调一次
+# EnumWindows，能证明窗口清单不是「只存在于注释里」。返回 $null 就说明收集失败了。
+$inventory = Get-CodexWindowInventory -PackageName 'Windows PowerShell' -InstallLocation $PSHOME
+Assert-True -Condition ($null -ne $inventory) `
+    -Message "the window inventory must be collectable against a real process list (a null means Add-Type or the enum failed)"
+Assert-Equal 0 $inventory.Count "powershell.exe owns no top-level window of its own"
+
+Assert-True -Condition ($moduleText -match 'function Get-CodexStartupDiagnosis') `
+    -Message "provides a startup diagnosis resolver"
+Assert-True -Condition ($moduleText -match 'Get-CodexStartupDiagnosis,') `
+    -Message "exports the startup diagnosis resolver"
+Assert-True -Condition ($moduleText -match 'function Get-CodexWindowInventory') `
+    -Message "provides a window inventory resolver"
+Assert-True -Condition ($moduleText -match 'Get-CodexWindowInventory,') `
+    -Message "exports the window inventory resolver"
+Assert-True -Condition ($moduleText -match 'public static extern bool EnumWindows') `
+    -Message "the window inventory must enumerate top-level windows via EnumWindows"
+Assert-True -Condition ($moduleText -match 'Add-Type -TypeDefinition') `
+    -Message "the window inventory must declare its P/Invoke surface"
+# MainWindowHandle 只认「无属主且可见」的窗口，有属主的模态框一律看不见 —— 必须自己取属主。
+Assert-True -Condition ($moduleText -match 'GetWindow\(IntPtr hWnd, uint uCmd\)') `
+    -Message "the window inventory must read GW_OWNER itself"
+# 只看 DllImport 声明这一处（注释里会提到无 W 后缀的名字，那是解释用的）。
+# 无 W 的版本对**其他进程**的窗口会发 WM_GETTEXT 同步等待，目标进程卡死就把调用方一起
+# 挂住 —— worker 是无人值守的隐藏进程，挂住 = 界面永久停在 working（ps.cjs 没有超时）。
+Assert-True -Condition ($moduleText -match 'public static extern int GetWindowTextW\(') `
+    -Message "window titles must be read with GetWindowTextW"
+Assert-True -Condition (-not ($moduleText -match 'public static extern int GetWindowText\(')) `
+    -Message "must not use the non-W GetWindowText (it blocks on a stuck target process)"
+
+# ---------- 输出契约：判定行必须夹在失败行与结论之间 ----------
+#
+# 下面这些断言用的是**去注释**后的代码，位置全用 IndexOf 相对比较 —— 只断言「出现过」
+# 挡不住真正要防的回归：把签名句挪回无条件输出的位置，字符串照样在文件里。
+$healthText = Get-Content -LiteralPath (Join-Path $pluginRoot "scripts/check-codex-desktop-health.ps1") -Raw
+$healthCode = ($healthText -split "`n" | Where-Object { $_.TrimStart() -notmatch '^#' }) -join "`n"
+
+foreach ($case in @(
+        @{ Name = 'install-codex-msix-and-restart.ps1'; Code = $installCode; Failure = 'WINDOW_PROBE=FAILED:'; Diagnosis = 'Write-InstallLog ("STARTUP_DIAGNOSIS={0}"'; Repair = 'Remedy: run docs/' },
+        @{ Name = 'check-codex-desktop-health.ps1'; Code = $healthCode; Failure = 'Write-Host "RESULT=window-not-visible"'; Diagnosis = 'Write-Host ("STARTUP_DIAGNOSIS={0}"'; Repair = 'Run the repair script from docs/' }
+    )) {
+    $code = $case.Code
+    $failureAt = $code.IndexOf($case.Failure)
+    $diagnosisAt = $code.IndexOf($case.Diagnosis)
+    $stillPreparingAt = $code.IndexOf("'still-preparing' {")
+    $notBugAt = $code.IndexOf('This is NOT the encrypted-resource relocation bug')
+    $bugBranchAt = $code.IndexOf("'relocation-bug' {")
+    $signatureAt = $code.IndexOf('This is the signature of the official')
+    $unknownAt = $code.IndexOf('No cause could be determined from the relocation-health evidence')
+    $repairAt = $code.IndexOf($case.Repair)
+
+    Assert-True -Condition ($failureAt -ge 0) -Message "$($case.Name): 找不到「窗口没出现」这一行"
+    Assert-True -Condition ($diagnosisAt -gt $failureAt) `
+        -Message "$($case.Name): 判定行必须紧跟在失败行之后（否则界面拿不到原因）"
+    # 签名句只能在 relocation-bug 这一支里：无条件输出 = 误诊原样复现。
+    Assert-True -Condition ($signatureAt -gt $bugBranchAt) `
+        -Message "$($case.Name): 「就是加密资源搬迁 bug」这句必须落在 relocation-bug 分支之内"
+    Assert-True -Condition ($stillPreparingAt -ge 0 -and $notBugAt -gt $stillPreparingAt -and $notBugAt -lt $bugBranchAt) `
+        -Message "$($case.Name): 「这不是搬迁 bug」这句必须落在 still-preparing 分支之内"
+    Assert-True -Condition ($unknownAt -gt $bugBranchAt) `
+        -Message "$($case.Name): 「判不出原因」这句必须落在默认分支里（排在 relocation-bug 之后）"
+    Assert-True -Condition ($repairAt -gt $bugBranchAt) `
+        -Message "$($case.Name): 修复脚本提示只能出现在 relocation-bug 之后"
+    Assert-True -Condition ($code -match 'if \(\$diagnosis\.Verdict -eq ''relocation-bug''\) \{\s*\r?\n\s*Write-(Host|InstallLog)') `
+        -Message "$($case.Name): 修复脚本提示必须由 relocation-bug 判定把守，不能无条件写出来"
+    # 窗口清单是探针失败时最有价值的一栏，必须也在这条路径上。
+    Assert-True -Condition ($code -match 'Get-CodexWindowInventory -PackageName \$PackageName') `
+        -Message "$($case.Name): 探针失败时必须枚举 Codex 的顶层窗口"
+}
+
 Write-Host "All CodexStoreUpdater tests passed."

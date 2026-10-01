@@ -36,8 +36,10 @@ automation template.
   updates this plugin from GitHub when the remote is newer.
 - **Proxy control**: `-NoProxy` disables proxy for the current download process.
 - **Web UI**: local, visual, button-driven operations (see "Web UI" below).
-- **Health check + window probe**: detects the official "process running but no
-  main window" encrypted-relocation bug (see below and `docs/`).
+- **Health check + window probe**: detects "process running but no main window"
+  and states the verdict the evidence supports (still preparing / the official
+  encrypted-relocation bug / undecidable). Only the relocation-bug verdict
+  points at the repair script (see below and `docs/`).
 
 ## Layout
 
@@ -299,8 +301,16 @@ Exit codes: `0` healthy / `1` degraded or missing component / `2` not installed 
 `3` probe timed out with no main window.
 
 - `-InstallWithRestart` also probes the window after install; if no main window
-  appears, the install log records `WINDOW_PROBE=FAILED` plus a relocation health
-  snapshot and a pointer to the repair script.
+  appears, the install log records `WINDOW_PROBE=FAILED`, a `STARTUP_DIAGNOSIS=`
+  verdict and an inventory of Codex's visible top-level windows. The verdict is
+  one of `still-preparing` (the runtime is still being materialized into the
+  user cache — just wait), `relocation-bug`, or `unknown` (the evidence does not
+  decide it).
+- The repair-script line is printed **only** for the `relocation-bug` verdict.
+  The first launch materializes several hundred MB of runtime (about 132 s in
+  practice), so a 30 s probe can legitimately time out without anything being
+  wrong; the probe therefore extends itself (up to another 150 s) when it finds
+  evidence of recent writes.
 - If the bug is confirmed, run the repair script under `docs\` to recover.
 
 ## Repair docs: docs/codex-desktop-encrypted-copy-fix

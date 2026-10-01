@@ -71,7 +71,9 @@ function resolveDownloadDirectory(configured) {
 async function getStatus({ probe = false } = {}) {
   const { code, stdout, stderr } = await ps.captureScript(bundledScript("check-codex-desktop-health.ps1"), {
     flags: probe ? ["-Probe"] : [],
-    values: probe ? { "-ProbeSeconds": 30 } : {},
+    // 探针失败时允许脚本按证据再等一段（见 check-codex-desktop-health.ps1 的
+    // -ProbeExtensionSeconds）。这里给的就是那个上限；实际等多久由脚本自己判。
+    values: probe ? { "-ProbeSeconds": 30, "-ProbeExtensionSeconds": 150 } : {},
   });
   const health = parseHealth(stdout, code);
   // 探测失败时脚本把说明写在 stdout，但真正的异常栈在 stderr，一并留给界面排查。
@@ -294,8 +296,9 @@ const WORKER_START_TIMEOUT_MS = 60 * 1000;
  * 因此这里的做法是启动父进程后转入日志 tail，把日志行翻译成进度事件。
  *
  * 刻意不传 -SkipLaunch：worker 会在安装后自动启动 Codex 并探测主窗口，
- * 这既是一键安装该有的收尾，也顺带验证了安装结果（探测失败正是加密资源
- * 搬迁 bug 的特征）。窗口探测最多再等 30 秒。
+ * 这既是一键安装该有的收尾，也顺带验证了安装结果。探针基础 30 秒，失败且证据显示
+ * 「还在把运行时物化到用户缓存」时再延长最多 150 秒（生成脚本的 -ProbeExtensionSeconds）
+ * —— 首次启动物化几百 MB 实测要 130 秒上下，只等 30 秒必然误判。
  */
 async function installCodex({ path, allowDowngrade, downloadDirectory }, emit = () => {}) {
   const target = String(path || "");
@@ -362,6 +365,9 @@ async function tailInstallLog(logPath, emit) {
   let workerStarted = false;
   let remedy = null;
   let windowMissing = false;
+  // 窗口没出现时脚本给出的三档判定。windowMissing 现在只表示「没等到窗口」这个**事实**
+  // （并据此决定要不要等诊断尾巴落完），原因一律看 startupDiagnosis。
+  let startupDiagnosis = null;
   let terminal = null;
   let terminalSeenAt = 0;
   let lastLineAt = Date.now();
@@ -409,6 +415,7 @@ async function tailInstallLog(logPath, emit) {
       }
 
       if (event.type === "probe-failed") windowMissing = true;
+      if (event.type === "startup-diagnosis") startupDiagnosis = event.verdict;
       if (event.type === "fatal") failureMessage = event.message;
       if (event.type === "remedy") remedy = event.remedy;
       if (event.type === "health-component") healthSnapshot.push({ name: event.name, state: event.state });
@@ -449,6 +456,7 @@ async function tailInstallLog(logPath, emit) {
         return {
           ok: terminal === "success" && !windowMissing,
           windowMissing,
+          startupDiagnosis,
           remedy,
           healthSnapshot,
           logPath,
@@ -528,16 +536,26 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
  *
  * MSIX 应用不能用 exe 路径启动，只能走 AppUserModelId（explorer.exe
  * shell:AppsFolder\<PFN>!<AppId>）。但「发出启动请求」和「窗口出现」是两件事：
- * Codex Desktop 有个官方 bug —— 进程起来了、主窗口永远不出现（加密资源搬迁失败，
+ * Codex Desktop 有个官方 bug，中招时进程起来了、主窗口却永远不出现（加密资源搬迁失败，
  * 见 docs/codex-desktop-encrypted-copy-fix）。原来的实现在这里 fire-and-forget，
  * 于是启动请求发出去就返回成功，界面上报「已请求启动 Codex」，而用户屏幕上什么都
  * 没有 —— 看起来就是「点了没反应」，且失败原因完全丢失。
  *
  * 所以这里复用健康脚本的 -Probe（插件、CI 与「健康自检」按钮用的同一份实现），
- * 启动后等主窗口，把结论如实报回去；进程在、窗口不在时连补救入口一起给出来。
+ * 启动后等主窗口，把结论如实报回去。
+ *
+ * 但**没有窗口 ≠ 就是那个 bug**：首次启动要把几百 MB 运行时物化到用户缓存
+ * （2026-10-01 实测约 132 秒，比这里的等待还长），一个跟资源无关的启动对话框也能
+ * 挡住主窗口。所以原因不在这里猜，脚本按证据给出 startupDiagnosis（三档），
+ * 这里只负责把它原样带回界面；界面上的文案映射在 src/lib/diagnosis.ts。
  */
 async function launchCodex({ probeSeconds = 20 } = {}, emit = () => {}) {
   const seconds = Number(probeSeconds) > 0 ? Math.round(Number(probeSeconds)) : 20;
+  // 探针失败后脚本可能按证据再等一段（「还在把运行时落到本地缓存」那种，见
+  // check-codex-desktop-health.ps1 的 -ProbeExtensionSeconds）。所以进度文案报的是
+  // **总预算**：只说「最多 20 秒」然后干等 170 秒，比不说还糟。
+  const extensionSeconds = 150;
+  const budgetSeconds = seconds + extensionSeconds;
   emit({ kind: "phase", id: "launch", phase: "starting", label: "正在启动 Codex", percent: 20 });
 
   const output = [];
@@ -545,7 +563,7 @@ async function launchCodex({ probeSeconds = 20 } = {}, emit = () => {}) {
   let announced = false;
   const { done } = ps.streamScript(bundledScript("check-codex-desktop-health.ps1"), {
     flags: ["-Probe"],
-    values: { "-ProbeSeconds": seconds },
+    values: { "-ProbeSeconds": seconds, "-ProbeExtensionSeconds": extensionSeconds },
     onStdoutLine: (line) => {
       output.push(line);
       // 脚本在真正开始等窗口之前会打印这一行，拿它当「已经发出启动请求」的信号。
@@ -557,12 +575,12 @@ async function launchCodex({ probeSeconds = 20 } = {}, emit = () => {}) {
           kind: "phase",
           id: "launch",
           phase: "probing",
-          label: `正在等待主窗口出现（最多 ${seconds} 秒）`,
+          label: `正在等待主窗口出现（最多 ${budgetSeconds} 秒）`,
           percent: 70,
         });
         emit({
           kind: "log",
-          line: `已发出启动请求，等待主窗口。若 ${seconds} 秒内没有出现，就是官方已知的加密资源搬迁问题，可用「修复资源副本」处理。`,
+          line: `已发出启动请求，正在等待主窗口（最多 ${budgetSeconds} 秒）。若始终没有出现，下面会给出判定：能确定原因就说明原因，确定不了就只说没有等到窗口。`,
         });
       }
     },
@@ -601,13 +619,19 @@ async function launchCodex({ probeSeconds = 20 } = {}, emit = () => {}) {
     version: health.version,
     appUserModelId: health.appUserModelId,
     probeMessage: health.probeMessage,
+    // 脚本按证据给出的三档判定（可能为 null = 老脚本或没跑判定）。界面据此决定
+    // 要不要提「修复资源副本」—— 只有 relocation-bug 才提。
+    startupDiagnosis: health.startupDiagnosis,
     health: { ...health, needsRepair: healthNeedsRepair(health) },
   };
 }
 
 /**
- * 修复加密资源搬迁导致的「进程在跑但没有主窗口」。
+ * 修复加密资源搬迁问题：把没能从安装包物化到用户目录的资源副本重建出来。
  * 只重写用户目录下的资源副本，不修改已安装的 MSIX 本体。
+ *
+ * 注意它修的是「资源副本缺失」，不是「所有没等到主窗口的情况」—— 后者有多种原因，
+ * 判定见 Get-CodexStartupDiagnosis。脚本本身幂等，健康时会打印 SKIP。
  */
 async function repairBundles(_args = {}, emit = () => {}) {
   emit({ kind: "phase", id: "repair", phase: "repairing", label: "正在重建资源副本", percent: 0 });
