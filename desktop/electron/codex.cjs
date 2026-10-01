@@ -310,7 +310,12 @@ async function installCodex({ path, allowDowngrade, downloadDirectory }, emit = 
   const { code, stdout, stderr } = await ps.captureScript(bundledScript("install-codex-msix-and-restart.ps1"), {
     // 降级开关只由界面上的回退入口打开。默认路径（一键更新）保持不带它 ——
     // 不带时 Windows 会拒绝安装版本号更低的包，这正是一键更新该有的严格性。
-    flags: allowDowngrade ? ["-AllowDowngrade"] : [],
+    //
+    // 提权开关反过来：桌面应用的每一条安装路径都带上它（一键更新和回退都走这里）。
+    // 新版 Codex 的清单声明了一个以 localSystem 运行的打包服务，Windows 于是要求管理员
+    // 上下文才能装，不带这个开关就会回 0x80073D28。仍然是一键，只是不再静默 ——
+    // 需要时会弹一次 UAC。不加界面开关：用户无从判断哪个版本带服务，让他选只会选错。
+    flags: allowDowngrade ? ["-AllowElevation", "-AllowDowngrade"] : ["-AllowElevation"],
     values: {
       "-PackagePath": target,
       "-LogPath": logPath,
@@ -467,6 +472,14 @@ async function tailInstallLog(logPath, emit) {
 
     if (Date.now() - startedAt > INSTALL_TIMEOUT_MS) {
       const tail = readTail(logPath);
+      // 提权阶段的超时是另一回事：不是「装得慢」，而是 UAC 弹窗还挂在那里没人点。
+      // 沿用「安装超时」会把一个正在等用户操作的状态说成失败，用户既不知道该怎么办，
+      // 也会以为装坏了 —— 而这时他只要点一下「是」就能装完。
+      if (current.phase === "elevating") {
+        throw new Error(
+          `仍在等待管理员授权（已超过 12 分钟）。请在弹出的 UAC 窗口中选择「是」，然后重试。\n完整日志：${logPath}`,
+        );
+      }
       throw new Error(`安装超时（超过 12 分钟）。最后一次日志：\n${tail}`);
     }
 
@@ -485,8 +498,15 @@ async function tailInstallLog(logPath, emit) {
   }
 }
 
-/** 下一个里程碑百分比，用于限制爬升上限。 */
-const MILESTONES = [4, 12, 20, 78, 86, 90, 94, 100];
+/**
+ * 下一个里程碑百分比，用于限制爬升上限。
+ *
+ * 必须有 14：提权那条路在 12（关闭 Codex）与 20（Windows 正在安装）之间插了一个
+ * 「正在请求管理员权限」的里程碑。少了它，12 的下一个里程碑就是 20，爬升会一路爬到
+ * 18 才停下 —— 于是 UAC 还在等用户点的时候进度条已经自己走到 18，等提权阶段真到了
+ * 反而一动不动。百分比本身由 Math.max 保证不会倒退，所以这里只是让「停在哪」更诚实。
+ */
+const MILESTONES = [4, 12, 14, 20, 78, 86, 90, 94, 100];
 function nextMilestone(percent) {
   return MILESTONES.find((value) => value > percent) ?? 100;
 }

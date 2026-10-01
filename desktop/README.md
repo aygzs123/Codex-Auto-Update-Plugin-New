@@ -44,6 +44,17 @@ npm run electron:build
   再计算 SHA-256；没有远端摘要清单时不会把「已计算」误报成「摘要匹配」。
   期望发布者是现取的，不写死在代码里：Store 分发的包，发布者 DN 是 `CN=<GUID>` 形式
   （Codex 是 `CN=50BDFD77-8903-4850-9FFE-6E8522F64D5B`），里面并没有 "OpenAI" 字样。
+- **更新时可能弹一次 UAC。** 新版 Codex 的 `AppxManifest.xml` 声明了一个以 `localSystem`
+  运行的打包服务（`<desktop6:Extension Category="windows.service">`），Windows 因此要求
+  **管理员上下文**才能 `Add-AppxPackage`，否则报 `HRESULT: 0x80073D28`。所以更新前会先用
+  `Test-CodexPackageRequiresElevation` 读一遍安装包清单：需要提权时由分离的 worker 拉起一个
+  **短命的提权子进程**（`-Verb RunAs`，界面会显示「正在请求管理员权限」），只做「关 Codex + 装包」；
+  版本校验、缓存剪枝、重启 Codex 与窗口探针仍留在**非提权**的 worker 里 ——
+  从提权进程发 `explorer.exe shell:AppsFolder` 激活请求行为不确定，而且探针失败还会打出
+  「官方加密资源搬迁 bug」那套误导性结论。UAC 被取消只会让提权子进程起不来，worker 会以一条
+  说明「什么都没改动、Codex 没有被关闭」的 FATAL 收场，界面不会卡在「正在安装」。
+  提权只加在 worker 里也是必须的：`ps.cjs` 的 `captureScript` 没有超时，UAC 若弹在 launcher
+  那个进程里，界面会**永久**停在工作中，既不报错也不超时。
 - 签名修复只操作用户目录缓存，不修改 `WindowsApps`。
 - 关闭 Codex 进程时按**包的安装路径**匹配，绝不按进程名 —— 用户自己的 ChatGPT 桌面版
   进程名相同，按名字杀会误伤。

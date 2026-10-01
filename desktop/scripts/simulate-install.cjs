@@ -139,6 +139,50 @@ const SCENARIOS = {
       maxElapsedMs: 3000,
     },
   },
+  "elevated-ok": {
+    // 需要管理员权限的包（新版 Codex 声明了以 localSystem 运行的打包服务，
+    // 否则 Add-AppxPackage 回 0x80073D28）。worker 在拉起提权子进程之前先写一行，
+    // 用户对着 UAC 弹窗的时候界面上显示的就是它 —— 不能是一动不动的 12%。
+    //
+    // "Elevated install worker exited with code 0." 与 "Elevated install verified..." 是
+    // 提权结束后 worker 自己写的两行；解析层刻意不为它们建阶段（它们落在 78% 的安装
+    // 之后，没有更靠后的里程碑可占）。
+    title: "需要提权：请求管理员权限 → 提权子进程装包 → 校验 → 重启 → 窗口探针成功",
+    steps: [
+      [0, "Worker started for package: C:\\cache\\OpenAI.Codex_26.928.3736.0_x64__2p2nqsd0c76g0.msix"],
+      [400, "Requesting administrator privileges (a UAC prompt will appear)..."],
+      // UAC 弹窗期间没有任何日志 —— 真实情况下用户要想几秒到几分钟。
+      [2500, "Closed 2 Codex Desktop process(es)."],
+      [300, "Installing package with Add-AppxPackage..."],
+      [900, "Install command completed."],
+      [200, "Elevated install worker exited with code 0."],
+      [200, "Elevated install verified. Installed version: 26.928.3736.0"],
+      [300, "Removed superseded package file: C:\\cache\\OpenAI.Codex_26.924.2738.0_x64__2p2nqsd0c76g0.msix"],
+      [300, "Restart requested. Installed version: 26.928.3736.0"],
+      [300, "Probing for a visible main window (up to 30 s)..."],
+      [500, "Window probe OK: Codex main window is visible."],
+    ],
+    expect: { ok: true, windowMissing: false, finalPercent: 100, remedy: null, expectElevatingMilestone: true },
+  },
+
+  "elevation-declined": {
+    // 用户在 UAC 弹窗上点了「否」。提权子进程根本没起来，worker 自己写下 FATAL
+    // （原始异常消息是系统本地化的，「操作已被用户取消。」单看它不知道发生了什么）。
+    // tail 必须**立刻**把它当成错误抛出去，绝不能等满 12 分钟的超时 —— 那会把
+    // 「你刚取消了授权」说成「安装超时」，用户完全不知道自己做错了什么。
+    title: "提权被拒：UAC 点了否，FATAL 立刻上报而不是等超时",
+    steps: [
+      [0, "Worker started for package: C:\\cache\\OpenAI.Codex_26.928.3736.0_x64__2p2nqsd0c76g0.msix"],
+      [400, "Requesting administrator privileges (a UAC prompt will appear)..."],
+      [800, "FATAL: Elevation was declined or could not start (操作已被用户取消。). Nothing was installed and Codex was not closed."],
+    ],
+    expect: {
+      failure: /Elevation was declined/,
+      finalPercent: 100,
+      maxElapsedMs: 3000,
+      expectElevatingMilestone: true,
+    },
+  },
 };
 
 // ---------- 驱动 ----------
@@ -253,6 +297,20 @@ async function runScenario(name) {
       if (percent <= 78 || percent >= 90) problems.push(`「回退已生效」百分比应在 78~90 之间，实际 ${percent}`);
       const installing = phaseEvents.filter((event) => event.label === "Windows 正在安装 Codex");
       if (installing.length === 0) problems.push("带 (downgrade allowed) 的那行没有推进到「正在安装」阶段");
+    }
+  }
+
+  if (scenario.expect.expectElevatingMilestone) {
+    // 提权阶段必须落在关闭(12)与安装(20)之间：写小了会被 12 吞掉（用户看不到
+    // 「在等 UAC」，只看到进度条卡住），写大了会让后面的安装里程碑看起来在倒退。
+    const elevating = phaseEvents.filter((event) => event.phase === "elevating");
+    if (elevating.length === 0) problems.push("没有出现「正在请求管理员权限」阶段");
+    const percent = elevating[0]?.percent ?? 0;
+    if (percent <= 12 || percent >= 20) problems.push(`提权阶段百分比应在 12~20 之间，实际 ${percent}`);
+    // 提权成功之后必须能接着走到安装，而不是停在提权那一步。
+    if (scenario.expect.ok) {
+      const installing = phaseEvents.filter((event) => event.label === "Windows 正在安装 Codex");
+      if (installing.length === 0) problems.push("提权之后没有推进到安装阶段");
     }
   }
 

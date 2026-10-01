@@ -314,6 +314,57 @@ test("安装日志：阶段推进覆盖完整流程", () => {
   assert.equal(installLogTerminal(parsed[7]), "success");
 });
 
+test("安装日志：需要提权的那一跑也有完整阶段", () => {
+  const lines = [
+    "[2026-09-28 06:20:31] Worker started for package: C:\\dl\\OpenAI.Codex_26.928.3736.0_x64__2p2nqsd0c76g0.msix",
+    "[2026-09-28 06:20:33] Requesting administrator privileges (a UAC prompt will appear)...",
+    "[2026-09-28 06:20:41] Closed 2 Codex Desktop process(es).",
+    "[2026-09-28 06:20:41] Installing package with Add-AppxPackage...",
+    "[2026-09-28 06:22:10] Install command completed.",
+    "[2026-09-28 06:22:10] Elevated install worker exited with code 0.",
+    "[2026-09-28 06:22:10] Elevated install verified. Installed version: 26.928.3736.0",
+    "[2026-09-28 06:22:11] Restart requested. Installed version: 26.928.3736.0",
+    "[2026-09-28 06:22:11] Probing for a visible main window (up to 30 s)...",
+    "[2026-09-28 06:22:16] Window probe OK: Codex main window is visible.",
+  ];
+  const parsed = lines.map(parseInstallLogLine);
+  assert.deepEqual(
+    parsed.map((event) => event.phase),
+    [
+      "preparing",
+      "elevating",
+      "closing",
+      // 提权子进程结束后 worker 写的两行刻意不建阶段：它们落在 78% 的安装之后，
+      // 没有更靠后的里程碑可占，硬塞一个只会让进度条看起来在倒退。
+      "installing",
+      "verifying",
+      undefined,
+      undefined,
+      "restarting",
+      "probing",
+      "done",
+    ],
+  );
+  // 提权必须落在关闭(12)与安装(20)之间：写小了会被关闭那一步吞掉，
+  // 用户就看不到「正在等 UAC」这句话，只看到进度条卡在那里。
+  //
+  // 这里只看数值的相对大小，不看「日志顺序里单调递增」—— 日志顺序是
+  // 4 → 14 → 12 → 20（提权子进程装完才写「Closed N」），单调性由 tail 的
+  // Math.max 保证，simulate-install.cjs 的 elevated-ok 场景盯的就是那一条。
+  const elevating = parsed[1];
+  assert.ok(elevating.percent > parsed[2].percent, "提权阶段要排在关闭进程之前");
+  assert.ok(elevating.percent < parsed[3].percent, "提权阶段要排在安装之前");
+  assert.equal(installLogTerminal(parsed[9]), "success");
+});
+
+test("安装日志：提权被取消是一条 FATAL，不是「还在等」", () => {
+  const event = parseInstallLogLine(
+    "[2026-09-28 06:20:41] FATAL: Elevation was declined or could not start (操作已被用户取消。). Nothing was installed and Codex was not closed.",
+  );
+  assert.equal(event.type, "fatal");
+  assert.equal(installLogTerminal(event), "failed");
+});
+
 test("安装日志：worker 启动行里带盘符路径的冒号不能被时间戳正则吃掉", () => {
   const event = parseInstallLogLine(
     "[2026-09-28 06:20:31] Worker started for package: C:\\dl\\OpenAI.Codex_1.0.0.0_x64__a.msix",

@@ -108,10 +108,18 @@ test("模块：-AllowDowngrade 才带 -ForceUpdateFromAnyVersion", () => {
 });
 
 test("worker：允许降级的调用与严格调用分成两个分支", () => {
+  // 断言里的 $PackagePath 是 Invoke-CodexInstallSteps 的**参数名**，不是脚本级变量。
+  // PowerShell 的函数会动态读父作用域的变量，写 $resolvedPackagePath 也一样能跑通 ——
+  // 但那样参数的契约就是假的，而提权子进程正是靠这个参数拿到包路径的。
   const installBlock = worker.match(
-    /if \(\$AllowDowngrade\) \{[\s\S]*?Add-AppxPackage -Path \$resolvedPackagePath -ForceUpdateFromAnyVersion\s*\}\s*else \{[\s\S]*?Add-AppxPackage -Path \$resolvedPackagePath\s*\}/,
+    /if \(\$AllowDowngrade\) \{[\s\S]*?Add-AppxPackage -Path \$PackagePath -ForceUpdateFromAnyVersion\s*\}\s*else \{[\s\S]*?Add-AppxPackage -Path \$PackagePath\s*\}/,
   );
-  assert.ok(installBlock, "worker 的安装必须按 AllowDowngrade 分叉，且严格那一支不带 -ForceUpdateFromAnyVersion");
+  assert.ok(installBlock, "安装步骤必须按 AllowDowngrade 分叉，且严格那一支不带 -ForceUpdateFromAnyVersion");
+  assert.match(
+    worker,
+    /function Invoke-CodexInstallSteps \{[\s\S]*?\[string\]\$PackagePath/,
+    "抽取出来的安装步骤要把包路径当参数收，而不是就地读脚本级变量",
+  );
   assert.match(worker, /\[switch\]\$AllowDowngrade/, "worker 要接收 -AllowDowngrade");
   // worker 是自分离出来的**新进程**，开关不会自己跟过去 —— 不显式透传，回退就会
   // 静默退化成一次普通的（被 Windows 拒绝的）安装。
@@ -119,6 +127,11 @@ test("worker：允许降级的调用与严格调用分成两个分支", () => {
     worker,
     /if \(\$AllowDowngrade\) \{\s*\$arguments \+= "-AllowDowngrade"/,
     "自分离重启时要把 -AllowDowngrade 透传给 worker",
+  );
+  assert.match(
+    worker,
+    /if \(\$AllowDowngrade\) \{\s*\$elevatedArguments \+= "-AllowDowngrade"/,
+    "提权子进程同样是新进程，回退时也要把 -AllowDowngrade 透传过去",
   );
 });
 
@@ -152,10 +165,12 @@ test("主进程：install_codex 把参数（含 allowDowngrade）原样交给 co
   assert.ok(installCase, "switch 里要有 install_codex 的 case");
   assert.match(installCase[1], /codex\.installCodex\(/, "case 要真的调 installCodex");
   // 参数必须在 codex.cjs 里变成命令行开关，否则「允许降级」到不了 PowerShell。
+  // 提权开关则是**无条件**带的（见 installCodex 里的注释）：新版包声明了 Windows 服务，
+  // 不带它连正常更新都装不上，所以两条路都要有。
   assert.match(
     codexSource,
-    /flags: allowDowngrade \? \["-AllowDowngrade"\] : \[\]/,
-    "codex.cjs 要把 allowDowngrade 翻成 -AllowDowngrade 开关",
+    /flags: allowDowngrade \? \["-AllowElevation", "-AllowDowngrade"\] : \["-AllowElevation"\]/,
+    "codex.cjs 要把 allowDowngrade 翻成 -AllowDowngrade 开关，并且无条件带上 -AllowElevation",
   );
   assert.match(
     codexSource,

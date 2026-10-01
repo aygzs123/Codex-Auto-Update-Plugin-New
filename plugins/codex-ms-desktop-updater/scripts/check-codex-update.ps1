@@ -4,6 +4,11 @@ param(
     [switch]$DownloadOnly,
     [switch]$Install,
     [switch]$InstallWithRestart,
+
+    # 允许安装时弹一次 UAC。桌面应用走 install-codex-msix-and-restart.ps1 时自带这个开关；
+    # 每日自动化**不带**（后台不许弹窗），于是需要管理员的包会走到下面那段如实报告里。
+    [switch]$AllowElevation,
+
     [switch]$NoProxy,
     [string]$StoreUrl = "https://apps.microsoft.com/detail/9plm9xgg6vks?hl=en-GB&gl=HK",
     [string]$Ring = "Retail",
@@ -100,6 +105,26 @@ if ($Install) {
 
 if ($InstallWithRestart) {
     $installRestartScript = Join-Path $scriptRoot "install-codex-msix-and-restart.ps1"
+
+    # 需要管理员权限的包：在拉起 worker **之前**就拒绝，并且说清楚下一步该做什么。
+    #
+    # 这一步不是锦上添花，是必须的：worker 是分离进程，下面只看它有没有被拉起来；让它
+    # 在后台异步地撞 0x80073D28 失败，自动化这边会**报成功** —— 正是下面那段注释警告的坑，
+    # 只不过换了个触发方式（包路径不对 → 这次是权限不够）。而且用户除了日志里一句生
+    # HRESULT 之外什么也得不到，不知道该怎么办。
+    #
+    # 这里刻意不提权：每日自动化是无人值守的，弹 UAC 只会挂在那里等人。改为如实报告，
+    # 让用户自己去桌面应用点更新（那边会弹一次 UAC，仍然是一键）。
+    if (-not $AllowElevation -and (Test-CodexPackageRequiresElevation -Path $packagePath)) {
+        Write-Host "ADMIN_PRIVILEGES_REQUIRED: 这个版本的 Codex 声明了 Windows 服务，安装需要管理员权限。"
+        Write-Host "自动维护不提权（后台不能弹 UAC 让无人值守的流程挂住），所以已跳过安装 —— 没有做任何改动。"
+        Write-Host ("安装包已经下载好：{0}" -f $packagePath)
+        Write-Host "请打开 Codex Updater 桌面应用点「一键更新」（会弹一次 UAC 授权）。"
+        Write-Host "（命令行用户也可以在提权的 PowerShell 里自己跑：）"
+        Write-Host ("  powershell -NoProfile -ExecutionPolicy Bypass -File `"{0}`" -PackagePath `"{1}`" -AllowElevation" -f $installRestartScript, $packagePath)
+        return
+    }
+
     Write-Host "Starting detached install-and-restart workflow..."
 
     # 必须自己看退出码。`&` 调用的是**同进程**脚本，而 worker 脚本里那个 trap 会把它
@@ -114,7 +139,7 @@ if ($InstallWithRestart) {
     # 而子脚本正常 return 时**不会**改它（实测先置 7，子脚本正常返回后读回的还是 7）。
     # 不清零就会把陈旧的非零值当成这次的失败。
     $LASTEXITCODE = 0
-    & $installRestartScript -PackagePath $packagePath -PackageName $PackageName
+    & $installRestartScript -PackagePath $packagePath -PackageName $PackageName -AllowElevation:$AllowElevation
     if ($LASTEXITCODE -ne 0) {
         throw "install-codex-msix-and-restart.ps1 exited with code $LASTEXITCODE before the install worker could start."
     }

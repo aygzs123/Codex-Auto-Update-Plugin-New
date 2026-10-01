@@ -238,7 +238,9 @@ Assert-True -Condition ($installRestartScriptText -match '\[switch\]\$SkipLaunch
 #      「装上的版本 < 请求的版本」恰好为假，失败会被报成成功。
 Assert-True -Condition ($installRestartScriptText -match '\[switch\]\$AllowDowngrade') `
     -Message "install-and-restart script exposes an explicit downgrade switch"
-Assert-True -Condition ($installRestartScriptText -match 'Add-AppxPackage -Path \$resolvedPackagePath -ForceUpdateFromAnyVersion') `
+# 参数名是 $PackagePath，不是脚本级的 $resolvedPackagePath：安装步骤抽成了函数，函数里
+# 动态读父作用域也能跑通，但提权子进程正是靠这个参数拿到包路径的，契约必须是参数。
+Assert-True -Condition ($installRestartScriptText -match 'Add-AppxPackage -Path \$PackagePath -ForceUpdateFromAnyVersion') `
     -Message "install-and-restart script passes -ForceUpdateFromAnyVersion on the downgrade path"
 Assert-True -Condition ($installRestartScriptText -match 'if \(\$AllowDowngrade\) \{\s*\$arguments \+= "-AllowDowngrade"') `
     -Message "install-and-restart script forwards -AllowDowngrade to the detached worker (a new process does not inherit switches)"
@@ -478,5 +480,140 @@ Assert-True -Condition ($installCode -match '-DownloadDirectory", \$DownloadDire
     -Message "must forward -DownloadDirectory to the detached worker"
 Assert-True -Condition ($installCode -match '-DownloadDirectory \$cacheDirectory') `
     -Message "pruning must run against the resolved cache directory"
+
+# ---------- 需要管理员权限的包必须被提前认出来 ----------
+#
+# 新版 Codex 的清单里声明了一个以 localSystem 运行的打包服务，Add-AppxPackage 于是必须
+# 由管理员上下文执行，否则回 0x80073D28。认不出来，用户拿到的就是一句生 HRESULT、
+# 既看不懂也不知道下一步做什么。所以这里用**真的 zip 包**验，而不是拿字符串匹配凑数。
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+
+function New-FakeCodexPackage {
+    param(
+        [string]$Directory,
+        [string]$ManifestText,
+        [string]$TargetPath
+    )
+
+    New-Item -ItemType Directory -Path $Directory -Force | Out-Null
+    Set-Content -LiteralPath (Join-Path $Directory "AppxManifest.xml") -Value $ManifestText -Encoding UTF8
+    Set-Content -LiteralPath (Join-Path $Directory "resources.pri") -Value "payload" -Encoding ASCII
+    [System.IO.Compression.ZipFile]::CreateFromDirectory($Directory, $TargetPath)
+}
+
+$elevationFixtureRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("codex-elevation-" + [guid]::NewGuid().ToString("N"))
+try {
+    # 逐字取自真实安装包的清单片段（服务名和 StartAccount 都是实际值）。
+    $serviceManifest = @'
+<Package>
+  <Extensions>
+    <desktop6:Extension Category="windows.service" Executable="app/resources/codex-windows-sandbox-service.exe" EntryPoint="Windows.FullTrustApplication">
+      <desktop6:Service Name="CodexSandboxService.OpenAI.Codex" StartupType="auto" StartAccount="localSystem" />
+    </desktop6:Extension>
+  </Extensions>
+</Package>
+'@
+    $plainManifest = '<Package><Applications><Application Id="App" /></Applications></Package>'
+
+    $servicePackagePath = Join-Path $elevationFixtureRoot "OpenAI.Codex_26.928.3736.0_x64__2p2nqsd0c76g0.msix"
+    $plainPackagePath = Join-Path $elevationFixtureRoot "OpenAI.Codex_26.901.6511.0_x64__2p2nqsd0c76g0.msix"
+    New-FakeCodexPackage -Directory (Join-Path $elevationFixtureRoot "service") -ManifestText $serviceManifest -TargetPath $servicePackagePath
+    New-FakeCodexPackage -Directory (Join-Path $elevationFixtureRoot "plain") -ManifestText $plainManifest -TargetPath $plainPackagePath
+
+    Assert-True -Condition (Test-CodexPackageRequiresElevation -Path $servicePackagePath) `
+        -Message "a manifest declaring Category=""windows.service"" must be detected as requiring elevation"
+    Assert-True -Condition (-not (Test-CodexPackageRequiresElevation -Path $plainPackagePath)) `
+        -Message "a package without the service declaration must not be flagged (the pre-upgrade 26.901 build has no service)"
+
+    # bundle：内层 .msix 是**嵌套的 zip**，只枚举外层条目永远看不到它们的清单。
+    # 这条不是理论风险 —— module 里 Get-ExtensionRank 把 msixbundle 排在 msix 之上，
+    # 商店一旦提供 bundle，Select-BestCodexPackage 就优先选它。
+    $bundleSource = Join-Path $elevationFixtureRoot "bundle"
+    New-Item -ItemType Directory -Path $bundleSource -Force | Out-Null
+    Copy-Item -LiteralPath $servicePackagePath -Destination (Join-Path $bundleSource "OpenAI.Codex_26.928.3736.0_x64__2p2nqsd0c76g0.msix")
+    $bundlePath = Join-Path $elevationFixtureRoot "OpenAI.Codex_26.928.3736.0_x64.msixbundle"
+    [System.IO.Compression.ZipFile]::CreateFromDirectory($bundleSource, $bundlePath)
+    Assert-True -Condition (Test-CodexPackageRequiresElevation -Path $bundlePath) `
+        -Message "a bundle must be inspected through its nested .msix, not only its own entries"
+
+    # 失败要开放：读不出来就返回 $false，让 Add-AppxPackage 自己去报真实错误
+    # （worker 里还有一条「认出 0x80073D28 就改为提权重试」的兜底），
+    # 而不是把一个合法安装包挡在门外。
+    Assert-True -Condition (-not (Test-CodexPackageRequiresElevation -Path (Join-Path $elevationFixtureRoot "missing.msix"))) `
+        -Message "a missing package path must not report elevation required"
+    $notAnArchive = Join-Path $elevationFixtureRoot "not-an-archive.msix"
+    Set-Content -LiteralPath $notAnArchive -Value "not a zip" -Encoding ASCII
+    Assert-True -Condition (-not (Test-CodexPackageRequiresElevation -Path $notAnArchive)) `
+        -Message "a corrupt package must not report elevation required"
+}
+finally {
+    if (Test-Path -LiteralPath $elevationFixtureRoot) {
+        Remove-Item -LiteralPath $elevationFixtureRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+# ---------- 提权路径的形状 ----------
+#
+# 提权的**位置**和**参数**是这段功能里唯二容易悄悄坏掉的东西，各钉一条：
+#   · 位置：提权必须发生在 worker 里（launcher 那条路没有超时，UAC 卡在那里界面会永久
+#     停在「正在安装」），而提权子进程只做「关 + 装」，不做重启与窗口探测。
+#   · 参数：新进程不继承开关，尤其是 -LogPath —— 少了它桌面应用 tail 的日志一个字都不涨。
+Assert-True -Condition ($installRestartScriptText -match '\[switch\]\$AllowElevation') `
+    -Message "install-and-restart script exposes an explicit elevation switch"
+Assert-True -Condition ($installRestartScriptText -match '\[switch\]\$ElevatedWorker') `
+    -Message "install-and-restart script exposes the short-lived elevated worker mode"
+Assert-True -Condition ($installRestartScriptText -match '-Verb RunAs') `
+    -Message "the elevated install must request administrator rights"
+# 提权子进程只做「关 Codex + 装包」：它绝不能带上重启与窗口探测 —— 从提权进程发
+# explorer.exe shell:AppsFolder 激活请求行为不确定，探测失败还会打出那套误导性结论。
+Assert-True -Condition ($installRestartScriptText -match 'if \(\$ElevatedWorker\) \{[\s\S]*?Invoke-CodexInstallSteps[\s\S]*?return\s*\n\}') `
+    -Message "the elevated worker branch must only run the install steps and return"
+# 每个参数都要补引号后拼成单个字符串。数组直接交给 Start-Process 会在空格处截断
+# （本应用的日志目录固定叫 %APPDATA%\Codex Updater\logs，那个空格每个用户都有）。
+Assert-True -Condition ($installRestartScriptText -match '\$quotedElevatedArguments -join " "') `
+    -Message "the elevated child's argument list must go through the quoting helper"
+Assert-True -Condition (-not ($installRestartScriptText -match '-ArgumentList \$elevatedArguments')) `
+    -Message "the elevated child must not be started with a bare argument array"
+Assert-True -Condition ($installRestartScriptText -match '-LogPath", \$LogPath') `
+    -Message "the elevated child must receive -LogPath (otherwise the desktop app tails a file that never grows)"
+Assert-True -Condition ($installRestartScriptText -match "if \(\`$AllowDowngrade\) \{\s*\`$elevatedArguments \+= ""-AllowDowngrade""") `
+    -Message "the elevated child must receive -AllowDowngrade when rolling back"
+
+# 提权子进程分支必须排在「Worker started for package」（界面上的「准备安装」4%）之前。
+# 排在后面的话，界面会在已经走到「正在请求管理员权限」之后又收到一条 4% 的旧阶段：
+# 百分比被 Math.max 挡住不会退，措辞却跳回去了。
+$elevatedBranchIndex = $installRestartScriptText.IndexOf('if ($ElevatedWorker) {')
+$workerStartedIndex = $installRestartScriptText.IndexOf('Write-InstallLog ("Worker started for package:')
+Assert-True -Condition ($elevatedBranchIndex -ge 0 -and $workerStartedIndex -ge 0 -and $elevatedBranchIndex -lt $workerStartedIndex) `
+    -Message "the elevated worker branch must come before the 'Worker started' log line"
+
+# 判定必须发生在关掉用户的 Codex **之前**：装不上就不该先把人家正在编辑的窗口关了。
+# 只看 worker 那段（「Worker started」之后）—— 上面提权子进程分支里也有一次同样的调用，
+# 拿全文件的 IndexOf 比会指到它，断言就白写了。
+$workerBody = $installRestartScriptText.Substring($workerStartedIndex)
+$elevationCheckIndex = $workerBody.IndexOf('Test-CodexPackageRequiresElevation -Path $resolvedPackagePath')
+$installStepsCallIndex = $workerBody.IndexOf('Invoke-CodexInstallSteps -PackageName $PackageName')
+Assert-True -Condition ($elevationCheckIndex -ge 0 -and $installStepsCallIndex -ge 0 -and $elevationCheckIndex -lt $installStepsCallIndex) `
+    -Message "the elevation check must run before anything starts closing Codex processes"
+
+# 兜底：探测失灵时（例如清单读不出来）Add-AppxPackage 会回 0x80073D28，
+# 这条路必须能改成提权重试，而不是把生 HRESULT 交给用户。
+Assert-True -Condition ($installRestartScriptText -match '0x80073D28') `
+    -Message "the worker must fall back to elevation when Add-AppxPackage reports 0x80073D28 despite the check"
+
+# ---------- 自动化必须如实报告，而不是让 worker 在后台异步失败 ----------
+#
+# worker 是分离进程，调用点只看它有没有被拉起来。让它在后台撞 0x80073D28，
+# 自动化这边会**报成功** —— 与上面「调用方必须看子脚本的退出码」是同一个坑。
+$refusalIndex = $checkScriptText.IndexOf('Test-CodexPackageRequiresElevation -Path $packagePath')
+$workerInvokeIndex = $checkScriptText.IndexOf('& $installRestartScript')
+Assert-True -Condition ($refusalIndex -ge 0) `
+    -Message "check script must detect packages that need administrator privileges before starting the worker"
+Assert-True -Condition ($refusalIndex -lt $workerInvokeIndex) `
+    -Message "the refusal must happen before the detached worker is started"
+Assert-True -Condition ($checkScriptText -match '-AllowElevation:\$AllowElevation') `
+    -Message "check script must forward -AllowElevation so an opted-in caller still installs"
+Assert-True -Condition ($checkScriptText -match '\[switch\]\$AllowElevation') `
+    -Message "check script must accept -AllowElevation"
 
 Write-Host "All CodexStoreUpdater tests passed."

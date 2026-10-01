@@ -15,6 +15,13 @@
   才下载;只有 `-Install` / `-InstallWithRestart` 才执行 `Add-AppxPackage`。
 - **安装后重启**:`-InstallWithRestart` 会启动独立流程——关闭 Codex、安装
   MSIX、校验已装版本不低于下载版本、再重启 Codex。
+- **需要时提权**:新版 Codex 的清单声明了以 `localSystem` 运行的打包服务
+  (`Category="windows.service"`),Windows 因此要求管理员上下文才能
+  `Add-AppxPackage`(否则报 `0x80073D28`)。脚本会**先读安装包清单**
+  (`Test-CodexPackageRequiresElevation`)判断是否需要提权:需要时用 `-Verb RunAs`
+  拉起一个只做「关 + 装」的提权子进程,弹**一次** UAC。提权默认**关闭**:
+  没有 `-AllowElevation` 就如实拒绝(不装、不改、不弹窗),自动化那条路因此
+  不再能自动装完需要提权的版本——打开桌面应用点更新即可(见下文「自动维护」)。
 - **保缓存 + 版本回退**:缓存里保留最近 2 个 `OpenAI.Codex` 安装包(约 1.67 GB),
   更旧的自动清理;新版本用起来有问题时,可以退回上一版(见下文「版本回退」)。
 - **插件自更新**:对比本机与远端 `plugin.json` 版本,自动从 GitHub 更新插件。
@@ -49,6 +56,18 @@ tools/Test-PluginVersionBump.ps1    CI 版本校验脚本
 powershell -NoProfile -ExecutionPolicy Bypass -File plugins\codex-ms-desktop-updater\scripts\run-automatic-maintenance.ps1 -NoProxy
 ```
 
+**自动维护不会请求管理员权限。** 无人值守的流程不能挂在一个 UAC 弹窗上,所以遇到
+需要提权的版本(见「特性」里的说明)时,它会在输出里打印
+`ADMIN_PRIVILEGES_REQUIRED`,写明「安装包已下载好、什么都没改动」,然后**不启动**
+安装流程。这一步刻意放在拉起分离的 worker **之前**:worker 是分离进程,调用点只看
+它有没有被拉起来;让它异步失败,自动化那边会**报成功**。
+
+需要提权的版本请走手动/桌面端路径,会弹一次 UAC:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File plugins\codex-ms-desktop-updater\scripts\check-codex-update.ps1 -InstallWithRestart -NoProxy -AllowElevation
+```
+
 ### 手动控制 Codex 更新
 
 | 目的 | 命令 |
@@ -57,8 +76,15 @@ powershell -NoProfile -ExecutionPolicy Bypass -File plugins\codex-ms-desktop-upd
 | 仅下载 | `check-codex-update.ps1 -DownloadOnly` |
 | 下载并安装(不重启) | `check-codex-update.ps1 -Install` |
 | 下载 → 关闭 → 安装 → 重启 | `check-codex-update.ps1 -InstallWithRestart -NoProxy` |
+| 同上,并允许弹一次 UAC | `check-codex-update.ps1 -InstallWithRestart -NoProxy -AllowElevation` |
 | 强制下载最新包(即使已装) | `download-latest-codex-msix.ps1 -NoProxy` |
 | 安装已下载的 MSIX 并重启 | `install-codex-msix-and-restart.ps1 -PackagePath "<路径>"` |
+| 回退到上一版(需留在缓存里) | `install-codex-msix-and-restart.ps1 -PackagePath "<路径>" -AllowDowngrade -AllowElevation` |
+
+`-AllowElevation` 只在 `-InstallWithRestart` 这条路上存在(`-CheckOnly` /
+`-DownloadOnly` / `-Install` 没有),`install-codex-msix-and-restart.ps1` 也直接接受它。
+不提权时遇到需要提权的包不会失败在 `0x80073D28` 上,而是在碰 Codex 之前就报
+`ADMIN_PRIVILEGES_REQUIRED`。
 
 其中 `run-automatic-maintenance.ps1`、`update-installed-plugin.ps1`、
 `download-latest-codex-msix.ps1` 均接受 `-NoProxy`。
@@ -252,7 +278,10 @@ wsl-cli / wsl-rg / cua_node)的实际状态与路径,启动探测能识别「进
 2. **只能调 `powershell.exe`(5.1),不能调 `pwsh`。** 安装脚本用
    `Join-Path $PSHOME "powershell.exe"` 拉起分离的安装 worker;在 pwsh 下
    `$PSHOME` 指向 PowerShell 7 目录,那里只有 `pwsh.exe`,`Start-Process` 抛错后
-   整个安装会静默失败。
+   整个安装会静默失败。提权子进程不能照抄这一句:它的 `Start-Process` 包在
+   「UAC 被拒绝」的 `catch` 里,路径拼错会被当成用户点了否,报一句与真实原因无关的
+   话 —— 所以它用 `Get-CurrentPowerShellPath`(问当前进程自己的 `Path`,
+   `$PSHOME` 只作兜底)。
 3. **参数不能靠数组展开传递。** `@argv` 传的是位置参数值而不是参数名,会把开关
    当成字符串值绑到第一个位置参数上。`electron/ps.cjs` 因此自己拼 token:开关原样
    写、值一律单引号包裹(单引号是 PowerShell 里唯一不做展开的字面量)。
@@ -441,7 +470,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File docs\codex-desktop-encrypted
 
 插件版本唯一来源是
 `plugins\codex-ms-desktop-updater\.codex-plugin\plugin.json` 的 `version` 字段。
-推送仓库改动前请递增该版本(数值 SemVer 风格,当前 `0.4.2`)。GitHub CI 在 PR 和
+推送仓库改动前请递增该版本(数值 SemVer 风格,当前 `0.4.3`)。GitHub CI 在 PR 和
 push 到 `main` 时运行 `tools\Test-PluginVersionBump.ps1`,要求 head 版本大于
 基线版本。
 

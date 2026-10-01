@@ -19,6 +19,15 @@ param(
     # 所以「一键更新」这条路保持原样，只有界面上的回退入口会传它。
     [switch]$AllowDowngrade,
 
+    # 需要时允许弹一次 UAC 提权。
+    #
+    # 新版 Codex 的清单里声明了一个以 localSystem 运行的打包服务，Add-AppxPackage 于是
+    # 必须由管理员上下文执行（否则回 0x80073D28）。装不上的时候是弹一次 UAC、还是如实
+    # 拒绝，取决于调用方：桌面应用的「一键更新」带上它（仍然是一键，只是不再静默），
+    # 每日自动化不带（后台不许弹窗，改为如实报告并让用户去点桌面应用）。
+    # 默认关 —— 提权是调用方显式同意的结果，脚本自己不该在没人看着的时候弹窗。
+    [switch]$AllowElevation,
+
     # 安装包缓存目录 —— 装完之后在这个目录里剪枝（保留最近 2 个，见模块里的保留策略）。
     #
     # 必须由调用方告诉 worker，不能让 worker 从 $PackagePath 反推：桌面应用允许把缓存
@@ -28,7 +37,17 @@ param(
     # 之后调本脚本）走的就是这条，与既有行为一致。
     [string]$DownloadDirectory,
 
-    [switch]$Worker
+    [switch]$Worker,
+
+    # 提权子进程模式：由 worker 用 -Verb RunAs 拉起的短命进程，只做「关 Codex + 装包」
+    # 两件事就返回。
+    #
+    # 刻意不复用 -Worker。worker 后面还要做版本校验、剪枝、重启和窗口探测，而重启用的是
+    # explorer.exe shell:AppsFolder 激活请求 —— 从一个**提权**进程发出去行为不确定
+    # （可能起不来，也可能把 Codex 拉成管理员进程），而窗口探测失败还会打出「官方加密
+    # 资源搬迁 bug」那套误导性结论。所以提权进程只负责装包这一段，其余照旧留在
+    # 非提权的 worker 里跑。
+    [switch]$ElevatedWorker
 )
 
 $ErrorActionPreference = "Stop"
@@ -115,7 +134,146 @@ function ConvertTo-QuotedArgument {
     return '"' + $escaped + '"'
 }
 
-if (-not $Worker) {
+# 拉起提权子进程用的解释器路径。
+#
+# 不能照抄 launcher 那句 Join-Path $PSHOME "powershell.exe"：在 pwsh 7 下 $PSHOME 指向
+# pwsh 自己的目录，那里**没有** powershell.exe，拼出来的路径根本不存在，Start-Process 会抛
+# 「找不到文件」—— 而它会被提权那段的 catch 当成「用户拒绝了 UAC」，报一句和真实原因
+# 无关的话。直接问当前进程自己是谁，两个宿主下都对。
+function Get-CurrentPowerShellPath {
+    try {
+        $path = (Get-Process -Id $PID).Path
+        if (-not [string]::IsNullOrWhiteSpace($path)) { return $path }
+    }
+    catch { }
+
+    return (Join-Path $PSHOME "powershell.exe")
+}
+
+# 「关掉正在运行的 Codex，然后装包」—— worker 与提权子进程共用的那一段。
+#
+# 抽出来是因为提权那条路必须**只**做这两件事（原因见 -ElevatedWorker 的注释）。
+#
+# 参数收包路径，而不是就地读脚本级的 $resolvedPackagePath：PowerShell 的函数会动态读
+# 父作用域的变量，写成脚本级变量照样能跑通 —— 但那样这个函数的参数契约就是假的，
+# 「提权子进程拿到的是完整路径」这件事也就没有东西在守着了。
+function Invoke-CodexInstallSteps {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$PackageName,
+
+        [Parameter(Mandatory = $true)]
+        [string]$PackagePath,
+
+        [switch]$AllowDowngrade
+    )
+
+    # 按包的真实安装位置匹配进程（进程名可能是 ChatGPT.exe / codex.exe 等，不能按名字认）。
+    # 这里还没解析出 $installedPackage，交给模块自己去 Get-AppxPackage 取安装位置 ——
+    # 写死 *\WindowsApps\<包名>_* 在把应用装到别处的机器上会一个进程都匹配不到。
+    $codexProcesses = @(Get-CodexPackageProcess -PackageName $PackageName)
+
+    foreach ($process in $codexProcesses) {
+        if ($process.MainWindowHandle -ne 0) {
+            [void]$process.CloseMainWindow()
+        }
+    }
+
+    if ($codexProcesses.Count -gt 0) {
+        Wait-Process -Id $codexProcesses.Id -Timeout 20 -ErrorAction SilentlyContinue
+    }
+
+    $remainingCodexProcesses = @(Get-CodexPackageProcess -PackageName $PackageName)
+    foreach ($process in $remainingCodexProcesses) {
+        Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+    }
+    Write-InstallLog ("Closed {0} Codex Desktop process(es)." -f ($codexProcesses.Count + $remainingCodexProcesses.Count))
+
+    if ($AllowDowngrade) {
+        Write-InstallLog "Installing package with Add-AppxPackage (downgrade allowed)..."
+        Add-AppxPackage -Path $PackagePath -ForceUpdateFromAnyVersion
+    }
+    else {
+        Write-InstallLog "Installing package with Add-AppxPackage..."
+        Add-AppxPackage -Path $PackagePath
+    }
+    Write-InstallLog "Install command completed."
+}
+
+# 拉起一个短命的提权子进程去做「关 Codex + 装包」，并等它结束。
+#
+# 为什么提权只能发生在这里、不能放在 launcher 里：desktop/electron/ps.cjs 完全没有超时，
+# 桌面应用是先 await 完 launcher 才转去 tail 日志的。UAC 弹窗要是卡在 launcher 那个进程里，
+# 界面会永久停在「正在安装」—— 没有报错、没有超时、没有取消入口。放进 worker 之后，
+# 等 UAC 的这段时间恰好落在 tail 已有的 12 分钟超时里。
+#
+# 为什么不让 worker 自己提权、而是再拉一个子进程：见 -ElevatedWorker 的注释。
+function Invoke-CodexElevatedInstall {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$PackagePath,
+
+        [Parameter(Mandatory = $true)]
+        [string]$PackageName,
+
+        [switch]$AllowDowngrade
+    )
+
+    Write-InstallLog "Requesting administrator privileges (a UAC prompt will appear)..."
+
+    # 参数表必须完整：子进程是**另一个进程**，开关不会自己跟过去。尤其是 -LogPath ——
+    # 少了它，提权子进程会落回插件目录下的默认日志，桌面应用 tail 的那个文件一个字都不涨，
+    # 用户等满 12 分钟后只看到一句「安装超时」，而安装其实成功了。
+    $elevatedArguments = @(
+        "-NoProfile",
+        "-ExecutionPolicy", "Bypass",
+        "-File", $PSCommandPath,
+        "-ElevatedWorker",
+        "-PackagePath", $PackagePath,
+        "-PackageName", $PackageName,
+        "-LogPath", $LogPath
+    )
+
+    if ($AllowDowngrade) {
+        $elevatedArguments += "-AllowDowngrade"
+    }
+
+    # 和 launcher 同一套：每个参数补引号后拼成**单个字符串**（原因见上面 launcher 那段长注释，
+    # 包括以反斜杠结尾的值会把收尾引号转义掉那个坑）。
+    $quotedElevatedArguments = $elevatedArguments | ForEach-Object { ConvertTo-QuotedArgument $_ }
+
+    try {
+        # -RedirectStandardOutput 在这个参数集里不存在（它和 -Verb 互斥），所以子进程的报错
+        # 只能靠它自己写进同一个日志文件，这里捞不回来。
+        $elevatedProcess = Start-Process -FilePath (Get-CurrentPowerShellPath) `
+            -Verb RunAs `
+            -WindowStyle Hidden `
+            -Wait `
+            -PassThru `
+            -ArgumentList ($quotedElevatedArguments -join " ")
+    }
+    catch {
+        # 用户点「否」就是走到这里。实测（Windows PowerShell 5.1，2026-10-01）：抛的是
+        # System.InvalidOperationException 而不是 Win32Exception，NativeErrorCode 为空 ——
+        # 所以按错误码判别会落空，只能整段捕获。消息还被 Start-Process 套了一层壳
+        # （"This command cannot be run due to the error: ..."），壳里那句是系统本地化的；
+        # 单看它既看不出发生了什么，也看不出有没有留下烂摊子，所以自己写一条能直接读的。
+        # 这条消息会被顶层 trap 变成日志里的 FATAL 行。
+        throw ("Elevation was declined or could not start ({0}). Nothing was installed and Codex was not closed." -f $_.Exception.Message)
+    }
+
+    # 退出码只记录、不当判据。-Verb RunAs 走的是 ShellExecuteEx，拿回来的 Process 对象
+    # 未必有真实的退出码句柄，把它当成功判据会在某台机器上给出随机结论。
+    # 装没装上以调用方随后的 Get-AppxPackage 版本校验为准 —— 那才是权威判据。
+    try {
+        Write-InstallLog ("Elevated install worker exited with code {0}." -f $elevatedProcess.ExitCode)
+    }
+    catch {
+        Write-InstallLog "Elevated install worker exit code was not readable."
+    }
+}
+
+if (-not $Worker -and -not $ElevatedWorker) {
     $powershellPath = Join-Path $PSHOME "powershell.exe"
     $arguments = @(
         "-NoProfile",
@@ -137,6 +295,10 @@ if (-not $Worker) {
     # 开关必须自己传下去：worker 是另一个进程，父进程的参数不会自动继承。
     if ($AllowDowngrade) {
         $arguments += "-AllowDowngrade"
+    }
+
+    if ($AllowElevation) {
+        $arguments += "-AllowElevation"
     }
 
     if (-not [string]::IsNullOrWhiteSpace($DownloadDirectory)) {
@@ -171,39 +333,78 @@ if (-not $Worker) {
     return
 }
 
+# 提权子进程：只做「关 Codex + 装包」，做完就退。
+#
+# 必须排在下面那两行日志和 Start-Sleep **之前**：它们是给非提权 worker 用的
+# （"Worker started for package: ..." 对应界面上的「准备安装」4%）。提权子进程再写一遍，
+# 界面就会在已经走到「正在请求管理员权限」（14%）之后又收到一条 4% 的旧阶段 ——
+# 百分比被 Math.max 挡住不会退，措辞却跳回去了。
+if ($ElevatedWorker) {
+    Invoke-CodexInstallSteps -PackageName $PackageName -PackagePath $resolvedPackagePath -AllowDowngrade:$AllowDowngrade
+    return
+}
+
 Write-InstallLog ("Worker started for package: {0}" -f $resolvedPackagePath)
 Start-Sleep -Seconds $StartDelaySeconds
 
-# 按包的真实安装位置匹配进程（进程名可能是 ChatGPT.exe / codex.exe 等，不能按名字认）。
-# 这里还没解析出 $installedPackage，交给模块自己去 Get-AppxPackage 取安装位置 ——
-# 写死 *\WindowsApps\<包名>_* 在把应用装到别处的机器上会一个进程都匹配不到。
-$codexProcesses = @(Get-CodexPackageProcess -PackageName $PackageName)
+# 这个包装起来要不要管理员权限？必须在**关掉用户的 Codex 之前**问清楚：
+# 装不上就不该先把人家正在编辑的窗口关掉。
+$requiresElevation = Test-CodexPackageRequiresElevation -Path $resolvedPackagePath
+if ($requiresElevation -and -not $AllowElevation) {
+    # 调用方没允许提权（每日自动化就是不提权的那条路）。如实拒绝，别让 worker 带着
+    # 0x80073D28 去失败 —— 那样自动化只会报一句看不懂的 HRESULT，用户也不知道该干什么。
+    throw "This package declares a Windows service, so Windows requires administrator privileges to install it, and -AllowElevation was not given. Nothing was installed and Codex was not closed. Update from the Codex Updater desktop app instead. Package file kept: $resolvedPackagePath"
+}
 
-foreach ($process in $codexProcesses) {
-    if ($process.MainWindowHandle -ne 0) {
-        [void]$process.CloseMainWindow()
+$elevatedAttempted = $false
+if ($requiresElevation) {
+    Invoke-CodexElevatedInstall -PackagePath $resolvedPackagePath -PackageName $PackageName -AllowDowngrade:$AllowDowngrade
+    $elevatedAttempted = $true
+}
+else {
+    try {
+        Invoke-CodexInstallSteps -PackageName $PackageName -PackagePath $resolvedPackagePath -AllowDowngrade:$AllowDowngrade
+    }
+    catch {
+        # 兜底：探测说不用提权、Windows 却说需要（Add-AppxPackage 抛 0x80073D28）。
+        # 有这条，「探测失灵」的代价只是多弹一次 UAC，而不是让用户看到一个生 HRESULT。
+        # 探测认不出来的情况是存在的：清单读不出来、包结构没见过等等。
+        if (-not $AllowElevation -or $_.Exception.Message -notmatch '0x80073D28') {
+            throw
+        }
+
+        Write-InstallLog ("Add-AppxPackage reported 0x80073D28 although the package check did not predict elevation: {0}" -f $_.Exception.Message)
+        Invoke-CodexElevatedInstall -PackagePath $resolvedPackagePath -PackageName $PackageName -AllowDowngrade:$AllowDowngrade
+        $elevatedAttempted = $true
     }
 }
 
-if ($codexProcesses.Count -gt 0) {
-    Wait-Process -Id $codexProcesses.Id -Timeout 20 -ErrorAction SilentlyContinue
-}
+if ($elevatedAttempted) {
+    # 提权跑完了，到底装上没有？以版本为准，**不是**以子进程的退出码为准
+    # （原因见 Invoke-CodexElevatedInstall：-Verb RunAs 拿回来的退出码不可靠）。
+    #
+    # 单独在这里判一次，是为了让「提权跑完了但没装上」在界面上以这句话收场。否则用户看到的
+    # 会是下面那条通用版本校验消息（「版本比请求的旧」），看不出跟提权有关；而提权子进程
+    # 自己写的那行 FATAL（例如「用户取消了 UAC」）仍然留在日志里，点开就能看到。
+    $elevatedInstalled = Get-AppxPackage -Name $PackageName -ErrorAction SilentlyContinue |
+        Sort-Object Version -Descending |
+        Select-Object -First 1
+    $elevatedVersion = if ($null -eq $elevatedInstalled) { $null } else { [version]$elevatedInstalled.Version }
 
-$remainingCodexProcesses = @(Get-CodexPackageProcess -PackageName $PackageName)
-foreach ($process in $remainingCodexProcesses) {
-    Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
-}
-Write-InstallLog ("Closed {0} Codex Desktop process(es)." -f ($codexProcesses.Count + $remainingCodexProcesses.Count))
+    # 判定要跟下面升级/降级两条路保持同一套语义：降级判相等，升级判「不小于」。
+    $elevatedMismatch = if ($AllowDowngrade) {
+        $elevatedVersion -ne $packageMetadata.Version
+    }
+    else {
+        $null -eq $elevatedVersion -or $elevatedVersion -lt $packageMetadata.Version
+    }
 
-if ($AllowDowngrade) {
-    Write-InstallLog "Installing package with Add-AppxPackage (downgrade allowed)..."
-    Add-AppxPackage -Path $resolvedPackagePath -ForceUpdateFromAnyVersion
+    if ($elevatedMismatch) {
+        throw "Elevated install did not take effect: installed version is '$elevatedVersion' while '$($packageMetadata.Version)' was requested. The elevated worker's own error, if any, is in the log above. Package file kept: $resolvedPackagePath"
+    }
+
+    Write-InstallLog ("Elevated install verified. Installed version: {0}" -f $elevatedVersion)
 }
-else {
-    Write-InstallLog "Installing package with Add-AppxPackage..."
-    Add-AppxPackage -Path $resolvedPackagePath
-}
-Write-InstallLog "Install command completed."
 
 $installedPackage = Get-AppxPackage -Name $PackageName -ErrorAction SilentlyContinue |
     Sort-Object Version -Descending |

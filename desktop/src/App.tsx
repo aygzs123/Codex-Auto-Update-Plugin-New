@@ -75,7 +75,7 @@ function Hero({ onPrimary, onSecondary, primaryLabel, secondaryLabel, busy }: {
 
   let title = "一键安装 Codex Desktop";
   let lede =
-    "从 Microsoft Store 官方分发源获取最新版本，校验 OpenAI 签名后自动安装并启动。不需要管理员权限，也不会改动你已有的 Codex 配置。";
+    "从 Microsoft Store 官方分发源获取最新版本，校验 OpenAI 签名后自动安装并启动。不会改动你已有的 Codex 配置；若该版本声明了 Windows 服务，安装时会弹一次 UAC 授权。";
 
   if (phase === "checking") {
     title = "正在检查 Codex 状态";

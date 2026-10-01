@@ -106,7 +106,7 @@ if (Test-Path -LiteralPath $repairScriptSource) {
 New-Item -ItemType Directory -Path $automationDirectory -Force | Out-Null
 
 $installCommand = "powershell -NoProfile -ExecutionPolicy Bypass -File $installedMaintenanceScript -NoProxy"
-$prompt = "From $installedPluginRoot, execute ``$installCommand`` directly. Do not present the PowerShell command as an instruction to the user. The maintenance script first updates this plugin from GitHub when a newer plugin.json version exists, then checks Codex Desktop and starts the detached install-and-restart workflow when a newer MSIX is available. If it says ``No newer package was found``, do not notify the user."
+$prompt = "From $installedPluginRoot, execute ``$installCommand`` directly. Do not present the PowerShell command as an instruction to the user. The maintenance script first updates this plugin from GitHub when a newer plugin.json version exists, then checks Codex Desktop and starts the detached install-and-restart workflow when a newer MSIX is available. If it says ``No newer package was found``, do not notify the user. If it says ``ADMIN_PRIVILEGES_REQUIRED``, this update needs administrator rights, which the unattended run deliberately does not request: the package has already been downloaded and nothing was changed. Tell the user once, plainly, to open the Codex Updater desktop app and click the update button there (it will show a single UAC prompt), and mention the downloaded package path printed by the script."
 
 $automationLines = (Get-Content -LiteralPath $automationTemplate -Raw) -split "\r?\n"
 $automationLines = Set-TomlLine -Lines $automationLines -Key "prompt" -Value "`"$(ConvertTo-TomlStringLiteral $prompt)`""

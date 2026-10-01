@@ -782,6 +782,119 @@ function Install-CodexPackage {
     }
 }
 
+# 在一个**已经打开**的 zip 里找清单、判断它有没有声明以 localSystem 运行的打包服务。
+#
+# 会递归一层：.msixbundle 里面装的是若干个完整的 .msix（**嵌套的 zip**），不是一批名字
+# 叫 AppxManifest.xml 的条目 —— 只枚举外层的话，bundle 的清单一条都看不见，于是
+# 「不用提权」被报出来，装的时候再撞 0x80073D28。这条不是理论风险：Select-BestCodexPackage
+# 的 Get-ExtensionRank 把 msixbundle 排在 msix 之上，商店一旦提供 bundle 就优先选它。
+function Test-CodexArchiveRequiresElevation {
+    param(
+        [Parameter(Mandatory = $true)]
+        $Archive,
+
+        [int]$Depth = 0
+    )
+
+    foreach ($entry in $Archive.Entries) {
+        if ($entry.FullName -notmatch '(?i)(^|/)AppxManifest\.xml$') {
+            continue
+        }
+
+        $reader = $null
+        try {
+            $reader = [System.IO.StreamReader]::new($entry.Open())
+            if ($reader.ReadToEnd() -match 'Category\s*=\s*"windows\.service"') {
+                return $true
+            }
+        }
+        catch {
+            # 单个条目读不出来不该让整个判断失败，继续看别的条目。
+        }
+        finally {
+            if ($null -ne $reader) { $reader.Dispose() }
+        }
+    }
+
+    # 一层就够：bundle 里装的是 .msix，而 .msix 里不会再有 .msix。
+    # 加 Depth 只是不让畸形包把这里变成无底递归。
+    if ($Depth -ge 1) {
+        return $false
+    }
+
+    foreach ($entry in $Archive.Entries) {
+        if ($entry.FullName -notmatch '(?i)\.(msix|appx)$') {
+            continue
+        }
+
+        $innerStream = $null
+        $innerArchive = $null
+        try {
+            $innerStream = $entry.Open()
+            $innerArchive = [System.IO.Compression.ZipArchive]::new($innerStream)
+            if (Test-CodexArchiveRequiresElevation -Archive $innerArchive -Depth ($Depth + 1)) {
+                return $true
+            }
+        }
+        catch {
+        }
+        finally {
+            if ($null -ne $innerArchive) { $innerArchive.Dispose() }
+            if ($null -ne $innerStream) { $innerStream.Dispose() }
+        }
+    }
+
+    return $false
+}
+
+# 判断一个安装包是否必须由管理员权限安装。
+#
+# 新版 Codex 的清单里声明了一个以 localSystem 运行的打包服务，Windows 于是在
+# Add-AppxPackage 那一步回 0x80073D28（「该程序包安装失败，因为需要管理员权限」），
+# 非提权根本装不上。提前读包内清单把这件事看出来，调用方才有机会在**关掉用户的
+# Codex 之前**决定是提权还是如实拒绝。
+#
+# 认的是 Category 属性值，不是元素名（<desktop6:Extension ...>）：windows.service 是
+# 架构规定好的 Category 取值，而 desktop6 只是当前碰巧用了哪个命名空间前缀 —— 将来
+# 换成 desktop7，认前缀的写法会一声不吭地失效，表现就是「又回去报 0x80073D28」。
+#
+# 读不出来一律返回 $false（失败要开放）：探测不准的后果应该是退回到今天的行为
+# （Add-AppxPackage 自己把真实错误报出来，install-codex-msix-and-restart.ps1 里还有一条
+# 「认出 0x80073D28 就改为提权重试」的兜底），而不是把一个合法安装包挡在门外。
+function Test-CodexPackageRequiresElevation {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path
+    )
+
+    if (-not (Test-Path -LiteralPath $Path)) {
+        return $false
+    }
+
+    try {
+        # 5.1 下 [System.IO.Compression.ZipFile] 不是自动加载的：少了这一句，
+        # 下面那行抛「Unable to find type」，而失败要开放会把异常吞掉 —— 于是
+        # 每个包都被判成「不用提权」，功能一声不吭地失效。
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        $archive = [System.IO.Compression.ZipFile]::OpenRead($Path)
+    }
+    catch {
+        return $false
+    }
+
+    try {
+        return (Test-CodexArchiveRequiresElevation -Archive $archive)
+    }
+    catch {
+        return $false
+    }
+    finally {
+        # 一定要关：worker 判完之后还要在**同一个进程里**用 Add-AppxPackage 打开这个文件，
+        # 句柄留着不放可能让安装本身失败。
+        $archive.Dispose()
+    }
+}
+
 Export-ModuleMember -Function `
     ConvertFrom-AppxPackageText, `
     ConvertFrom-RgAdguardHtml, `
@@ -798,5 +911,6 @@ Export-ModuleMember -Function `
     Save-CodexPackage, `
     Select-BestCodexPackage, `
     Test-CodexDesktopWindowUp, `
+    Test-CodexPackageRequiresElevation, `
     Test-IsPluginUpdateAvailable, `
     Test-IsUpdateAvailable

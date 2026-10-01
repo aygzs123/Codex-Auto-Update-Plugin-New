@@ -18,6 +18,16 @@ automation template.
 - **Restart after install**: `-InstallWithRestart` starts a detached workflow that
   closes Codex, installs the MSIX, verifies the installed version is not older
   than the downloaded one, then restarts Codex.
+- **Elevation when required**: newer Codex packages declare a packaged Windows
+  service running as `localSystem` (`Category="windows.service"`), so Windows
+  requires an administrator context for `Add-AppxPackage` and otherwise fails with
+  `0x80073D28`. The scripts read the package manifest first
+  (`Test-CodexPackageRequiresElevation`) and, when needed, spawn a short-lived
+  elevated child (`-Verb RunAs`) that only closes Codex and installs — one UAC
+  prompt. Elevation is **off by default**: without `-AllowElevation` the run
+  refuses honestly (nothing installed, nothing changed, no prompt), which is why
+  automatic maintenance can no longer finish an elevation-requiring version — open
+  the desktop app and click update instead (see "Automatic maintenance").
 - **Cache retention + rollback**: keeps the two most recent `OpenAI.Codex`
   installers in the download cache (about 1.67 GB) and prunes older ones, so a
   problematic update can be rolled back to the previous version (see "Version
@@ -56,6 +66,21 @@ package is available:
 powershell -NoProfile -ExecutionPolicy Bypass -File plugins\codex-ms-desktop-updater\scripts\run-automatic-maintenance.ps1 -NoProxy
 ```
 
+**Automatic maintenance never requests administrator privileges.** An unattended
+run must not block on a UAC prompt, so when a package needs elevation (see
+"Features") it prints `ADMIN_PRIVILEGES_REQUIRED`, states that the package has
+already been downloaded and that nothing was changed, and does **not** start the
+install. That check deliberately runs *before* the detached worker is spawned: the
+worker is a separate process and the call site only sees whether it started, so
+letting it fail asynchronously would make the automation report success.
+
+For an elevation-requiring version use the manual (or desktop app) path, which
+shows a single UAC prompt:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File plugins\codex-ms-desktop-updater\scripts\check-codex-update.ps1 -InstallWithRestart -NoProxy -AllowElevation
+```
+
 ### Manual Codex update control
 
 | Purpose | Command |
@@ -64,8 +89,16 @@ powershell -NoProfile -ExecutionPolicy Bypass -File plugins\codex-ms-desktop-upd
 | Download only | `check-codex-update.ps1 -DownloadOnly` |
 | Download and install (no restart) | `check-codex-update.ps1 -Install` |
 | Download → close → install → restart | `check-codex-update.ps1 -InstallWithRestart -NoProxy` |
+| Same, allowing one UAC prompt | `check-codex-update.ps1 -InstallWithRestart -NoProxy -AllowElevation` |
 | Force-download newest package (even if installed) | `download-latest-codex-msix.ps1 -NoProxy` |
 | Install a downloaded MSIX and restart | `install-codex-msix-and-restart.ps1 -PackagePath "<path>"` |
+| Roll back to the previous version (must still be cached) | `install-codex-msix-and-restart.ps1 -PackagePath "<path>" -AllowDowngrade -AllowElevation` |
+
+`-AllowElevation` exists only on `check-codex-update.ps1`'s `-InstallWithRestart`
+path (not on `-CheckOnly` / `-DownloadOnly` / `-Install`);
+`install-codex-msix-and-restart.ps1` accepts it directly. Without it a package that
+needs elevation does not fail on `0x80073D28` — it is refused with
+`ADMIN_PRIVILEGES_REQUIRED` before anything touches Codex.
 
 `run-automatic-maintenance.ps1`, `update-installed-plugin.ps1`, and
 `download-latest-codex-msix.ps1` all accept `-NoProxy`.

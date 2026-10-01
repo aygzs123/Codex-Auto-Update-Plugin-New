@@ -289,6 +289,11 @@ function partialNameFor(fileName) {
 const INSTALL_STAGES = [
   { match: /^Worker started for package:\s*(.+)$/, phase: "preparing", percent: 4, label: "准备安装" },
   { match: /^Closed (\d+) Codex Desktop process/, phase: "closing", percent: 12, label: "关闭正在运行的 Codex" },
+  // 提权那条路（install-codex-msix-and-restart.ps1 的 Invoke-CodexElevatedInstall 写的）。
+  // 14 必须落在 closing(12) 与 installing(20) 之间：百分比是取最大值单调前进的，
+  // 写小了会被 12 吞掉（用户就看不到「在等 UAC」这句，只看到进度条卡住），
+  // 写大了会让后面的安装里程碑看起来在倒退。
+  { match: /^Requesting administrator privileges/, phase: "elevating", percent: 14, label: "正在请求管理员权限（请在 UAC 弹窗中允许）" },
   // 回退那一跑写的是 "Installing package with Add-AppxPackage (downgrade allowed)..."，
   // 比这行的原话多一个括号。以前只认原话，于是**回退时进度条卡在 12% 不动**，
   // 一路到「安装完成」才跳到 100% —— 看起来像卡死了。
