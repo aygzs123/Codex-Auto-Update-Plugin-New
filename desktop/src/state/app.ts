@@ -309,8 +309,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ probing: true, error: null, notice: null });
     try {
       const healthDetail = await invokeCommand<HealthReport>("check_health", { probe: true });
-      // 这次探测比「打开 Codex」留下的那次更新，旧结论要撤掉；
-      // 若这次也是无窗口，status.needsRepair 会接着给出修复横幅。
+      // 这次探测比「打开 Codex」留下的那次更新，旧结论要撤掉。
+      // 无窗口这一档由健康面板自己的判定说明承担；通用资源修复横幅只看
+      // status.repairTargets（未完成的物化残留），跟这次探测没关系。
       set({ healthDetail, status: healthDetail, launchResult: null });
     } catch (error) {
       set({ error: describe(error) });

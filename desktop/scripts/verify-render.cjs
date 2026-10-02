@@ -76,6 +76,14 @@ const launchNoWindow = process.argv.includes("--launch-no-window");
 // 只是首次启动在落几百 MB 运行时，界面却断言了搬迁 bug，把用户推去跑修复脚本。
 const launchUnknown = process.argv.includes("--launch-unknown");
 
+// --health-partial：五个资源副本里有一个是 `[PART ]`（目标目录不在、但留着
+// `.staging-*` / `.repair-*` 中转目录）。这是**唯一**会弹出资源修复横幅的形状。
+//
+// 这条场景之所以必须单独跑一遍：默认场景用的是真机形状（`wsl-cli` 只是 missing、没有
+// 残留），它钉的是「组件缺失**不**弹卡片」；而 `partial` 那一档必须有卡片、且文案要
+// 点到具体组件名 —— 两种形状在同一个夹具里表达不了，只能分两个场景。
+const healthPartial = process.argv.includes("--health-partial");
+
 // --notice：从菜单触发「检查更新」，验证命令的结论是**居中的模态对话框**。
 // 以前是右下角 toast：用户点完按钮，视线还在主区（视线的另一头），很容易整个错过
 // —— 而这里弹的是命令唯一的反馈。所以这个场景断言的不是「它出现了」，而是
@@ -128,6 +136,7 @@ const STUB_HEALTH = notInstalled
       probeMessage: null,
       startupDiagnosis: null,
       needsRepair: false,
+      repairTargets: [],
       raw: "",
     }
   : {
@@ -138,11 +147,23 @@ const STUB_HEALTH = notInstalled
       // 故意用一个 **D 盘** 的安装位置。检测与显示都不许对系统盘做任何假设：
       // 用户把「新的应用将保存到」设成别的盘时，包里报出来就是这种路径。
       installLocation: "D:\\WindowsApps\\OpenAI.Codex_26.901.6511.0_x64__2p2nqsd0c76g0",
-      overall: "ok",
+      // 这一份**故意不是「五项全 ok」**，它照抄的是 2026-10-02 那台真机的形状：
+      // wsl-cli 是 `[MISS ]`（目标目录不在、连残留都没有），脚本因此判
+      // OVERALL=degraded —— 而那台机器上 Codex 打开完全正常，界面却常驻一张
+      // 「Codex 可能无法正常打开窗口」的横幅。组件缺失不等于启动会坏，
+      // 默认夹具用真机形状，这条「不弹卡片」就不会再退回去。
+      //
+      // overall 必须跟着写 degraded：脚本对任何非 ok 组件都判 degraded，
+      // 只改组件不改它，造出来的是一份自相矛盾的夹具。
+      overall: "degraded",
+      // --health-partial 把 wsl-cli 换成 `[PART ]`（目标目录不在、但留着 .staging 中转目录）
+      // —— 那才是有证据的「物化试过、没跑完」，也是唯一该出现修复横幅的形状。
       components: [
         { state: "ok", symbol: "OK", name: "win-cli", path: "C:\\Users\\me\\AppData\\Local\\OpenAI\\Codex\\bin\\8e5b6932", leftovers: 0 },
         { state: "ok", symbol: "OK", name: "win-rg", path: "C:\\Users\\me\\AppData\\Local\\OpenAI\\Codex\\bin\\c6063512", leftovers: 0 },
-        { state: "ok", symbol: "OK", name: "wsl-cli", path: "C:\\Users\\me\\.codex\\bin\\wsl\\b53f5e5f", leftovers: 0 },
+        healthPartial
+          ? { state: "partial", symbol: "PART", name: "wsl-cli", path: "C:\\Users\\me\\.codex\\bin\\wsl\\65bf23c0", leftovers: 3 }
+          : { state: "missing", symbol: "MISS", name: "wsl-cli", path: "C:\\Users\\me\\.codex\\bin\\wsl\\b53f5e5f", leftovers: 0 },
         { state: "ok", symbol: "OK", name: "wsl-rg", path: "C:\\Users\\me\\.codex\\bin\\wsl\\1a4f6f66", leftovers: 0 },
         { state: "ok", symbol: "OK", name: "cua_node", path: "C:\\Users\\me\\AppData\\Local\\OpenAI\\Codex\\runtimes\\cua_node\\b474a88d", leftovers: 0 },
       ],
@@ -151,7 +172,10 @@ const STUB_HEALTH = notInstalled
       probeResult: null,
       probeMessage: null,
       startupDiagnosis: null,
-      needsRepair: false,
+      // repairTargets 照 healthRepairTargets 的口径写（只认 partial）；needsRepair 是
+      // 「窗口没出现 **或** 有残留」，这里没有探针，所以两者同真同假。
+      needsRepair: healthPartial,
+      repairTargets: healthPartial ? ["wsl-cli"] : [],
       raw: "",
     };
 
@@ -275,12 +299,28 @@ function registerStubHandlers() {
           health: {
             ...STUB_HEALTH,
             exitCode: 3,
+            // 这两条场景演的是「五个资源副本都好端端的，主窗口照样没出现」——
+            // 也就是 2026-09-07 那次真实搬迁 bug 的形状（win-cli 自己物化是成功的，
+            // 窗口却没起来）。所以组件必须显式覆盖成全 ok，不能沿用默认夹具里那个
+            // missing 的 wsl-cli：脚本是按组件算 overall 的，「组件 degraded + overall ok」
+            // 是真实运行里造不出来的自相矛盾夹具。
             overall: "ok",
+            components: STUB_HEALTH.components.map((component) => ({
+              ...component,
+              state: "ok",
+              symbol: "OK",
+              leftovers: 0,
+            })),
             appUserModelId: "OpenAI.Codex_2p2nqsd0c76g0!App",
             probeResult: "window-not-visible",
             probeMessage: "WARNING: Codex Desktop processes are up but NO main window appeared within 20 s.",
             startupDiagnosis: launchUnknown ? "unknown" : "relocation-bug",
             needsRepair: true,
+            // 空数组是**故意的**：这两条场景演的是「组件都好好的、就是窗口没出来」，
+            // 那正是 needsRepair 的探针分支，不是资源残留。通用修复横幅的判据是
+            // repairTargets，这里给它空，横幅才只可能来自启动卡片这一张 ——
+            // 顺带把「两张卡片不会同时出现」这件事在冒烟层也钉住。
+            repairTargets: [],
           },
         };
       case "check_update":
@@ -437,6 +477,29 @@ async function inspect(window) {
           buttonTop: Math.round(rect.top),
           buttonCovered: !(hit && (hit === button || button.contains(hit))),
           hitTag: hit ? hit.className || hit.tagName : "(空)",
+        };
+      })(),
+      // 页面上所有告警卡的标题。默认场景用它做**否定**断言：组件缺失（真机那份夹具里
+      // wsl-cli 就是 missing）不该弹任何卡片，所以这个列表必须是空的。
+      //
+      // 只断言「修复横幅的读取器返回 null」不够 —— 那样即使有人把横幅标题改回旧文案
+      // 「检测到启动资源不完整」，读取器同样返回 null，误报就这么漏过去了。
+      warnCardHeadings: [...document.querySelectorAll(".panel.warn-card h3")].map((node) =>
+        node.textContent.trim(),
+      ),
+      // 资源修复横幅（「资源副本留有未完成的物化痕迹」）。
+      //
+      // **按标题定位，不能取第一张 .warn-card**：安装失败与启动失败那两张也在册，
+      // 取第一张的话，这条断言在别的场景里会安静地量到另一张卡片。
+      // 匹配用「资源副本」这个子串而不是整句标题：标题措辞可以微调，
+      // 但一旦它不再是「关于资源副本」的那张卡，这条就该红。
+      repairCard: (() => {
+        const cards = [...document.querySelectorAll(".panel.warn-card")];
+        const card = cards.find((node) => (node.querySelector("h3")?.textContent ?? "").includes("资源副本"));
+        if (!card) return null;
+        return {
+          heading: card.querySelector("h3").textContent.trim(),
+          text: card.textContent.replace(/\s+/g, " ").trim(),
         };
       })(),
       // 版本历史 / 回退卡片。
@@ -1019,7 +1082,60 @@ async function main() {
     if (!noticeOpen && report.ctaLabel !== "一键检查并更新") problems.push(`主操作按钮文案不正确：${report.ctaLabel}`);
     if (!report.heading.includes("已安装")) problems.push(`主区标题未反映已安装状态：${report.heading}`);
     if (report.healthRows !== 5) problems.push(`健康诊断应渲染 5 个组件行，实际 ${report.healthRows} 个`);
-    if (report.verdict !== "资源完整") problems.push(`健康结论不正确：${report.verdict}`);
+    // 夹具照抄真机形状，五项里 wsl-cli 是 missing，所以结论就该是「部分资源缺失」。
+    // 这条只是把夹具本身钉住（脚本对任何非 ok 组件都判 degraded）——
+    // 真正要证明的是下面那条：**同一个 degraded 不该弹出任何告警横幅**。
+    //
+    // 启动失败那两条场景例外：它们把组件覆盖成全 ok 了（见 launch_codex 桩），
+    // 结论自然回到「资源完整」，而页面上那张卡片正是它们要断言的对象。
+    const launchScenario = launchNoWindow || launchUnknown;
+    if (!launchScenario && report.verdict !== "部分资源缺失") {
+      problems.push(`健康结论不正确：${report.verdict}`);
+    }
+
+    // 本次修复的核心否定断言：组件不在 ≠ 启动会坏。
+    //
+    // 2026-10-02 用户那台机器就是这个形状（wsl-cli missing、OVERALL=degraded），
+    // Codex 打开完全正常，界面上却常驻一张「Codex 可能无法正常打开窗口」的横幅。
+    // 旧判据是 `state !== "ok"`，任何一项不在就算数；现在只认「有未完成的物化残留」。
+    //
+    // 用「页面上有没有告警卡」而不是「修复横幅读取器返回没返回 null」：后者在标题被
+    // 改回旧文案时同样是 null，误报会从这条断言底下溜过去。
+    // --health-partial 与启动失败那两条场景例外：它们的卡片断言在下面各自的一组里。
+    if (!healthPartial && !launchScenario && report.warnCardHeadings.length > 0) {
+      problems.push(
+        `组件缺失不该弹出告警卡片（真机形状：wsl-cli 只是 missing、没有残留），实际渲染了：` +
+          report.warnCardHeadings.join("、"),
+      );
+    }
+  }
+
+  // --health-partial：唯一该弹出资源修复横幅的形状（有 .staging/.repair 残留）。
+  if (healthPartial) {
+    const card = report.repairCard;
+    if (!card) {
+      problems.push("有未完成的物化残留（[PART ]）却没有给出资源修复横幅");
+    } else {
+      if (!card.heading.includes("资源副本")) problems.push(`资源修复横幅标题不正确：${card.heading}`);
+      // 点名到具体组件：只说「有残留」用户不知道该看哪一项。名字走 healthComponentText，
+      // 所以这里断言的必须是中文名而不是 wsl-cli 这个内部 id。
+      // 连着后半句一起断言：JSX 会把源码里的换行折成一个空格，中文句子里就会冒出
+      // 「WSL 命令行工具 的目标目录不存在」这种空档。只查组件名的话，那个空格
+      // 正好卡在断言之外，谁也发现不了。
+      if (!card.text.includes("WSL 命令行工具的目标目录不存在")) {
+        problems.push(`资源修复横幅没有点名是哪个资源（或句子被 JSX 折行插了空格）：${card.text}`);
+      }
+      // 给下一步。卡片本身不放按钮（健康面板里那颗常驻），但必须指过去。
+      if (!card.text.includes("修复资源副本")) problems.push(`资源修复横幅没有给出下一步：${card.text}`);
+      // 措辞不得断言因果。组件状态预测不了窗口能不能开，两个方向都不行
+      // （2026-09-07 的真实搬迁 bug 里 win-cli 反倒物化成功；2026-10-02 正常的机器上
+      // wsl-cli 就是 missing）。这三句都是那次误诊的原文。
+      for (const claim of ["可能无法正常打开", "无法正常启动", "主窗口没有出现"]) {
+        if (card.text.includes(claim)) {
+          problems.push(`资源修复横幅不该出现因果断言「${claim}」：${card.text}`);
+        }
+      }
+    }
   }
 
   // 「打开 Codex」：结论必须可见、且下一步必须可点。这两个缺一个，用户看到的就是

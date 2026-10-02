@@ -20,6 +20,7 @@ const { CODEX_PACKAGE_NAME, evaluateSignature } = require("./verify.cjs");
 const {
   parseHealth,
   healthNeedsRepair,
+  healthRepairTargets,
   parseUpdateCheck,
   parseCachedPackages,
   partialNameFor,
@@ -78,7 +79,9 @@ async function getStatus({ probe = false } = {}) {
   const health = parseHealth(stdout, code);
   // 探测失败时脚本把说明写在 stdout，但真正的异常栈在 stderr，一并留给界面排查。
   if (health.overall === "unknown" && stderr.trim()) health.raw = `${stdout}\n${stderr}`;
-  return { ...health, needsRepair: healthNeedsRepair(health) };
+  // repairTargets 一起带过去：界面要按名字点名是哪个资源没物化完，但判据只能有一处，
+  // 不能让渲染进程自己再算一遍 state === "partial"。
+  return { ...health, needsRepair: healthNeedsRepair(health), repairTargets: healthRepairTargets(health) };
 }
 
 /** 只查询版本信息，不下载。CheckOnly 模式不会写下载缓存。 */
@@ -622,7 +625,7 @@ async function launchCodex({ probeSeconds = 20 } = {}, emit = () => {}) {
     // 脚本按证据给出的三档判定（可能为 null = 老脚本或没跑判定）。界面据此决定
     // 要不要提「修复资源副本」—— 只有 relocation-bug 才提。
     startupDiagnosis: health.startupDiagnosis,
-    health: { ...health, needsRepair: healthNeedsRepair(health) },
+    health: { ...health, needsRepair: healthNeedsRepair(health), repairTargets: healthRepairTargets(health) },
   };
 }
 

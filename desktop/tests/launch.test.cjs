@@ -126,9 +126,17 @@ test("渲染进程：窗口没出现时给出可点的修复入口，而不是�
 });
 
 test("渲染进程：启动失败时不得与通用修复横幅重复", () => {
-  // launchResult.windowVisible=false 时 status.needsRepair 也是 true，
-  // 不排除掉的话同一条结论会渲染两张卡片。
-  assert.match(appSource, /!launchWindowMissing && repairNeeded/);
+  // 启动失败那张卡片已经把「进程在、窗口不在」说全了（含修复入口），
+  // 不排除掉的话同一件事会渲染两张卡片。
+  //
+  // 排除条件看 repairTargets，不看 needsRepair：needsRepair 含着「窗口没出现」
+  // 那条探针分支，而这一档正是启动卡片自己在报的。用 needsRepair 的话两个条件
+  // 在窗口缺失时同时为真，看起来像「已排除」，其实是靠 launchWindowMissing 拦下来的
+  // —— 一旦哪天探针判定变了，就会多弹一张。
+  assert.match(appSource, /!launchWindowMissing && repairTargets\.length > 0/);
+  // 判据只能在主进程（parse.cjs 的 healthRepairTargets）里算一遍。渲染进程自己
+  // 再写一次 state === "partial" 就是第二份实现，两边迟早说不到一块去。
+  assert.doesNotMatch(appSource, /state === "partial"/);
 });
 
 test("类型：活动 id 覆盖 launch，启动结果与主进程字段对齐", () => {

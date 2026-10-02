@@ -147,10 +147,40 @@ function parseHealth(stdout, exitCode) {
 }
 
 /**
+ * 有未完成的物化残留、值得走一次「修复资源副本」的组件名。
+ *
+ * 只认 partial：目标目录不在，但目录下留着 `.staging-<id>-*` / `.repair-<id>-*`
+ * 中转目录 —— 这是**证据**，说明 App 已经试过物化一次、没跑完。2026-09-07 那个真实
+ * 的搬迁 bug 留下的正是这个形状（cua_node 攒了 11 个 `.staging-*`，最终目录始终没落成，
+ * 见 docs/codex-desktop-encrypted-copy-fix/README.md）。
+ *
+ * 另外三个状态都被刻意排除，理由各不相同：
+ *
+ *   missing  目标目录不在、连残留都没有。首次启动前五项全是这个状态，App 按需物化，
+ *            它是**常态**而不是故障证据。（注意修复脚本对裸 missing 也物化得动，
+ *            排除它的理由是「没有证据」，不是「修不了」。）
+ *   error    连 MSIX 自己的源文件都不在（Get-BundleIdText 抛 Source file missing），
+ *            而修复脚本正是从那份源复制 —— 它会在算 bundle id 时就抛出、整条脚本
+ *            exit 1，还会连累其它本来能修的组件。给入口等于指一条走不通的路。
+ *   unknown  符号都没认出来，什么也说明不了。
+ *
+ * 这里**只**回答「有没有未完成的物化残留」，不回答「Codex 坏没坏」：组件状态预测不了
+ * 窗口能不能出现，两个方向都不行（2026-09-07 的真实 bug 里 win-cli 反倒是 ok 的，
+ * 而 2026-10-02 一台完全正常的机器上 wsl-cli 就是 missing）。把状态当启动成功的判据，
+ * 2026-10-01 已经误诊过一次。
+ */
+function healthRepairTargets(health) {
+  if (!health || !health.installed) return [];
+  return (health.components || [])
+    .filter((component) => component.state === "partial")
+    .map((component) => component.name);
+}
+
+/**
  * 健康结果是否需要在界面上给出「修复」入口。
  *
- * 只看 bundle 状态和窗口探测结果 —— 这两者是 repair-codex-desktop-bundles.ps1
- * 真正能修的东西（它物化的正是那五个 bundle）。
+ * 两件事各自独立：窗口没出现（探针说的，原因由 STARTUP_DIAGNOSIS 那一档给），
+ * 以及有未完成的物化残留（见 healthRepairTargets）。
  *
  * 刻意不看 PluginsMaterialized：本机实测健康输出里 Plugins 是
  * "NOT materialized (bundled plugins stale)" 而 OVERALL 仍是 ok，修复脚本也完全
@@ -160,7 +190,7 @@ function parseHealth(stdout, exitCode) {
 function healthNeedsRepair(health) {
   if (!health || !health.installed) return false;
   if (health.probeResult === "window-not-visible") return true;
-  return health.components.some((component) => component.state !== "ok");
+  return healthRepairTargets(health).length > 0;
 }
 
 // ---------- 更新检查 ----------
@@ -439,6 +469,7 @@ function creepPercent(phasePercent, nextPercent, elapsedMs) {
 module.exports = {
   parseHealth,
   healthNeedsRepair,
+  healthRepairTargets,
   normalizeStartupDiagnosis,
   STARTUP_DIAGNOSIS_VALUES,
   parseUpdateCheck,

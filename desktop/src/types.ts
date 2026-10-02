@@ -29,8 +29,21 @@ export interface HealthReport {
    * 界面上的文案与「要不要给修复入口」都由它决定（见 src/lib/diagnosis.ts）。
    */
   startupDiagnosis: StartupDiagnosis;
-  /** 是否值得给出「修复」入口。由主进程按 parse.cjs 的规则判定。 */
+  /**
+   * 是否值得给出「修复」入口。由主进程按 parse.cjs 的规则判定：
+   * 窗口没出现（探针说的）**或** 有未完成的物化残留。
+   */
   needsRepair: boolean;
+  /**
+   * 有未完成物化残留（`state === "partial"`）的组件名，判据同样在主进程（parse.cjs 的
+   * healthRepairTargets）。界面上的资源修复横幅由**它**驱动，不由 needsRepair 驱动 ——
+   * 后者的探针分支是另一回事，那档由健康面板自己的说明承担。
+   *
+   * 刻意只认 partial：目标目录不在但留着 `.staging`/`.repair` 残留，是「物化试过、
+   * 没跑完」的证据。裸 missing 是首次启动前的常态（本机 2026-10-02 的 wsl-cli 就是），
+   * error 是 MSIX 自身源文件缺失、修复脚本从同一份源复制因而救不了。
+   */
+  repairTargets: string[];
   raw: string;
 }
 

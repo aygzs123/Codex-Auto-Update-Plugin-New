@@ -7,11 +7,16 @@ import { TitleBar } from "./components/TitleBar";
 import { VersionHistory } from "./components/VersionHistory";
 import { isElectronRuntime, subscribeMenuAction } from "./lib/bridge";
 import { diagnosisCopy } from "./lib/diagnosis";
+import { healthComponentText } from "./lib/format";
 import { connectProgress, effectiveDownloadDirectory, isCommandRunning, useAppStore } from "./state/app";
 
+// degraded 只陈述「有的资源副本不在」，不说后果：组件状态预测不了窗口能不能开，
+// 两个方向都不行（2026-09-07 的真实搬迁 bug 里 win-cli 反倒是 ok 的，而 2026-10-02
+// 一台完全正常的机器上 wsl-cli 就是 missing）。写成「可能无法正常启动」就是那次
+// 误诊的轻症版。能不能开以窗口自检为准。
 const OVERALL_TEXT: Record<string, string> = {
   ok: "启动所需资源完整",
-  degraded: "部分资源缺失，可能无法正常启动",
+  degraded: "部分资源副本不在（是否影响启动以窗口自检为准）",
   "not-installed": "尚未安装",
 };
 
@@ -117,7 +122,10 @@ function ResultBanners() {
   const launchWindowMissing = launchResult ? !launchResult.windowVisible : false;
   const installDiagnosis = diagnosisCopy(installResult?.startupDiagnosis);
   const launchDiagnosis = diagnosisCopy(launchResult?.startupDiagnosis);
-  const repairNeeded = installResult?.windowMissing || status?.needsRepair;
+  // 资源修复横幅只认「有未完成的物化残留」（repairTargets，主进程算好的）。不跟
+  // status.needsRepair 走：那个还含着「窗口没出现」那条探针分支，而那一档由健康面板
+  // 自己的判定说明 + 常驻的修复按钮承担，再弹一张横幅就是把同一件事说两遍。
+  const repairTargets = status?.repairTargets ?? [];
   // 「刚更新完就出问题」正是回退功能要救的场景，所以失败告警里直接给回退按钮，
   // 而不是让用户自己去下面的「版本历史」里找。没有可退的包时按钮不出现。
   const rollbackTarget = cachedPackages?.packages.find((pkg) => pkg.relation === "older") ?? null;
@@ -199,10 +207,17 @@ function ResultBanners() {
         </section>
       )}
 
-      {!installResult && !launchWindowMissing && repairNeeded && status?.installed && (
+      {!installResult && !launchWindowMissing && repairTargets.length > 0 && status?.installed && (
         <section className="panel warn-card">
-          <h3>检测到启动资源不完整</h3>
-          <p>启动所需的资源副本有缺失或残留，Codex 可能无法正常打开窗口。建议运行下面的「修复资源副本」。</p>
+          <h3>资源副本留有未完成的物化痕迹</h3>
+          {/* 三行是三个模板字符串，不是三个 JSX 文本行：JSX 会把换行折成一个空格，
+              中文句子里会冒出「WSL 命令行工具 的目标目录」这种空格。
+              相邻的两个 {} 之间的换行会被整段丢掉，所以这样拼出来是严丝合缝的一句。 */}
+          <p>
+            {`${repairTargets.map((name) => healthComponentText(name)).join("、")}的目标目录不存在，但目录下留着复制用的中转目录（.staging / .repair）——`}
+            {`可能是一次正在进行的物化，也可能是上一次没跑完。如果 Codex 能正常打开，这份残留不影响使用；`}
+            {`如果 Codex 确实打不开，可以运行下面的「修复资源副本」重建。`}
+          </p>
         </section>
       )}
     </>

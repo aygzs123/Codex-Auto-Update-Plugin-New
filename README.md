@@ -206,6 +206,31 @@ wsl-cli / wsl-rg / cua_node)的实际状态与路径,启动探测能识别「进
   把它当成「窗口没出现」—— 把工具故障说成「你的 Codex 坏了」会把人引去修一个
   不存在的问题,这条分支在开发中真被踩到过。
 
+### 组件缺失推断不出启动会坏:修复横幅只认「未完成的物化残留」
+
+组件的四种状态里,只有一种能说明「物化试过、但没跑完」:
+
+| 符号 | 状态 | 是否弹修复横幅 |
+| --- | --- | --- |
+| `[PART ]` | `partial` —— 目标目录不在,**但**留着 `.staging-*` / `.repair-*` 中转目录 | 是 |
+| `[MISS ]` | `missing` —— 目标目录不在,连残留都没有 | 否 |
+| `[ERR  ]` | `error` —— 连 MSIX 自己的源文件都缺,修复脚本从同一份源复制,救不了 | 否 |
+| `[OK   ]` | `ok` | 否 |
+
+`partial` 的判据是**证据**,不是「只有它修得了」——修复脚本对裸 `missing` 同样物化得动。
+`missing` 是首次启动前的常态(新机器上五项全 `missing`,App 按需物化),拿它当触发条件
+就会得到一张常驻的假警报:2026-10-02 一台**完全正常**的机器上 `wsl-cli` 就是 `missing`
+(它只是 WSL 侧那份 CLI 副本,与 Windows 桌面端能不能开窗口是两件事),界面却一直挂着
+「Codex 可能无法正常打开窗口」。
+
+反过来也不成立:2026-09-07 那次**真实**的搬迁 bug 里,`win-cli` 自己物化是成功的,
+主窗口照样没出现。所以组件状态预测不了窗口能不能开,**两个方向都不行** —— 界面因此
+只说「有的资源副本不在」,不再断言后果;能不能开以窗口自检的结论为准。
+
+判据只有一处实现(`desktop/electron/parse.cjs` 的 `healthRepairTargets`),渲染进程
+只负责把组件名翻成中文。这条在 `desktop/tests/parse.test.cjs` 有回归测试钉着
+(真机形状 → 不弹、`partial` → 弹并点名)。
+
 ### 路径必须通用,不能绑定本机
 
 每个用户的安装位置都不一样,所以脚本里**不允许出现写死的路径特征**:
@@ -491,7 +516,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File docs\codex-desktop-encrypted
 
 插件版本唯一来源是
 `plugins\codex-ms-desktop-updater\.codex-plugin\plugin.json` 的 `version` 字段。
-推送仓库改动前请递增该版本(数值 SemVer 风格,当前 `0.4.3`)。GitHub CI 在 PR 和
+推送仓库改动前请递增该版本(数值 SemVer 风格,当前 `0.4.6`)。GitHub CI 在 PR 和
 push 到 `main` 时运行 `tools\Test-PluginVersionBump.ps1`,要求 head 版本大于
 基线版本。
 

@@ -8,6 +8,7 @@ const assert = require("node:assert/strict");
 const {
   parseHealth,
   healthNeedsRepair,
+  healthRepairTargets,
   parseUpdateCheck,
   parseCachedPackages,
   partialNameFor,
@@ -100,6 +101,9 @@ test("健康输出：各状态符号映射正确", () => {
   assert.equal(health.components[1].leftovers, 2);
   assert.equal(health.pluginsMaterialized, true);
   assert.equal(healthNeedsRepair(health), true);
+  // 光是 needsRepair 为 true 证明不了什么 —— 这个夹具四种状态齐全，只要判据里还留着
+  // 任何一条「非 ok 就算数」的分支它都会通过。真正钉住收窄的是这一行：只点名 partial 那个。
+  assert.deepEqual(healthRepairTargets(health), ["wsl-cli"]);
 });
 
 test("健康输出：退出码 2 视为未安装，且不解析出组件", () => {
@@ -213,6 +217,83 @@ test("健康输出：插件未物化不触发修复入口（修复脚本不修�
   assert.equal(healthNeedsRepair(health), false);
   // 信息本身仍然要解析出来供界面展示。
   assert.equal(typeof health.pluginsMaterialized, "boolean");
+});
+
+// ---------- 资源修复入口的判据（只认「未完成的物化残留」）----------
+//
+// 这一组是 2026-10-02 那次误报的回归闸门。旧判据是 `state !== "ok"`，于是凡是有任何一项
+// 不在就算数 —— 用户那台机器上命中的是 wsl-cli（WSL 侧那份 CLI 副本，跟 Windows 桌面端
+// 能不能开窗口是两件事），页面因此常驻一张「Codex 可能无法正常打开窗口」的横幅，
+// 而他的 Codex 打开完全正常。
+//
+// 注意这一组是 CI 唯一钉得住本次修复的地方：ci.yml 只跑 npm test 与 verify:simulate，
+// 不跑 verify:render（那边是渲染冒烟，夹具是手写的、根本不经过 healthNeedsRepair）。
+
+// 本机 2026-10-02 的真实输出（原文照抄，含那个尾巴上的 leftovers: 0）。
+const REAL_HEALTH_WSL_MISSING = [
+  "Package  : OpenAI.Codex_26.928.3736.0_x64__2p2nqsd0c76g0",
+  "Version  : 26.928.3736.0",
+  "Location : C:\\Program Files\\WindowsApps\\OpenAI.Codex_26.928.3736.0_x64__2p2nqsd0c76g0",
+  "[OK   ] win-cli      C:\\Users\\lijunyuan\\AppData\\Local\\OpenAI\\Codex\\bin\\de8a38d2100ae498",
+  "[OK   ] win-rg       C:\\Users\\lijunyuan\\AppData\\Local\\OpenAI\\Codex\\bin\\5cb96978b0b525f8",
+  "[MISS ] wsl-cli      C:\\Users\\lijunyuan\\.codex\\bin\\wsl\\65bf23c0b8844a0d  <- staging/repair leftovers: 0",
+  "[OK   ] wsl-rg       C:\\Users\\lijunyuan\\.codex\\bin\\wsl\\1a4f6f66dd2f3710",
+  "[OK   ] cua_node     C:\\Users\\lijunyuan\\AppData\\Local\\OpenAI\\Codex\\runtimes\\cua_node\\154806497bb51bae",
+  "Plugins  : NOT materialized (bundled plugins stale)",
+  "OVERALL=degraded",
+].join("\n");
+
+test("资源修复入口：本机形态（wsl-cli 缺失、无残留）不触发", () => {
+  const health = parseHealth(REAL_HEALTH_WSL_MISSING, 1);
+  assert.equal(health.installed, true);
+  assert.equal(health.overall, "degraded");
+  assert.equal(health.components.find((component) => component.name === "wsl-cli").state, "missing");
+  // missing = 目标目录不在、连残留都没有。首次启动前五项全是这个状态，它是常态而不是
+  // 故障证据；拿它当触发条件，就是用户 2026-10-02 看到的那张常驻横幅。
+  assert.equal(healthNeedsRepair(health), false, "missing 没有残留，不是物化失败的证据");
+  assert.deepEqual(healthRepairTargets(health), []);
+});
+
+test("资源修复入口：partial（目标不在 + 有 .staging 残留）才触发并点名", () => {
+  const health = parseHealth(
+    [
+      "Package  : OpenAI.Codex_26.928.3736.0_x64__2p2nqsd0c76g0",
+      "Version  : 26.928.3736.0",
+      "[PART ] wsl-cli      C:\\x\\.codex\\bin\\wsl\\65bf23c0b8844a0d  <- staging/repair leftovers: 3",
+      "OVERALL=degraded",
+    ].join("\n"),
+    1,
+  );
+  assert.equal(health.components[0].leftovers, 3);
+  assert.equal(healthNeedsRepair(health), true);
+  assert.deepEqual(healthRepairTargets(health), ["wsl-cli"]);
+});
+
+test("资源修复入口：error（MSIX 源文件缺失）不触发", () => {
+  // error = Get-BundleIdText 抛 Source file missing。修复脚本正是从那份源复制，
+  // 会在算 bundle id 时就抛出、整条脚本 exit 1，还会连累其它本来能修的组件 ——
+  // 给入口等于指一条走不通的路。
+  const health = parseHealth(
+    ["[ERR  ] cua_node     C:\\x  <- staging/repair leftovers: 0", "OVERALL=degraded"].join("\n"),
+    1,
+  );
+  assert.equal(health.components[0].state, "error");
+  assert.equal(healthNeedsRepair(health), false);
+  assert.deepEqual(healthRepairTargets(health), []);
+});
+
+test("资源修复入口：混在一起时只点名 partial 的那些", () => {
+  const health = parseHealth(
+    [
+      "[MISS ] win-rg       C:\\a  <- staging/repair leftovers: 0",
+      "[PART ] wsl-cli      C:\\b  <- staging/repair leftovers: 2",
+      "[ERR  ] cua_node     C:\\c  <- staging/repair leftovers: 0",
+      "OVERALL=degraded",
+    ].join("\n"),
+    1,
+  );
+  assert.equal(healthNeedsRepair(health), true);
+  assert.deepEqual(healthRepairTargets(health), ["wsl-cli"]);
 });
 
 // ---------- 更新检查 ----------
