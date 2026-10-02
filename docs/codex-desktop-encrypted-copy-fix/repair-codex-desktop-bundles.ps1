@@ -31,14 +31,17 @@ Scope / safety
 
 Usage
     powershell -NoProfile -ExecutionPolicy Bypass -File repair-codex-desktop-bundles.ps1
-    (pwsh 7+ is recommended so UTF-8 sources are parsed correctly.)
+    Must run on Windows PowerShell 5.1 as well as pwsh 7+: the desktop app
+    always invokes it through powershell.exe (5.1 / .NET Framework 4.8), so
+    no API newer than .NET Framework 4.8 may be used here.
 
     The script detects the currently installed OpenAI.Codex package, computes
     the five bundle IDs for THAT version, and materializes whatever is
     missing/mismatched. Run it again after any future Store update.
 
 Exit / output
-    Prints per-bundle status: OK / SKIP / FAILED. Sets $global:LASTEXITCODE.
+    Prints per-bundle status: OK / SKIP / moved stale. A failure is thrown,
+    printed as "ERROR: ..." and exits with code 1.
 ================================================================================
 #>
 
@@ -70,7 +73,7 @@ function Test-Encrypted([string]$Path) {
 # Bundle ID algorithm (same as the upstream community repair guide):
 # SHA256( concat over descriptors of (relPath + NUL + sha256hex + NUL) ), first 16 hex chars.
 function Get-BundleId([string]$Root, [string[]]$RelativePaths) {
-    $builder = [System.Text.StringBuilder]::new()
+    $builder = New-Object System.Text.StringBuilder
     foreach ($rp in $RelativePaths) {
         $file = Join-Path $Root ($rp -replace '/', '\')
         if (-not (Test-Path -LiteralPath $file)) { throw "Source file missing for bundle id: $file" }
@@ -80,8 +83,9 @@ function Get-BundleId([string]$Root, [string[]]$RelativePaths) {
         [void]$builder.Append([char]0)
     }
     $bytes = [System.Text.Encoding]::UTF8.GetBytes($builder.ToString())
-    $hash = [System.Security.Cryptography.SHA256]::HashData($bytes)
-    return ([Convert]::ToHexString($hash).ToLowerInvariant()).Substring(0, 16)
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try { $hashBytes = $sha.ComputeHash($bytes) } finally { $sha.Dispose() }
+    return [System.BitConverter]::ToString($hashBytes).Replace('-', '').ToLowerInvariant().Substring(0, 16)
 }
 
 # Byte-stream copy that bypasses the encrypted-copy bug.

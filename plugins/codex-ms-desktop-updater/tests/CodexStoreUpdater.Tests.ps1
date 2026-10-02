@@ -828,4 +828,78 @@ foreach ($case in @(
         -Message "$($case.Name): 探针失败时必须枚举 Codex 的顶层窗口"
 }
 
+# ---------- 修复脚本与健康检查必须算出同一个 bundle ID ----------
+#
+# 「修复资源副本」按钮走 docs/codex-desktop-encrypted-copy-fix/repair-codex-desktop-bundles.ps1，
+# 健康检查走本模块的 Get-BundleIdText —— 同一个算法在仓库里有两份实现，两份必须
+# **逐字节等价**：修复脚本物化到哪个目录，健康检查就要去哪个目录找。差一个字符，
+# 修完的组件在面板上依然是「缺失」。
+#
+# 它们曾经不等价：修复脚本用的是 [SHA256]::HashData() + [Convert]::ToHexString()，
+# 两个都是 .NET 5+ / pwsh 7 才有、.NET Framework 4.8 里没有的 API。而桌面端
+# （desktop/electron/ps.cjs:32）只用 powershell.exe 5.1 调它。Get-BundleId 是
+# Materialize-Bundle 的第一行，于是整份脚本在写任何文件之前就抛「找不到方法 HashData」——
+# 点「修复资源副本」什么都不会发生、也不留任何痕迹，看起来就像按钮坏了。
+# 2026-10-02 用户在真机上遇到的正是这个：.codex\bin\wsl 下连一个 .repair-* 都没有，
+# 目录 mtime 还停在手工用 pwsh 7 修过一次的那天。
+#
+# 所以下面把两份实现都**真的执行一遍**：既是「两份算法必须一致」的契约，也是一道
+# 「不许再用 5.1 跑不动的 API」的闸门 —— 换回 HashData 就会在这里红。
+#
+# 两组函数都是各自文件里的私有实现（Get-Sha256Hex / Get-BundleIdText 不在
+# Export-ModuleMember 列表里，修复脚本则是一跑就干活、不能整份 dot-source），
+# 所以要用 AST 解析器只把函数定义抠出来。不用正则是因为本文件上面已经记过教训：
+# 函数体里的 `}` 会让非贪婪匹配切出半截函数（MissingEndCurlyBrace）。
+function Get-FunctionDefinitionText {
+    param([string]$Path, [string[]]$Names)
+
+    $tokens = $null
+    $parseErrors = $null
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile($Path, [ref]$tokens, [ref]$parseErrors)
+    Assert-Equal 0 @($parseErrors).Count "「$Path」必须能被 PowerShell 解析"
+
+    $definitions = $ast.FindAll(
+        { param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true)
+
+    $texts = @()
+    foreach ($name in $Names) {
+        $match = @($definitions | Where-Object { $_.Name -eq $name })
+        Assert-Equal 1 $match.Count "「$Path」里必须恰好有一个 $name"
+        $texts += $match[0].Extent.Text
+    }
+    return $texts
+}
+
+$bundleFixtureRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("codex-bundle-id-test-" + [guid]::NewGuid().ToString("N"))
+try {
+    New-Item -ItemType Directory -Path (Join-Path $bundleFixtureRoot "bin") -Force | Out-Null
+    # 内容写死成纯 ASCII 字节。期望值 6b702184007a271f 是用一份与 PowerShell 无关的独立
+    # 实现、按 docs/codex-desktop-encrypted-copy-fix/README.md 第 6 节的算法算出来的。
+    # 字节一变期望值就必须重算 —— 不要照着实际输出改，那就白测了。
+    [System.IO.File]::WriteAllBytes((Join-Path $bundleFixtureRoot "alpha.exe"), [System.Text.Encoding]::ASCII.GetBytes("codex-alpha"))
+    [System.IO.File]::WriteAllBytes((Join-Path $bundleFixtureRoot "bin\node.exe"), [System.Text.Encoding]::ASCII.GetBytes("cafe"))
+
+    # 顺序即算法的一部分，不能排序；带一个斜杠用来钉住路径归一化 —— 两份实现一个用
+    # -replace、一个用 .Replace，那都只该影响「去哪里取文件」，不该影响参与哈希的字符串。
+    $bundleRelPaths = @('alpha.exe', 'bin/node.exe')
+
+    $repairScriptPath = Join-Path (Split-Path -Parent (Split-Path -Parent $pluginRoot)) `
+        "docs/codex-desktop-encrypted-copy-fix/repair-codex-desktop-bundles.ps1"
+    Assert-True -Condition (Test-Path -LiteralPath $repairScriptPath) `
+        -Message "修复脚本必须在 docs/ 下（install.ps1 与 sync-ps-scripts.mjs 都从那里取）"
+
+    Invoke-Expression ((Get-FunctionDefinitionText -Path $repairScriptPath -Names @('Get-Sha256Lower', 'Get-BundleId')) -join "`n")
+    Invoke-Expression ((Get-FunctionDefinitionText -Path $modulePath -Names @('Get-Sha256Hex', 'Get-BundleIdText')) -join "`n")
+
+    $idFromHealthCheck = Get-BundleIdText -Root $bundleFixtureRoot -RelativePaths $bundleRelPaths
+    $idFromRepairScript = Get-BundleId -Root $bundleFixtureRoot -RelativePaths $bundleRelPaths
+
+    Assert-Equal "6b702184007a271f" $idFromHealthCheck "bundle ID 与独立实现算出的黄金值一致（算法本身被钉住）"
+    Assert-Equal $idFromHealthCheck $idFromRepairScript "修复脚本必须物化到健康检查去找的那个目录名"
+    Assert-True -Condition ($idFromRepairScript -match '\A[0-9a-f]{16}\z') -Message "bundle ID 是 16 位小写十六进制"
+}
+finally {
+    Remove-Item -LiteralPath $bundleFixtureRoot -Recurse -Force -ErrorAction SilentlyContinue
+}
+
 Write-Host "All CodexStoreUpdater tests passed."

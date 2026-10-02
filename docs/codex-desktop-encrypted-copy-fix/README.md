@@ -111,14 +111,40 @@ cua_node = manifest.json, bin/node.exe, bin/node_repl.exe                       
 > cua_node  = b474a88d5d105afa
 > ```
 
+> **同一算法在本仓库有两份实现,必须逐字节等价。** 健康检查(面板上那五项)用
+> `plugins/codex-ms-desktop-updater/scripts/CodexStoreUpdater.psm1` 的 `Get-BundleIdText`,
+> 修复脚本用 `docs/codex-desktop-encrypted-copy-fix/repair-codex-desktop-bundles.ps1` 的
+> `Get-BundleId`。**修复脚本物化出来的目录名,必须正好是健康检查去找的那个** —— 两份
+> 实现一旦分叉,就会出现「修复报成功、面板仍显示缺失」这种最难查的状态。
+>
+> 一致性不是靠人工比对的,而是由
+> `plugins/codex-ms-desktop-updater/tests/CodexStoreUpdater.Tests.ps1` 钉住:它用固定夹具
+> `{alpha.exe: "codex-alpha", bin/node.exe: "cafe"}` 和黄金值 `6b702184007a271f`
+> (用 Node 按本节算法独立算出的第三份实现)同时校验两份实现。
+>
+> 不合并成一份是**有意为之**:脚本必须能独立打包运行(`desktop/scripts/sync-ps-scripts.mjs`
+> 依赖它零插件目录依赖),强行抽公共文件会破坏这个前提。
+
 ## 7. 修复方法
 
 ### 7.1 用仓库内脚本(推荐,幂等)
 
 ```powershell
-# 在项目根执行(建议用 pwsh 7+):
+# 在项目根执行:
 powershell -NoProfile -ExecutionPolicy Bypass -File docs/codex-desktop-encrypted-copy-fix/repair-codex-desktop-bundles.ps1
 ```
+
+> **必须能在 Windows PowerShell 5.1 下运行。** 桌面端的「修复资源副本」按钮走
+> `desktop/electron/ps.cjs`,那里把解释器写死成 `powershell.exe`(5.1 / .NET Framework
+> 4.8),**不是 `pwsh`**(原因见根 `README.md` 的 PowerShell 约束一节)。所以脚本里
+> 不得使用 .NET Framework 4.8 没有的 API,典型如
+> `[System.Security.Cryptography.SHA256]::HashData()` 和 `[Convert]::ToHexString()`
+> —— 这两个只在 .NET 5+ / pwsh 7 存在,在 5.1 下会抛「找不到方法」。
+>
+> 2026-10-02 的「点击修复资源副本没反应」正是这个原因:脚本用了 `HashData()`,
+> 在 `Get-BundleId` 第一行就抛,连 `.repair-*` staging 都没建出来,用户目录零改动、
+> 界面只闪了一下。手工执行时用 pwsh 7 跑得通,所以一直没暴露 —— **人工验证不能替代
+> 5.1 验证**。
 
 脚本行为:
 

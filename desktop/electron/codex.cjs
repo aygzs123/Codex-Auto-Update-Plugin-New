@@ -639,15 +639,26 @@ async function launchCodex({ probeSeconds = 20 } = {}, emit = () => {}) {
 async function repairBundles(_args = {}, emit = () => {}) {
   emit({ kind: "phase", id: "repair", phase: "repairing", label: "正在重建资源副本", percent: 0 });
   const output = [];
+  // stderr 一起收。脚本里的异常会被自己的 catch 转成 stdout 上的一行 "ERROR: ..."，
+  // 但解析错误、PowerShell 自身的失败只落在 stderr 上；一个都不收的话 describeFailure
+  // 只能挤出「PowerShell 退出码 1」，而 app.ts 的 catch 又会把 activity 置空 ——
+  // 日志行闪一下、错误没有信息量，整件事读起来就是「点了没反应」。
+  // 2026-10-02 那个「修复资源副本」失效（脚本用了 5.1 里不存在的 SHA256::HashData）
+  // 就是这么被藏起来的。getStatus 对同一条路径早就留着 stderr，这里是同一个理由。
+  const stderr = [];
   const { done } = ps.streamScript(bundledScript("repair-codex-desktop-bundles.ps1"), {
     onStdoutLine: (line) => {
       output.push(line);
       emit({ kind: "log", line });
     },
+    onStderrLine: (line) => {
+      stderr.push(line);
+      emit({ kind: "log", line });
+    },
   });
   const { code, error } = await done;
   if (error) throw new Error(`无法启动 PowerShell：${error.message}`);
-  if (code !== 0) throw new Error(ps.describeFailure({ code, stdout: output.join("\n"), stderr: "" }));
+  if (code !== 0) throw new Error(ps.describeFailure({ code, stdout: output.join("\n"), stderr: stderr.join("\n") }));
   emit({ kind: "phase", id: "repair", phase: "done", label: "资源副本已重建", percent: 100 });
   return { ok: true, output: output.join("\n") };
 }

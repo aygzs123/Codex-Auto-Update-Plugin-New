@@ -308,6 +308,18 @@ wsl-cli / wsl-rg / cua_node)的实际状态与路径,启动探测能识别「进
    「UAC 被拒绝」的 `catch` 里,路径拼错会被当成用户点了否,报一句与真实原因无关的
    话 —— 所以它用 `Get-CurrentPowerShellPath`(问当前进程自己的 `Path`,
    `$PSHOME` 只作兜底)。
+
+   **推论:被 App 调用的脚本本身,也只能用 .NET Framework 4.8 里存在的 API。**
+   解释器既然是 5.1,任何 pwsh 7 / .NET 5+ 专有的静态方法在运行时根本不存在。
+   典型禁区:`[System.Security.Cryptography.SHA256]::HashData()`、
+   `[Convert]::ToHexString()`,在 5.1 下都抛「找不到方法」;对应写法是
+   `[System.Security.Cryptography.SHA256]::Create()` + `ComputeHash()`、
+   `[System.BitConverter]::ToString()`(`::new()` 是安全的,PowerShell 5.0 起支持)。
+   2026-10-02 的「点击修复资源副本没反应」就栽在这里:`repair-codex-desktop-bundles.ps1`
+   用了 `HashData()`,而它是 `Get-BundleId` 的第一行 —— 脚本在写任何东西之前就抛,
+   用户目录零残留、界面只闪一下。人工用 pwsh 7 手动跑是通的,所以这个 bug 躺了很久:
+   **人工验证不能替代 5.1 验证**。详见
+   `docs/codex-desktop-encrypted-copy-fix/README.md` §7.1。
 3. **参数不能靠数组展开传递。** `@argv` 传的是位置参数值而不是参数名,会把开关
    当成字符串值绑到第一个位置参数上。`electron/ps.cjs` 因此自己拼 token:开关原样
    写、值一律单引号包裹(单引号是 PowerShell 里唯一不做展开的字面量)。
@@ -315,7 +327,7 @@ wsl-cli / wsl-rg / cua_node)的实际状态与路径,启动探测能识别「进
 ### 校验命令
 
 ```powershell
-npm test                        # 解析层 + PowerShell 拼装层 + 窗口/结论对话框/安装位置/命令锁接线单元测试,不联网
+npm test                        # 解析层 + PowerShell 拼装层 + 窗口/结论对话框/安装位置/命令锁/修复路径接线单元测试,不联网
 npm run verify:render           # 把 dist/ 真正加载进 Electron,跑八个界面场景
 npm run verify:render:packaged  # 同上(已安装/未安装/窗口缺失),校验 app.asar 产物与 asar 外的脚本布局
 npm run verify:package          # 验收打包产物:app.asar 索引自洽 + 打出来的 exe 真的能起来(需先打包)
@@ -516,7 +528,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File docs\codex-desktop-encrypted
 
 插件版本唯一来源是
 `plugins\codex-ms-desktop-updater\.codex-plugin\plugin.json` 的 `version` 字段。
-推送仓库改动前请递增该版本(数值 SemVer 风格,当前 `0.4.6`)。GitHub CI 在 PR 和
+推送仓库改动前请递增该版本(数值 SemVer 风格,当前 `0.4.7`)。GitHub CI 在 PR 和
 push 到 `main` 时运行 `tools\Test-PluginVersionBump.ps1`,要求 head 版本大于
 基线版本。
 
