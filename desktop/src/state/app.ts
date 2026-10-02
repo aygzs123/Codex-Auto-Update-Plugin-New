@@ -121,8 +121,8 @@ interface AppState {
   copyDiagnostics: () => Promise<void>;
   pickDirectory: () => Promise<void>;
   openPath: (path: string) => Promise<void>;
-  /** 打开 Windows 的「新的应用将保存到」设置页；Codex 装在哪个盘由它决定。 */
-  openStorageSettings: () => Promise<void>;
+  /** 打开 Codex 本体的安装目录（路径由主进程解析，这里不传路径过去）。 */
+  openInstallLocation: () => Promise<void>;
   applyProgress: (event: ProgressEvent) => void;
   dismissNotice: () => void;
   reset: () => void;
@@ -592,9 +592,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
-  openStorageSettings: async () => {
+  openInstallLocation: async () => {
     try {
-      await invokeCommand("open_storage_settings");
+      await invokeCommand("open_install_location");
     } catch (error) {
       set({ error: describe(error) });
     }

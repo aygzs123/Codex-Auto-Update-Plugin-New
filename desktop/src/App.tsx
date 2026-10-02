@@ -68,12 +68,28 @@ function runAction(action: string) {
   }
 }
 
-function Hero({ onPrimary, onSecondary, primaryLabel, secondaryLabel, busy }: {
+function Hero({
+  onPrimary,
+  onSecondary,
+  primaryLabel,
+  secondaryLabel,
+  busy,
+  upToDate,
+  availableVersion,
+}: {
   onPrimary: () => void;
   onSecondary?: () => void;
   primaryLabel: string;
   secondaryLabel?: string;
   busy: boolean;
+  /**
+   * 更新结论，由父组件算好传进来（和顶栏、主按钮同一处判据）。
+   *
+   * 刻意不让这里自己从 update 里再算一遍：判据分家就会自相矛盾 —— 顶上写着「已是最新」、
+   * 主区写着「可更新到」，而用户没有任何办法判断哪个是真的。
+   */
+  upToDate: boolean;
+  availableVersion: string | null;
 }) {
   const { phase, status } = useAppStore();
   const installed = status?.installed ?? false;
@@ -87,13 +103,35 @@ function Hero({ onPrimary, onSecondary, primaryLabel, secondaryLabel, busy }: {
     title = "正在检查 Codex 状态";
     lede = "读取已安装的版本与启动所需资源。";
   } else if (installed) {
-    title = `已安装 ${version ?? "Codex"}`;
-    lede = healthOverallText(status?.overall) ?? "读取到本机已安装的 Codex Desktop。";
+    // 主区这行大字是全页最显眼的一处，它要回答的是**「我是不是最新版」**——用户接着要做
+    // 的决定（点不点那颗按钮）取决于它，而「装没装」顶栏那行已经说过了。这里原先只写
+    // 「已安装 X」、副标题再补一句资源自检结论，于是最显眼的两行字里一个更新结论都没有，
+    // 得往上看那行小字才知道（用户原话：「第一次检测后显示的已安装 26.930.2377.0
+    // 启动所需资源完整 不太对吧，应该显示已是最新版：xxx」）。
+    //
+    // 资源自检结论留在副标题里：它回答的是另一个问题（这台机器上的 Codex 能不能正常起来），
+    // degraded 时是必须看见的信号，不该因为标题换了就丢掉 —— 只是它不再是主区的主角。
+    const health = healthOverallText(status?.overall) ?? "读取到本机已安装的 Codex Desktop。";
+    if (upToDate) {
+      title = `已是最新版：${version ?? "Codex"}`;
+      lede = health;
+    } else if (availableVersion) {
+      // 有新版时两个版本号都要在：标题给结论（可更新到哪一版），副标题交代现在装的是哪一版。
+      title = `可更新到 ${availableVersion}`;
+      lede = `当前已安装 ${version ?? "未知版本"}。${health}`;
+    } else {
+      // 结论还没回来（没查 / 查失败）时才退回「已安装 X」—— 这时候确实没有结论可说，
+      // 编一个「已是最新」比什么都不说更糟。
+      title = `已安装 ${version ?? "Codex"}`;
+      lede = health;
+    }
   }
 
   return (
     <section className="panel hero-card">
-      <p className="eyebrow">{installed ? "Installed" : "One-click Setup"}</p>
+      <p className="eyebrow">
+        {upToDate ? "Up to date" : installed ? "Installed" : "One-click Setup"}
+      </p>
       <h1>{title}</h1>
       <p className="lede">{lede}</p>
       <div className="cta-row">
@@ -261,7 +299,7 @@ export default function App() {
     clearCache,
     copyDiagnostics,
     openPath,
-    openStorageSettings,
+    openInstallLocation,
     dismissNotice,
   } = useAppStore();
 
@@ -353,6 +391,8 @@ export default function App() {
               primaryLabel={primaryLabel}
               secondaryLabel={secondaryLabel}
               busy={busy}
+              upToDate={upToDate}
+              availableVersion={availableVersion}
             />
 
             {activity && <ActivityPanel activity={activity} />}
@@ -386,7 +426,7 @@ export default function App() {
               installLocation={(healthDetail ?? status)?.installLocation ?? null}
               cacheDirectory={effectiveDownloadDirectory({ settings, cachedPackages })}
               onOpen={(path) => void openPath(path)}
-              onOpenStorageSettings={() => void openStorageSettings()}
+              onOpenInstallLocation={() => void openInstallLocation()}
               onCopyDiagnostics={() => void copyDiagnostics()}
             />
 

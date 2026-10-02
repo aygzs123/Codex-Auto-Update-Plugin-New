@@ -94,7 +94,8 @@ const healthPartial = process.argv.includes("--health-partial");
 // 居中对话框是打扰，所以这个场景要断言「手动点之前页面上没有 .modal-dialog」。
 const noticeOpen = process.argv.includes("--notice");
 
-// --up-to-date：桩返回「装的已经是最新版本」（installed == available == 26.930.2377.0）。
+// --up-to-date：桩返回「装的已经是最新版本」（installed == available == 26.901.6511.0，
+// 与 STUB_HEALTH / STUB_UPDATE_LATEST 里那个版本一致）。
 //
 // 用户原话：「启动的时候只读取了版本，不会识别到是不是最新的版本号……要点检查版本号
 // 才能查到是最新的」。这个场景就是那句话的回归测试：启动后什么都不点，顶栏就该写着
@@ -443,7 +444,8 @@ async function inspect(window) {
       // 高级设置里的**每一条**路径行都要量：输入框 flex:1 会把右边的按钮挤到折行
       // 或溢出容器，而折行既不会让 scrollWidth 超出、也不会溢出容器，只有行盒数量
       // 反映得出来。以前只量第一行，新加的「Codex 安装位置」那一行就等于没被检查
-      // —— 而它右边的按钮（「打开 Windows 存储设置」）恰恰是最长的一个。
+      // —— 而它右边的按钮（现在是「打开安装目录」，改名前是「打开 Windows 存储设置」）
+      // 恰恰是路径行里最长的一个。
       pathRowButtons: (() => {
         const rows = [...document.querySelectorAll(".path-row")];
         if (rows.length === 0) return null;
@@ -1331,7 +1333,28 @@ async function main() {
         problems.push(`启动自动检查弹出了模态对话框：${startupReport.notice.message || startupReport.notice.heading}`);
       }
     }
-    if (!report.heading.includes("已安装")) problems.push(`主区标题未反映已安装状态：${report.heading}`);
+    // 主区那行大字承载的是**更新结论**，不是「装没装」。用户原话：「第一次检测后显示的
+    // 已安装 26.930.2377.0 启动所需资源完整 不太对吧，应该显示已是最新版：xxx」——
+    // 它以前只写「已安装 X」+ 一句资源自检结论，最显眼的两行字里一个更新结论都没有。
+    // 「装没装」由顶栏那行负责（上面已经逐字断过），这里要能一眼看出「要不要点那颗按钮」。
+    if (upToDateScenario) {
+      if (!report.heading.includes("已是最新版")) {
+        problems.push(`已是最新时主区标题没有说出来：${report.heading}`);
+      }
+      // 版本号必须在标题里：只写「已是最新版」用户无从核对，而这行字本来就是他来核对的地方。
+      if (!report.heading.includes("26.901.6511.0")) {
+        problems.push(`已是最新时主区标题应带上版本号：${report.heading}`);
+      }
+    } else if (expectAutoCheck) {
+      // 默认桩说「有 26.902.100.0 可更新」，标题就该写出可更新到哪一版。
+      if (!report.heading.includes("可更新到 26.902.100.0")) {
+        problems.push(`有新版时主区标题没有写出可更新到哪个版本：${report.heading}`);
+      }
+    } else if (!report.heading.includes("已安装")) {
+      // --checking 场景：命令还跑着，结论当然还没回来，此时退回「已安装 X」才是诚实的
+      // ——编一个「已是最新」比什么都不说更糟。
+      problems.push(`结论未回来时主区标题未反映已安装状态：${report.heading}`);
+    }
     if (report.healthRows !== 5) problems.push(`健康诊断应渲染 5 个组件行，实际 ${report.healthRows} 个`);
     // 夹具照抄真机形状，五项里 wsl-cli 是 missing，所以结论就该是「部分资源缺失」。
     // 这条只是把夹具本身钉住（脚本对任何非 ok 组件都判 degraded）——

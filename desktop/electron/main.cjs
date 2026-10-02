@@ -43,13 +43,20 @@ const allowedCommands = new Set([
   "open_path",
   "notify_update",
   "copy_text",
-  // 只打开一个写死的 Windows 设置页。不接受渲染进程传 URI —— 那等于把
-  // 「打开任意协议」的能力交出去，open_path 的白名单也就白做了。
-  "open_storage_settings",
+  // 打开 Codex 本体的安装目录。路径由主进程自己解析后记着，不接受渲染进程传路径 ——
+  // 那正是 open_path 白名单要挡住的那件事，这里不能又开一个口子。
+  "open_install_location",
 ]);
 
 let devServer;
 const dragOffsets = new Map();
+
+// 最近一次 get_status 解析出的安装位置，供「打开安装目录」用。
+//
+// 为什么不写进上面那个静态白名单：这个路径随版本变化（目录名里带版本号），而且它是
+// Windows 给的、不是我们拼的，没法枚举。所以改成主进程自己拿着 —— 界面显示的就是它报上去
+// 的那个值，来源同一处，不经过渲染进程的手。
+let lastInstallLocation = null;
 
 // 窗口引用必须留在模块级：单实例锁的 second-instance、托盘菜单、窗口位置记忆都要用它。
 // 以前 createWindow 的返回值被 whenReady 丢掉了，没有引用就唤不回一个已经存在的窗口。
@@ -329,8 +336,12 @@ async function executeCommand(event, command, args = {}) {
   const emit = progressReporter(event.sender);
 
   switch (command) {
-    case "get_status":
-      return codex.getStatus({ probe: false });
+    case "get_status": {
+      const status = await codex.getStatus({ probe: false });
+      // 顺手记下安装位置：「打开安装目录」要用，而它必须是主进程解析出来的值。
+      lastInstallLocation = status?.installLocation ?? null;
+      return status;
+    }
     case "check_update":
       return codex.checkUpdate(args);
     case "download_codex":
@@ -425,11 +436,21 @@ async function executeCommand(event, command, args = {}) {
       if (error) throw new Error(error);
       return { ok: true };
     }
-    case "open_storage_settings": {
-      // MSIX 的安装位置由 Windows 决定，安装器改不了（Add-AppxPackage 不带 -Volume
-      // 就装到系统卷）。用户真想把应用装到别的盘，唯一的路是系统设置里的
-      // 「新的应用将保存到」。所以这里把他送到那一页，而不是假装我们能设。
-      await shell.openExternal("ms-settings:storagesense");
+    case "open_install_location": {
+      // 打开 Codex 装在哪儿。这里以前打开的是 Windows 设置里的「新的应用将保存到」——
+      // 理由是「安装位置我们改不了，只能告诉你从哪改」。但用户问的是「为什么不是打开路径」，
+      // 而路径其实是**打得开**的：C:\Program Files\WindowsApps 那一级确实锁着（列目录都被
+      // 拒），可具体到 OpenAI.Codex_<版本>_<arch>__<hash> 这个包目录对 BUILTIN\Users 有
+      // ReadAndExecute，Explorer 能正常打开、能看见里面的文件。所以这颗按钮现在做它字面上
+      // 说的事，而不是替用户打开另一个问题。
+      //
+      // 路径只有两个来源，都在主进程：bootstrap 那次 get_status 记下来的，或者万一没跑过
+      // （正常一定会跑）现场补一次。渲染进程传路径过来是不接受的。
+      const target = lastInstallLocation ?? (await codex.getStatus({ probe: false }))?.installLocation ?? null;
+      lastInstallLocation = target;
+      if (!target) throw new Error("没有检测到已安装的 Codex，打开不了安装目录");
+      const error = await shell.openPath(target);
+      if (error) throw new Error(error);
       return { ok: true };
     }
     default:

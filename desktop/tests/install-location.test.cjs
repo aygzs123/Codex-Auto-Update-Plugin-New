@@ -77,12 +77,33 @@ test("健康脚本：安装位置取自包自己的 InstallLocation，而不是�
   assert.match(moduleText, /InstallLocation = \$pkg\.InstallLocation/);
 });
 
-test("主进程：只打开写死的 Windows 设置页，不给渲染进程传 URI 的口子", () => {
-  assert.match(mainSource, /"open_storage_settings"/, "命令白名单里要有这一项");
-  // 参数必须是一个字面量 URI。一旦写成 shell.openExternal(args.uri)，
-  // 渲染进程就获得了「打开任意协议」的能力 —— open_path 的白名单也就形同虚设。
-  assert.match(mainSource, /shell\.openExternal\("ms-settings:storagesense"\)/);
+test("主进程：安装目录由主进程自己解析，不给渲染进程传路径的口子", () => {
+  assert.match(mainSource, /"open_install_location"/, "命令白名单里要有这一项");
+  // 这颗按钮以前打开的是 Windows 设置里的「新的应用将保存到」，而用户问的是
+  // 「打开 window 存储位置为什么不是打开路径的」—— 他问得对：那颗按钮的字面意思、
+  // 以及这张卡片上显示的那个路径，都指向「打开这个目录」，它却把人送去别处。
+  //
+  // 顺带记一笔那次错：改之前 URI 写的是 ms-settings:storagesense，那是「存储感知」，
+  // 一个自动删旧文件的开关，跟装到哪个盘毫无关系 —— 注释、界面说明、README 三处都写着
+  // 「新的应用将保存到」，只有真正打开的那一页不是。现在整条 ms-settings 都不用了，
+  // 所以这里直接钉「一个都不许有」，而不是钉「必须是对的那一个」。
+  assert.doesNotMatch(mainSource, /ms-settings:/, "不该再打开 Windows 设置页");
   assert.doesNotMatch(mainSource, /openExternal\(args\./, "不许把渲染进程传来的参数直接交给 openExternal");
+
+  // 路径必须来自主进程：安装位置随版本变化（目录名里带版本号），写不进下面那个静态白名单，
+  // 但「渲染进程把路径传回来、主进程照开」正是白名单要挡住的那件事，不能又开一个口子。
+  const body = mainSource.match(/case "open_install_location": \{([\s\S]*?)\r?\n    \}/);
+  assert.ok(body, "找不到 open_install_location 的实现");
+  assert.match(body[1], /lastInstallLocation/, "路径必须取自 get_status 那次解析的结果");
+  assert.doesNotMatch(body[1], /args\.path/, "不许接收渲染进程传来的路径");
+  assert.match(
+    mainSource,
+    /lastInstallLocation = status\?\.installLocation \?\? null/,
+    "get_status 要顺手把安装位置记下来",
+  );
+  // 打开目录用 openPath（落到 Explorer），不是 openExternal（那是一条协议）。
+  assert.match(body[1], /shell\.openPath\(target\)/, "打开目录要用 openPath");
+
   // open_path 的白名单只能有本应用自己的目录，而且必须是**穷举**的一组：
   // 每一项都来自主进程自己（app.getPath / 应用自己的根目录），或者来自设置里那个
   // 「缓存目录」——它同时也是下载器实际写入的目录，回退功能正是把安装包留在那里。
@@ -101,8 +122,17 @@ test("界面：安装位置原样放进只读输入框，不拼接也不截断",
   assert.match(settingsSource, /value=\{installLocation \?\? "/, "有值时必须是原样的 installLocation");
   assert.match(settingsSource, /readOnly/);
   // 说明文字必须点破「改不了」和「去哪改」，否则用户会以为是我们漏做了。
+  // 改默认盘的办法仍然写在说明里 —— 那颗按钮现在干别的去了（打开目录），
+  // 这条路不能因此从界面上消失，否则「C 盘满了想换盘」的人无处可去。
   assert.match(settingsSource, /由 Windows 决定/);
   assert.match(settingsSource, /新的应用将保存到/);
+  assert.match(settingsSource, /高级存储设置/);
+  // 按钮做它字面上说的事：打开安装目录。用户原话：「打开 window 存储位置为什么不是
+  // 打开路径的」—— 那颗按钮以前打开的是 Windows 设置页，跟这一行显示的路径没关系。
+  assert.match(settingsSource, /打开安装目录/);
+  assert.match(settingsSource, /onClick=\{onOpenInstallLocation\}/);
+  // 它不接收路径参数：路径由主进程解析（见上面那条）。组件这一侧也只能是「空手」回调。
+  assert.match(settingsSource, /onOpenInstallLocation: \(\) => void;/);
 });
 
 // ---------- 「打开缓存目录」打开的必须是真实的那个目录 ----------
