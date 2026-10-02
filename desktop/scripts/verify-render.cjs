@@ -44,6 +44,7 @@ const PACKAGED_SCRIPTS = [
   "install-codex-msix-and-restart.ps1",
   "check-codex-desktop-health.ps1",
   "list-cached-codex-packages.ps1",
+  "clear-cached-codex-packages.ps1",
   "repair-codex-desktop-bundles.ps1",
 ];
 const packagedScriptsDir = join(desktopRoot, "release", "win-unpacked", "resources", "scripts");
@@ -621,6 +622,33 @@ async function inspect(window) {
           rows: measured,
         };
       })(),
+      // 安装包缓存卡片。缓存不再自动清理之后，这张卡片是用户判断「占了多少、要不要清」
+      // 的唯一入口，所以它得真的在页面上、标题上真的带着占用数字、清空按钮真的点得到。
+      //
+      // 标题里的占用不是装饰：它是「C 盘会不会被占满」这个担心最直接的答案。
+      // 数字算错（比如把 sizeBytes 求和漏了）在这里就会露出来。
+      cache: (() => {
+        const card = [...document.querySelectorAll(".settings-card")].find((node) =>
+          node.querySelector("summary")?.textContent.includes("安装包缓存"),
+        );
+        if (!card) return null;
+        const summary = card.querySelector("summary")?.textContent.trim() ?? "";
+        const clearButton = [...card.querySelectorAll("button")].find((button) =>
+          button.textContent.includes("清空缓存"),
+        );
+        const toggle = card.querySelector('input[type="checkbox"]');
+        return {
+          summary,
+          // 「浏览…」是换目录的入口，它必须在这张卡片里 —— 用户看到占了多少之后，
+          // 下一个问题必然是「能不能挪到别的盘」。
+          hasBrowse: [...card.querySelectorAll("button")].some((b) => b.textContent.includes("浏览")),
+          clearLabel: clearButton ? clearButton.textContent.trim() : "",
+          clearDisabled: clearButton ? clearButton.disabled : null,
+          clearIsDanger: clearButton ? clearButton.classList.contains("danger") : null,
+          historyToggleChecked: toggle ? toggle.checked : null,
+          help: [...card.querySelectorAll(".field-help")].map((node) => node.textContent.trim()),
+        };
+      })(),
       // 命令结果的模态对话框。toast 已被彻底移除，所以这里连「页面上还有没有
       // 贴边的浮层」一起量：留着就说明又退回旧做法了。
       notice: (() => {
@@ -811,11 +839,15 @@ async function main() {
   // 那是另一件事（而且必然是错的）。
   const startupReport = report;
 
-  // 展开「高级设置」，让路径行（输入框 + 浏览按钮）真的进入布局再测量。
+  // 展开**所有**设置卡片，让路径行（输入框 + 浏览按钮）真的进入布局再测量。
   // 折叠状态下 <details> 内容不参与布局，量不到裁切。必须在状态数据到位之后做：
-  // settings 未就绪时 AdvancedSettings 渲染 null，那时还拿不到这个元素。
-  const openedSettings = await window.webContents.executeJavaScript(
-    `(() => { const details = document.querySelector(".settings-card"); if (details) details.open = true; return !!details; })()`,
+  // settings 未就绪时这些卡片渲染 null，那时还拿不到元素。
+  //
+  // 必须是 querySelectorAll —— 设置区不止一张卡片（安装包缓存 / 高级设置 / 后台与启动），
+  // 只开第一张的话，后面的卡片整片不参与布局：里面的路径行量不到、#install-location
+  // 也读成 null。全开才是「把该量的都量了」。
+  const openedSettingsCount = await window.webContents.executeJavaScript(
+    `(() => { const cards = [...document.querySelectorAll(".settings-card")]; cards.forEach((card) => { card.open = true; }); return cards.length; })()`,
   );
   await new Promise((resolve) => setTimeout(resolve, 250));
 
@@ -1087,6 +1119,11 @@ async function main() {
 
   const problems = [];
   if (autoCheckProblem) problems.push(autoCheckProblem);
+  // 设置卡片一张都没展开时，下面那些路径行/安装位置的测量全是空值，会一路「通过」——
+  // 那种绿是假的：什么都没量到，当然挑不出毛病。
+  if (!openedSettingsCount) {
+    problems.push("没有找到任何设置卡片：路径行与安装位置的测量全部落空");
+  }
   if (failedLoads.length > 0) problems.push(`资源加载失败：\n    ${failedLoads.join("\n    ")}`);
   if (packaged) {
     const missingScripts = PACKAGED_SCRIPTS.filter((name) => !existsSync(join(packagedScriptsDir, name)));
@@ -1394,6 +1431,41 @@ async function main() {
     if (report.errorText) problems.push(`窗口没出现不该渲染成硬错误：${report.errorText}`);
   }
 
+  // 安装包缓存卡片。缓存不再自动清理之后，它承担了原来「剪枝策略」替用户做的事：
+  // 说明占了多少、并给一个能清空的入口。所以这三样缺一不可 —— 卡片在、标题带占用、
+  // 清空按钮是一颗点到就能用的危险色按钮。
+  if (!report.cache) {
+    problems.push("页面上没有渲染出「安装包缓存」卡片");
+  } else {
+    const cache = report.cache;
+    const expectedCount = notInstalled ? 0 : 3;
+    // 标题里的数字是用户唯一的「占了多少」来源，格式错了他就得不到答案。
+    // 不断言具体 GB 数（那取决于夹具的 sizeBytes），只钉住形状与个数。
+    const summaryPattern = new RegExp(`^安装包缓存 · ${expectedCount} 个 · `);
+    if (!summaryPattern.test(cache.summary)) {
+      problems.push(`安装包缓存卡片的标题不对：${cache.summary}（应形如「安装包缓存 · ${expectedCount} 个 · 1.23 GB」）`);
+    }
+    if (cache.summary.includes("占用未知")) {
+      problems.push("缓存清单已经桩好却报「占用未知」：读不到的判定条件写反了");
+    }
+    if (!cache.hasBrowse) problems.push("安装包缓存卡片里没有换目录的入口：「占了多少」之后的下一个问题就是「能不能挪走」");
+    if (!cache.clearLabel.includes("清空缓存")) problems.push(`清空按钮的文案不对：${cache.clearLabel}`);
+    if (cache.clearIsDanger !== true) {
+      problems.push("清空缓存是唯一会删掉用户数据的按钮，必须用危险色和旁边的「打开目录」区分开");
+    }
+    if (cache.historyToggleChecked !== true) {
+      problems.push("「显示版本历史」默认必须是勾上的：老配置文件里没有这个键，读出来是 undefined");
+    }
+    // 「会不会把 Codex 卸了」是用户看到「删除」时的第一反应，必须当场回答。
+    if (!cache.help.join(" ").includes("已安装的 Codex 不受影响")) {
+      problems.push("清空缓存的说明里没有写「已安装的 Codex 不受影响」——那正是用户最担心的");
+    }
+    // 忙的时候不能清：正跑着的下载或安装就站在这个目录里。
+    if (checkingHold && cache.clearDisabled !== true) {
+      problems.push("检查更新跑着的时候「清空缓存」仍然可点");
+    }
+  }
+
   // 版本历史 / 回退。卡片在每个场景都在页面上，所以这组断言不绑 --rollback：
   // 布局被挤坏、徽章写错、有人加回一颗删除按钮，这些在默认场景就该被发现。
   const rollbackCard = report.rollback;
@@ -1693,6 +1765,10 @@ async function main() {
   console.log(`  主区标题：${report.heading}`);
   console.log(`  主操作按钮：${report.ctaLabel}`);
   console.log(`  健康组件行：${report.healthRows}（结论：${report.verdict}）`);
+  if (report.cache) {
+    const clear = report.cache.clearLabel + (report.cache.clearDisabled ? "（灰）" : "");
+    console.log(`  安装包缓存：${report.cache.summary} | 清空按钮：${clear}`);
+  }
   if (report.rollback) {
     console.log(
       `  版本历史：[${

@@ -991,10 +991,25 @@ function Remove-SupersededCodexPackageFiles {
 
         [string]$PackageName = "OpenAI.Codex",
 
-        [int]$KeepCount = 2
+        [int]$KeepCount = 2,
+
+        # 完全不删（桌面应用的默认行为）。
+        #
+        # 桌面应用把「留几个」交给了用户：界面上显示缓存占了多大、并给一个「清空缓存」的按钮
+        # （见 clear-cached-codex-packages.ps1）。理由是自动清理的判据 —— 按版本倒序留 N 个 ——
+        # 对用户是隐形的：同事发现 C 盘少了几个 GB 时，界面上一个字都没解释删了什么、为什么删。
+        # 宁可让磁盘慢慢涨，由人决定什么时候清。
+        #
+        # 每日自动化那条路（check-codex-update.ps1）仍然不带这个开关，按 KeepCount 剪枝：
+        # 后台无人看着，不能让它无界增长。
+        [switch]$KeepAll
     )
 
     if ($null -eq $InstalledVersion) {
+        return @()
+    }
+
+    if ($KeepAll) {
         return @()
     }
 

@@ -6,6 +6,26 @@ export function formatBytes(bytes: number): string {
   return `${(mb / 1024).toFixed(2)} GB`;
 }
 
+/**
+ * 清空缓存之后的回执。
+ *
+ * 三个数分开说：删掉几个、释放了多少、以及**有几个没删掉**。最后一项不能省 ——
+ * 被杀毒软件或一个正在跑的安装进程占着而删不掉是常事，只报一句「已清空」会让用户
+ * 以为空间已经回来了，然后再去「我的电脑」里发现没有。
+ */
+export function clearedNotice(result: {
+  clearedCount: number;
+  clearedBytes: number;
+  failedPaths: string[];
+}): string {
+  if (result.clearedCount === 0 && result.failedPaths.length === 0) {
+    return "缓存里本来就没有安装包";
+  }
+  const freed = `已清空 ${result.clearedCount} 个安装包，释放 ${formatBytes(result.clearedBytes)}`;
+  if (result.failedPaths.length === 0) return freed;
+  return `${freed}；另有 ${result.failedPaths.length} 个正被占用没能删除，关掉杀毒软件或安装程序后可以再试一次`;
+}
+
 /** 把毫秒格式化成「1 分 20 秒」。 */
 export function formatDuration(ms: number): string {
   const totalSeconds = Math.max(0, Math.round(ms / 1000));

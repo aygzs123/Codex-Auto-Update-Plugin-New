@@ -20,6 +20,10 @@
 //   - 界面上真的有一个点得到的回退按钮，而且它没法被误点成「删除安装包」。
 //
 // 最后一条尤其重要：旧安装包删掉就再也拿不回来，一颗误点的删除按钮足以让整个功能失效。
+//
+// 后来加了第二条策略维度：**桌面端不再自动清理**（缓存留多少由用户在界面上看、在界面上清），
+// 每日自动化那条路仍然保留最近 2 个。所以下面除了「留得下」之外，还钉住 -KeepAll 这条开关
+// 从桌面一路贯到模块的每一环 —— 断在哪一环都不报错，只是安静地删。
 
 const assert = require("node:assert/strict");
 const { readFileSync } = require("node:fs");
@@ -34,6 +38,9 @@ const readPlugin = (...parts) =>
 const moduleText = readPlugin("scripts", "CodexStoreUpdater.psm1");
 const worker = readPlugin("scripts", "install-codex-msix-and-restart.ps1");
 const listScript = readPlugin("scripts", "list-cached-codex-packages.ps1");
+const checkScript = readPlugin("scripts", "check-codex-update.ps1");
+const clearScript = readPlugin("scripts", "clear-cached-codex-packages.ps1");
+const maintenanceScript = readPlugin("scripts", "run-automatic-maintenance.ps1");
 const mainSource = read("electron", "main.cjs");
 const codexSource = read("electron", "codex.cjs");
 const store = read("src", "state", "app.ts");
@@ -93,7 +100,125 @@ test("worker 装完之后不再删掉自己刚用的那个包，改成按保留�
   assert.match(worker, /Split-Path -Parent \$resolvedPackagePath/, "剪枝要针对安装包所在的目录");
 });
 
-// ---------- 降级开关只在回退路径上 ----------
+// ---------- 桌面端不自动清理（-KeepAll 的贯通） ----------
+//
+// 保留额度的默认值仍然是 2（上一条测试钉着），但**桌面应用不再用它**：缓存留多少由用户
+// 在界面上看、在界面上清。开关一旦在某一环断掉，用户看到的就是「明明设成了不限制，某次
+// 操作之后旧包还是没了」—— 而且断在哪一环都不报错，只是安静地删。所以每一环都要钉。
+
+test("模块：-KeepAll 在删任何东西之前就返回，且默认不开", () => {
+  assert.match(moduleText, /\[switch\]\$KeepAll/, "模块要接受 -KeepAll");
+  // 默认必须是「关闭」：不带开关时仍然按 KeepCount 剪枝，每日自动化靠的就是这个默认值。
+  assert.doesNotMatch(moduleText, /\[switch\]\$KeepAll\s*=\s*\$true/, "-KeepAll 不能默认开");
+  const guard = moduleText.indexOf("if ($KeepAll) {");
+  const remove = moduleText.indexOf("Remove-Item -LiteralPath $candidate.FullName");
+  assert.notEqual(guard, -1, "找不到 -KeepAll 的短路分支");
+  assert.notEqual(remove, -1, "找不到剪枝里的 Remove-Item");
+  assert.ok(guard < remove, "-KeepAll 的短路必须在删文件之前，写在后面等于没写");
+  // 短路要在 $null -eq $InstalledVersion 那道 guard 之后：未安装时本来就不删。
+  assert.ok(
+    moduleText.indexOf("if ($null -eq $InstalledVersion)") < guard,
+    "-KeepAll 的短路要排在 InstalledVersion 判空之后",
+  );
+});
+
+test("三条桌面路径全都带上 -KeepAll，一环漏掉就有一处会偷偷删包", () => {
+  assert.match(codexSource, /const KEEP_ALL_CACHE = "-KeepAll";/, "开关名要有一处唯一定义");
+  // 1) checkUpdate：check-codex-update.ps1 在**写模式判断之前**就剪了一次枝，
+  //    所以「只是想查一下版本」也会删掉旧包 —— 这条最容易漏。
+  assert.match(
+    codexSource,
+    /flags: \["-CheckOnly", "-NoProxy", KEEP_ALL_CACHE\]/,
+    "checkUpdate 不带 -KeepAll 的话，查一次版本就会清掉回退用的包",
+  );
+  // 2) downloadCodex：同上，-DownloadOnly 也会先剪枝。
+  assert.match(
+    codexSource,
+    /flags: \["-DownloadOnly", "-NoProxy", KEEP_ALL_CACHE\]/,
+    "downloadCodex 不带 -KeepAll 的话，下载一次就清掉旧包",
+  );
+  // 3) installCodex：剪枝发生在分离的 worker 里，上面那条 flags 断言已经钉住两个分支。
+  assert.match(codexSource, /KEEP_ALL_CACHE\]/);
+
+  // PowerShell 侧：check-codex-update.ps1 有**两个**剪枝点（CheckOnly 之前那次、装完之后
+  // 那次），只给一个传开关等于另一个照旧删。
+  const forwarded = checkScript.match(/-KeepAll:\$KeepAll/g) ?? [];
+  assert.equal(forwarded.length, 2, `check-codex-update.ps1 的两处剪枝都要传 -KeepAll，实际 ${forwarded.length} 处`);
+
+  // worker：自己的剪枝点要带，而且必须**转发**给分离的子进程 —— 父进程的命令行参数不会
+  // 自动继承，少了这一行，桌面应用传进来的 -KeepAll 在 worker 那侧就是失效的。
+  assert.match(worker, /-KeepAll:\$KeepAll\)/, "worker 自己的剪枝点要带 -KeepAll");
+  assert.match(
+    worker,
+    /if \(\$KeepAll\) \{\s*\$arguments \+= "-KeepAll"\s*\}/,
+    "worker 启动分离进程时必须把 -KeepAll 转发过去（与 -AllowDowngrade 同样的写法）",
+  );
+});
+
+test("每日自动化那条路仍然保留最近 2 个", () => {
+  // 后台无人看着，不能让缓存无界增长 —— 这是「桌面端不限制」这个决定的前提条件，
+  // 一旦自动化也跟着不清理，迟早有人因为这台机器被塞满而来问。
+  assert.doesNotMatch(maintenanceScript, /KeepAll/, "每日自动化不该传 -KeepAll");
+  assert.doesNotMatch(checkScript, /\[switch\]\$KeepAll\s*=\s*\$true/, "-KeepAll 在脚本侧的默认必须是关");
+  assert.match(moduleText, /\[int\]\$KeepCount = 2/, "不传开关时的默认保留额度仍然是 2");
+});
+
+test("清空缓存：脚本只删认得出来的安装包，不删不掉的也不整体报错", () => {
+  // 这个动作是用户唯一的回收手段，所以「删什么」必须和「列什么」用同一份判据。
+  assert.match(clearScript, /Get-CachedCodexPackages/, "清空要复用列清单那份文件匹配规则，不能在脚本里自己写一套");
+  assert.doesNotMatch(clearScript, /Remove-Item -LiteralPath \$DownloadDirectory/, "不能整个目录删掉");
+  assert.doesNotMatch(clearScript, /Get-ChildItem[^\n]*\|\s*Remove-Item/, "不能把目录里的东西一律删掉");
+  // 逐个删、失败的不中断：被杀毒软件占着删不掉是常事，整体抛错会让界面只能说「命令失败」，
+  // 用户既不知道删掉了几个、也不知道还剩几个。
+  assert.match(clearScript, /catch \{\s*\$failedPaths \+= \$package\.FullName\s*\}/, "删不掉的要记下来继续走");
+  assert.match(clearScript, /Failed package count:/, "要把没删掉的个数报出来");
+});
+
+test("清空缓存：白名单、长命令、确认框三样齐全", () => {
+  assert.match(mainSource, /"clear_cached_packages",/, "命令白名单里要有 clear_cached_packages");
+  assert.match(mainSource, /case "clear_cached_packages": \{/, "switch 里要有对应的 case");
+  assert.match(mainSource, /return codex\.clearCachedPackages\(args\);/, "case 要真的去删");
+  // 不可撤销的删除必须先确认，而且默认按钮是「取消」。
+  assert.match(mainSource, /const confirmed = await confirmClearCache\(\);/, "清空之前要确认");
+  const confirm = mainSource.match(/async function confirmClearCache\(\) \{([\s\S]*?)\n\}/);
+  assert.ok(confirm, "找不到 confirmClearCache");
+  assert.match(confirm[1], /defaultId: 0/, "默认按钮必须是「取消」，回车不该把包删了");
+  assert.match(confirm[1], /buttons: \["取消", "清空缓存"\]/, "按钮文案要写清后果");
+  assert.match(confirm[1], /已安装的 Codex 不受影响/, "要说清不会把 Codex 卸掉 —— 这是用户最担心的");
+  // 取消返回 cancelled 而不是抛错：取消是正常选择，不是失败。
+  assert.match(mainSource, /if \(!confirmed\) return \{ cancelled: true \};/, "取消要返回 cancelled");
+  // 删到一半关窗会留下说不清的中间状态，所以它算长命令。
+  assert.match(mainSource, /"clear_cached_packages",\s*\n\]\);/, "clear_cached_packages 要进 LONG_COMMANDS");
+});
+
+test("清空缓存：界面如实显示占用，读不到清单时不说「0 个」", () => {
+  const cacheCard = read("src", "components", "CacheSettings.tsx");
+  const storeSource = read("src", "state", "app.ts");
+  // 占用写在卡片标题上，折叠着也看得见 —— 这是「C 盘容易被占满」这个担心的直接答案。
+  assert.match(cacheCard, /<summary>安装包缓存 · \{usageText\}<\/summary>/, "卡片标题要带占用");
+  assert.match(cacheCard, /"占用未知"/, "读不到清单时要如实说未知，不能报 0 个 —— 那等于说缓存是空的");
+  // 清空之后要重新拉清单，否则卡片标题一直显示已经删掉的那些包。
+  assert.match(
+    storeSource,
+    /clearCache: async \(\) => \{[\s\S]*?await get\(\)\.refreshCachedPackages\(\);[\s\S]*?set\(\{ notice: clearedNotice\(result\) \}\)/,
+    "清空之后要刷新缓存清单并给出回执",
+  );
+  // 取消是正常选择：不能报错，也不能提示「已取消」。
+  assert.match(storeSource, /if \(isClearCancelled\(result\)\) return;/, "取消要静默返回");
+  assert.match(storeSource, /finally \{\s*set\(\{ clearingCache: false \}\);/, "标志位必须在 finally 里清掉");
+});
+
+test("版本历史可以整张关掉，但关的只是显示", () => {
+  const cacheCard = read("src", "components", "CacheSettings.tsx");
+  assert.match(cacheCard, /显示「版本历史」卡片/, "开关的文案要说清关掉的是什么");
+  assert.match(cacheCard, /只是一个显示开关/, "必须写明它不动磁盘上的东西");
+  // `!== false` 而不是真值判断：老配置文件里没有这个键，读出来是 undefined，
+  // 那时必须显示（默认开），不能因为「假值」把卡片藏起来。
+  assert.match(app, /const showVersionHistory = settings\?\.showVersionHistory !== false;/, "默认必须是显示");
+  assert.match(app, /\{showVersionHistory && \(\s*<VersionHistory/, "App 要按开关决定渲不渲染");
+  // 关掉卡片不许顺手把回退入口也关了：失败告警里那颗按钮与这个开关无关。
+  assert.match(app, /const rollbackButton = rollbackTarget && \(/, "告警里的回退按钮不受显示开关影响");
+});
 
 test("模块：-AllowDowngrade 才带 -ForceUpdateFromAnyVersion", () => {
   const installBlock = moduleText.match(
@@ -169,8 +294,8 @@ test("主进程：install_codex 把参数（含 allowDowngrade）原样交给 co
   // 不带它连正常更新都装不上，所以两条路都要有。
   assert.match(
     codexSource,
-    /flags: allowDowngrade \? \["-AllowElevation", "-AllowDowngrade"\] : \["-AllowElevation"\]/,
-    "codex.cjs 要把 allowDowngrade 翻成 -AllowDowngrade 开关，并且无条件带上 -AllowElevation",
+    /flags: allowDowngrade\s*\?\s*\["-AllowElevation", "-AllowDowngrade", KEEP_ALL_CACHE\]\s*:\s*\["-AllowElevation", KEEP_ALL_CACHE\]/,
+    "codex.cjs 要把 allowDowngrade 翻成 -AllowDowngrade 开关，并且无条件带上 -AllowElevation 与 KEEP_ALL_CACHE",
   );
   assert.match(
     codexSource,

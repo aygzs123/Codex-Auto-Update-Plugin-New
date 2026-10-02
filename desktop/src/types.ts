@@ -106,6 +106,30 @@ export interface CachedPackageList {
   packages: CachedPackage[];
 }
 
+/** clear-cached-codex-packages.ps1 的结果，见 parse.cjs 的 parseClearedPackages。 */
+export interface ClearedPackageList {
+  /** 与 CachedPackageList 同理，可能为 null。 */
+  downloadDirectory: string | null;
+  clearedCount: number;
+  clearedBytes: number;
+  /**
+   * 没能删掉的（多半是被杀毒软件或一个正在跑的安装进程占着）。非空时界面要如实说出来，
+   * 而不是只报「已清空」—— 否则用户会以为空间已经回来了。
+   */
+  failedPaths: string[];
+}
+
+/** 用户在原生确认框里点了「取消」。取消是正常选择，不是失败。 */
+export interface ClearCancelled {
+  cancelled: true;
+}
+
+export type ClearCacheResult = ClearedPackageList | ClearCancelled;
+
+export function isClearCancelled(result: ClearCacheResult): result is ClearCancelled {
+  return (result as ClearCancelled).cancelled === true;
+}
+
 export type DownloadResult =
   | { status: "latest"; installedVersion?: string | null; version?: string | null }
   | { status: "downloaded"; path: string; version: string | null; fileName: string | null };
@@ -179,6 +203,13 @@ export interface Settings {
    * 界面只读，不显示。
    */
   lastNotifiedVersion?: string;
+  /**
+   * 是否在界面上显示「版本历史」卡片。默认**显示**（字段缺失时按 true 处理）。
+   *
+   * 只是隐藏卡片，不动磁盘上的任何东西：缓存里的安装包照旧留着，失败告警里的回退入口
+   * 也照旧在。要真的腾空间得点「清空缓存」，那是另一个动作。
+   */
+  showVersionHistory?: boolean;
   defaultDownloadDirectory: string;
   logsDirectory: string;
 }

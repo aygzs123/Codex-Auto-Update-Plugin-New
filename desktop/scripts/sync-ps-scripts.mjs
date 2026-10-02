@@ -17,7 +17,7 @@ const repoRoot = join(desktopRoot, "..");
 
 const pluginScripts = join(repoRoot, "plugins", "codex-ms-desktop-updater", "scripts");
 
-// 最小自包含集：查版本 + 下载、安装、健康自检、修复，外加它们共同依赖的模块。
+// 最小自包含集：查版本 + 下载、安装、健康自检、修复、列缓存、清缓存，外加它们共同依赖的模块。
 // 刻意排除 update-installed-plugin.ps1 和 run-automatic-maintenance.ps1 ——
 // 两者都强制要求 <PluginRoot>\.codex-plugin\plugin.json，在自包含 exe 里必然抛错。
 const sources = [
@@ -27,6 +27,8 @@ const sources = [
   join(pluginScripts, "check-codex-desktop-health.ps1"),
   // 「版本历史 / 回退」要用它列出缓存里的安装包。
   join(pluginScripts, "list-cached-codex-packages.ps1"),
+  // 「清空缓存」用它删掉缓存里的安装包。
+  join(pluginScripts, "clear-cached-codex-packages.ps1"),
   // 修复脚本不在插件 scripts/ 里，只存在于 docs/ 下（install/install.ps1 也是从那里
   // 把它拷进已安装插件的）。它零插件目录依赖，可以独立打包运行。
   join(repoRoot, "docs", "codex-desktop-encrypted-copy-fix", "repair-codex-desktop-bundles.ps1"),

@@ -20,7 +20,11 @@ const RELATION_TEXT: Record<string, string> = {
  * —— 那一次的安装包在旧策略下已经被删掉了。所以空列表时给的是解释，不是一个空盒子。
  *
  * 刻意不做「删除此回退包」：旧版安装包删掉就再也拿不回来，一颗误点的删除按钮足以让
- * 整个功能失效。占用由「最多保留 2 个」这条策略兜住，想手动清理走「打开缓存目录」。
+ * 整个功能失效。想腾空间走「安装包缓存」卡片里的「清空缓存」—— 那是一个写着明确后果、
+ * 且带原生确认框的动作，与逐行删除的手感完全不同。
+ *
+ * 保留策略改成「不自动清理」之后，这里如实报出缓存占了多少：卡片标题下面那句原本写着
+ * 「最多保留 2 个」，现在是一句会随实际内容变化的实况，因为磁盘空间不再有人替用户兜底了。
  */
 export function VersionHistory({
   cachedPackages,
@@ -47,6 +51,14 @@ export function VersionHistory({
 }) {
   const packages = cachedPackages?.packages ?? [];
   const installedVersion = cachedPackages?.installedVersion ?? null;
+  const totalBytes = packages.reduce((sum, pkg) => sum + (pkg.sizeBytes || 0), 0);
+  // 保留策略改成「不自动清理」之后，卡片上必须有一句会随实际内容变化的实况：以前那句
+  // 「最多保留 2 个」是个静态承诺，磁盘空间有人替用户兜底；现在没有，用户得看得见涨。
+  const footprint =
+    packages.length === 0
+      ? "安装包不再自动清理。"
+      : `安装包不再自动清理：当前 ${packages.length} 个，共 ${formatBytes(totalBytes)}，` +
+        "想腾空间可以在「安装包缓存」里清空。";
 
   return (
     <section className="panel rollback-card">
@@ -55,8 +67,8 @@ export function VersionHistory({
           <p className="mini-label">Version History</p>
           <h3>版本历史</h3>
           <p className="tab-detail">
-            更新时保留下来的最近安装包。新版本用起来有问题时，可以从这里退回上一版 ——
-            回退会先关闭正在运行的 Codex，装完再自动启动。最多保留 2 个安装包，更旧的会被自动清理。
+            更新时保留下来的安装包。新版本用起来有问题时，可以从这里退回上一版 ——
+            回退会先关闭正在运行的 Codex，装完再自动启动。{footprint}
           </p>
         </div>
         {/* 刻意不用 .verdict：那是健康面板的结论徽章，而渲染冒烟测试按「文档里第一个

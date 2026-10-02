@@ -143,11 +143,13 @@ test("只有会改动系统的长命令才拦关窗", () => {
   const names = [...longCommands[1].matchAll(/"([^"]+)"/g)].map((match) => match[1]);
   assert.deepEqual(
     names.sort(),
-    ["download_codex", "install_codex", "launch_codex", "repair_bundles"],
-    "长命令清单变了：清单外的命令不会被拦，清单内的会被拦",
+    ["clear_cached_packages", "download_codex", "install_codex", "launch_codex", "repair_bundles"],    "长命令清单变了：清单外的命令不会被拦，清单内的会被拦",
   );
   // 「检查更新」刻意不在里面：它不改动任何东西，跑到一半关窗完全无害。
   assert.ok(!names.includes("check_update"), "检查更新不该拦关窗：为它弹对话框是把用户当贼防");
+  // 「清空缓存」在里面：它是全应用唯一会真的删掉用户数据的命令，删到一半关窗会留下
+  // 一个「删了几个、还剩几个」说不清的中间状态。判据是会不会改动系统，不是跑多久。
+  assert.ok(names.includes("clear_cached_packages"), "清空缓存要在里面：删到一半关窗会留下一半删一半没删的状态");
 
   const create = sliceFunction(main, "createWindow");
   assert.match(create, /window\.on\("close"/, "没有 close 拦截：安装到一半关窗不会有任何提醒");

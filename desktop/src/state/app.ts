@@ -1,11 +1,13 @@
 import { create } from "zustand";
 import { invokeCommand, subscribeBackgroundCheck, subscribeProgress } from "../lib/bridge";
 import { diagnosticsText } from "../lib/diagnostics";
+import { clearedNotice } from "../lib/format";
 import type {
   Activity,
   ActivityId,
   CachedPackage,
   CachedPackageList,
+  ClearCacheResult,
   DownloadResult,
   HealthReport,
   InstallResult,
@@ -16,6 +18,7 @@ import type {
   SignatureReport,
   UpdateReport,
 } from "../types";
+import { isClearCancelled } from "../types";
 
 const MAX_LOG_LINES = 300;
 
@@ -68,6 +71,13 @@ interface AppState {
    * 谁问的不重要。
    */
   lastCheckAt: number | null;
+  /**
+   * 正在清空安装包缓存。
+   *
+   * 和其它标志位一样单独一个，不塞进 phase：清缓存不改安装状态，界面既不该切到
+   * 「正在安装」，也不该在清完之后把顶部那张卡片重画一遍。
+   */
+  clearingCache: boolean;
   error: string | null;
   notice: string | null;
 
@@ -77,6 +87,13 @@ interface AppState {
   refreshCachedPackages: () => Promise<void>;
   /** 回退到指定的旧版本安装包。走的是和安装同一条链路，只是允许降级。 */
   rollback: (pkg: CachedPackage) => Promise<void>;
+  /**
+   * 清空安装包缓存。
+   *
+   * 主进程会先弹一个原生确认框；用户在框里点「取消」时这里什么都不做，也不提示 ——
+   * 取消是正常选择，不是失败。
+   */
+  clearCache: () => Promise<void>;
   checkUpdate: () => Promise<void>;
   /**
    * 启动时静默判断「装的是不是最新版本」。
@@ -90,12 +107,16 @@ interface AppState {
   launch: () => Promise<void>;
   saveDownloadDirectory: (value: string) => Promise<void>;
   /**
-   * 保存后台常驻相关的开关（托盘 / 开机自启）。
+   * 保存各种可选项（后台常驻的托盘 / 开机自启、版本历史卡片的显示开关）。
    *
    * 传一个**只含要改的键**的 patch：主进程按出现的键组 patch，多传一个会把没打算动的
    * 设置一起擦掉。
    */
-  saveBackgroundOptions: (patch: { minimizeToTray?: boolean; launchAtLogin?: boolean }) => Promise<void>;
+  saveOptions: (patch: {
+    minimizeToTray?: boolean;
+    launchAtLogin?: boolean;
+    showVersionHistory?: boolean;
+  }) => Promise<void>;
   /** 把当前现场拼成一段文本复制到剪贴板，同事报障时不必截图。 */
   copyDiagnostics: () => Promise<void>;
   pickDirectory: () => Promise<void>;
@@ -130,13 +151,15 @@ export const isCommandRunning = (state: {
   repairing: boolean;
   checkingUpdate: boolean;
   rollingBack: boolean;
+  clearingCache: boolean;
 }): boolean =>
   state.phase === "working" ||
   state.phase === "checking" ||
   state.probing ||
   state.repairing ||
   state.checkingUpdate ||
-  state.rollingBack;
+  state.rollingBack ||
+  state.clearingCache;
 
 /**
  * 「打开缓存目录」该打开哪个目录 —— 全应用只此一处判据。
@@ -175,6 +198,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   rollingBack: false,
   checkingUpdate: false,
   lastCheckAt: null,
+  clearingCache: false,
   error: null,
   notice: null,
 
@@ -203,8 +227,8 @@ export const useAppStore = create<AppState>((set, get) => ({
     //      phase === "checking" 也算忙，此时调用会被 autoCheckUpdate 自己那道
     //      「已经有一条命令在跑」的 guard 挡掉，功能静默失效 —— 不报错、不变红，
     //      只是永远不查，最难查的一种坏法。
-    //   2. 必须在 refreshCachedPackages 之后。检查会顺带剪枝缓存目录，反过来就
-    //      会让「版本历史」卡片显示一批刚被删掉的包。
+    //   2. 必须在 refreshCachedPackages 之后。这一条是次序要求，不是「检查会删包」——
+    //      桌面端调用 PowerShell 一律带 -KeepAll（见 codex.cjs），检查更新**不再**剪枝。
     // 不 await：界面就绪不该等一次网络往返，检查期间次按钮照旧显示「正在检查…」。
     void get().autoCheckUpdate();
   },
@@ -495,7 +519,30 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
-  saveBackgroundOptions: async (patch) => {
+  clearCache: async () => {
+    // 忙的时候不叠：删到一半又来一次，两个 Remove-Item 撞在同一个文件上只会互相报错。
+    if (isCommandRunning(get())) return;
+    set({ clearingCache: true, error: null, notice: null });
+    try {
+      const result = await invokeCommand<ClearCacheResult>("clear_cached_packages", {
+        downloadDirectory: get().settings?.downloadDirectory ?? "",
+      });
+      // 用户在原生确认框里点了「取消」。取消是正常选择，不是失败：不报错，也不提示
+      // 「已取消」——他本来就没打算让任何事情发生。
+      if (isClearCancelled(result)) return;
+
+      // 缓存清单必须重新拉：刚才那颗按钮就在「安装包缓存」卡片上，卡片标题写着
+      // 「N 个 / X GB」，不刷新的话它会一直显示已经删掉的那些包。
+      await get().refreshCachedPackages();
+      set({ notice: clearedNotice(result) });
+    } catch (error) {
+      set({ error: describe(error) });
+    } finally {
+      set({ clearingCache: false });
+    }
+  },
+
+  saveOptions: async (patch) => {
     try {
       await invokeCommand<Settings>("save_settings", patch);
       // 回读而不是本地合并：主进程可能对值做了归一化（Boolean 化），也可能因为没打包

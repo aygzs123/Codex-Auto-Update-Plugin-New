@@ -154,6 +154,88 @@ try {
         -PackageName "OpenAI.Codex"
     Assert-Equal 0 $removedWhenNotInstalled.Count "removes nothing when the installed version is unknown"
 
+    # -KeepAll：桌面应用的默认行为 —— 一个旧包都不删。
+    #
+    # 不能靠「把 KeepCount 调大」表达这件事：KeepCount 是「按版本倒序留 N 个」，0 表示
+    # 一个不留（照旧删光），没有任何取值等于「不限制」。所以它是独立开关，而且必须在
+    # 删任何文件**之前**短路。
+    New-CacheFixture -FileNames $cacheFixture
+    $removedWithKeepAll = Remove-SupersededCodexPackageFiles `
+        -DownloadDirectory $tempDownloadDirectory `
+        -InstalledVersion ([version]"26.512.10.0") `
+        -PackageName "OpenAI.Codex" `
+        -KeepAll
+    Assert-Equal 0 $removedWithKeepAll.Count "KeepAll removes nothing"
+    # 逐个数清楚：缓存里 4 个 Codex 包一个都不能少（其余两个本来就不归它管）。
+    foreach ($keptName in @(
+            "OpenAI.Codex_26.506.3741.0_x64.msix",
+            "OpenAI.Codex_26.510.0.0_x64.msix",
+            "OpenAI.Codex_26.512.10.0_x64.msix",
+            "OpenAI.Codex_26.513.1.0_x64.msix")) {
+        Assert-True -Condition (Test-Path -LiteralPath (& $pathOf $keptName)) `
+            -Message "KeepAll keeps $keptName"
+    }
+
+    # ---------- 清空缓存（桌面应用那颗按钮）----------
+    #
+    # 真跑一遍脚本，而不是只看代码行。这个动作是**不可逆**的（rg-adguard 只发最新版，
+    # 删掉的旧包下不回来），所以「到底删了哪些」必须由行为测试钉住。
+    $clearScript = Join-Path $pluginRoot "scripts/clear-cached-codex-packages.ps1"
+
+    New-CacheFixture -FileNames $cacheFixture
+    # `6>&1` 不能省：脚本用 Write-Host 输出（桌面端是当子进程跑、读它的 stdout，所以那边
+    # 拿得到），而进程内 `&` 调用时 Write-Host 走的是信息流，不进管道 —— 少了这个重定向，
+    # 下面每一条输出断言拿到空字符串，就都成了恒真的空洞断言。
+    $clearOutput = & $clearScript -DownloadDirectory $tempDownloadDirectory -PackageName "OpenAI.Codex" 6>&1
+
+    # 只认 Codex 自己的安装包：别的 app、以及下载中的 .partial 都必须原样留着。
+    # 这条不是洁癖 —— 用户把缓存目录指到自己某个盘上的文件夹时，越界删除就是删别人的东西。
+    Assert-True -Condition (Test-Path -LiteralPath (& $pathOf "Other.App_1.0.0.0_x64.msix")) `
+        -Message "clearing the cache must not touch packages belonging to other apps"
+    Assert-True -Condition (Test-Path -LiteralPath (& $pathOf "OpenAI.Codex_26.512.10.0_x64.msix.partial")) `
+        -Message "clearing the cache must not touch an in-flight .partial download"
+    foreach ($clearedName in @(
+            "OpenAI.Codex_26.506.3741.0_x64.msix",
+            "OpenAI.Codex_26.510.0.0_x64.msix",
+            "OpenAI.Codex_26.512.10.0_x64.msix",
+            "OpenAI.Codex_26.513.1.0_x64.msix")) {
+        Assert-True -Condition (-not (Test-Path -LiteralPath (& $pathOf $clearedName))) `
+            -Message "clearing the cache must delete $clearedName (no retention policy is applied here)"
+    }
+    # 输出契约：desktop/electron/parse.cjs 的 parseClearedPackages 逐行读这几行。
+    $clearOutputText = $clearOutput -join "`n"
+    Assert-True -Condition ($clearOutputText -match 'Cleared package count: 4') `
+        -Message "the clear script must report how many packages it deleted (got: $clearOutputText)"
+    Assert-True -Condition ($clearOutputText -match 'Failed package count: 0') `
+        -Message "the clear script must report the failure count even when it is zero"
+    Assert-True -Condition ($clearOutputText -match 'Cache directory: ') `
+        -Message "the clear script must echo the directory it used (the desktop app displays it)"
+
+    # 删不掉的（被杀毒软件或安装进程占着）不能中断整批，也不能报成「删除失败」了事：
+    # 逐个记下来，把数量交给界面去说。拿真实文件锁来复现，不靠猜。
+    New-CacheFixture -FileNames $cacheFixture
+    $lockedPath = & $pathOf "OpenAI.Codex_26.510.0.0_x64.msix"
+    $lock = [System.IO.File]::Open($lockedPath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::None)
+    try {
+        $clearOutput = & $clearScript -DownloadDirectory $tempDownloadDirectory -PackageName "OpenAI.Codex" 6>&1
+        $clearOutputText = $clearOutput -join "`n"
+    }
+    finally {
+        # $lock 可能是 $null（Open 自己就抛了）。不加这个判断的话，finally 里那句
+        # 「在 $null 上调用方法」会把真正的失败原因盖掉，CI 上只剩一句看不懂的报错。
+        if ($null -ne $lock) {
+            $lock.Dispose()
+        }
+    }
+    Assert-True -Condition ($clearOutputText -match 'Cleared package count: 3') `
+        -Message "a locked package must not abort the batch (got: $clearOutputText)"
+    Assert-True -Condition ($clearOutputText -match 'Failed package count: 1') `
+        -Message "a locked package must be counted, not thrown (got: $clearOutputText)"
+    Assert-True -Condition ($clearOutputText -match [regex]::Escape($lockedPath)) `
+        -Message "the undeletable path must be named so the UI can tell the user which one is stuck"
+    Assert-True -Condition (Test-Path -LiteralPath $lockedPath) `
+        -Message "the script must not report a failure as a success"
+
     # ---------- Get-CachedCodexPackages：界面上「版本历史」的数据源 ----------
     New-CacheFixture -FileNames $cacheFixture
     $cached = @(Get-CachedCodexPackages `
@@ -244,6 +326,11 @@ Assert-True -Condition ($installRestartScriptText -match 'Add-AppxPackage -Path 
     -Message "install-and-restart script passes -ForceUpdateFromAnyVersion on the downgrade path"
 Assert-True -Condition ($installRestartScriptText -match 'if \(\$AllowDowngrade\) \{\s*\$arguments \+= "-AllowDowngrade"') `
     -Message "install-and-restart script forwards -AllowDowngrade to the detached worker (a new process does not inherit switches)"
+# 同一个坑：worker 是分离进程，桌面应用传进来的 -KeepAll 不会自动继承。少了这行转发，
+# 用户明明选了「不限制保留」，装完之后 worker 那一侧照旧按 KeepCount 删 —— 表现就是
+# 「设置好像没生效」，而且日志里一个字都不会提。
+Assert-True -Condition ($installRestartScriptText -match 'if \(\$KeepAll\) \{\s*\$arguments \+= "-KeepAll"') `
+    -Message "install-and-restart script forwards -KeepAll to the detached worker"
 Assert-True -Condition ($installRestartScriptText -match 'if \(\$installedVersion -ne \$packageMetadata\.Version\)') `
     -Message "install-and-restart script verifies a downgrade by equality (a -lt check reports a refused downgrade as success)"
 # 而那条「不小于」的判定必须退到 elseif：它只对升级路径成立。写成 if/else 两条独立
@@ -261,6 +348,12 @@ Assert-True -Condition ($moduleCodeText -match '\[int\]\$KeepCount = 2') `
     -Message "the retention count defaults to 2 (1 would delete the rollback target)"
 Assert-True -Condition ($moduleCodeText -match 'Select-Object -Skip \$KeepCount') `
     -Message "the retention policy prunes by skipping the newest KeepCount candidates"
+# 「不限制」只能靠独立开关表达：KeepCount 是「按版本倒序留 N 个」，0 反而是一个不留。
+# 而且它必须默认关闭 —— 每日自动化那条路不传这个开关，默认一变，无人值守的缓存就没边了。
+Assert-True -Condition ($moduleCodeText -match '\[switch\]\$KeepAll') `
+    -Message "the retention policy must expose -KeepAll (KeepCount has no 'unlimited' value: 0 deletes everything)"
+Assert-True -Condition ($moduleCodeText -notmatch '\[switch\]\$KeepAll\s*=') `
+    -Message "-KeepAll must NOT default to true, otherwise the daily automation stops pruning"
 Assert-True -Condition ($moduleCodeText -match 'Get-CachedCodexPackages,') `
     -Message "exports the cached-package enumerator used by the desktop UI"
 Assert-True -Condition (-not ($moduleCodeText -match 'Remove-InstalledCodexPackageFiles')) `
@@ -276,10 +369,45 @@ Assert-True -Condition ($listCachedScriptText -match 'Download directory: ') -Me
 Assert-True -Condition (-not ($listCachedScriptText -match 'Remove-Item|Set-Content|New-Item')) `
     -Message "listing script must stay read-only"
 
+$clearCachedScript = Join-Path $pluginRoot "scripts/clear-cached-codex-packages.ps1"
+Assert-True -Condition (Test-Path -LiteralPath $clearCachedScript) -Message "provides the cache-clearing script"
+$clearCachedScriptText = Get-Content -LiteralPath $clearCachedScript -Raw
+$clearCachedCode = ($clearCachedScriptText -split "`n" | Where-Object { $_.TrimStart() -notmatch '^#' }) -join "`n"
+# 删除范围必须由 Get-CachedCodexPackages 决定，而不是「把目录里的文件都删掉」。
+# 缓存目录可以是用户自己选的任意文件夹 —— 一旦退化成对整个目录 rm -rf，那就是删别人的东西。
+Assert-True -Condition ($clearCachedCode -match 'Get-CachedCodexPackages') `
+    -Message "the clear script must delete exactly what Get-CachedCodexPackages recognises"
+Assert-True -Condition (-not ($clearCachedCode -match 'Get-ChildItem')) `
+    -Message "the clear script must not enumerate the directory itself (that is an rm -rf on a user-chosen folder)"
+# 输出契约：desktop/electron/parse.cjs 的 parseClearedPackages 按这些行解析。
+foreach ($line in @('Cache directory: ', 'Cleared package count: ', 'Cleared bytes: ', 'Failed package count: ')) {
+    Assert-True -Condition ($clearCachedScriptText.Contains($line)) `
+        -Message "clear script must print the '$line' line (parse.cjs parses it)"
+}
+
 $checkScript = Join-Path $pluginRoot "scripts/check-codex-update.ps1"
 $checkScriptText = Get-Content -LiteralPath $checkScript -Raw
 Assert-True -Condition ($checkScriptText -match '\[switch\]\$InstallWithRestart') -Message "check script exposes install-with-restart mode"
 Assert-True -Condition ($checkScriptText -match 'install-codex-msix-and-restart\.ps1') -Message "check script invokes install-and-restart script"
+
+# ---------- 桌面端的「不限制保留」必须贯通到脚本这一层 ----------
+#
+# 桌面端把「留几个」交给了用户：界面显示缓存多大 + 一个「清空缓存」按钮，不再自动删。
+# 这条链路要经过三个文件，任何一环漏了都会**静默**失效 —— 开关默认关，漏传的表现就是
+# 「旧包照删」，而用户以为自己已经选了不限制。
+#
+# 数清楚是 2 处而不是「至少 1 处」：check 脚本里有**两个**剪枝点，而且第一个排在
+# `-CheckOnly` 提前 return **之前** —— 只给安装后那处加开关的话，用户点一次「检查更新」
+# 就把缓存删了，这正是这次要修掉的行为。
+$keepAllAtPruneSites = [regex]::Matches($checkScriptText, '-KeepAll:\$KeepAll').Count
+Assert-True -Condition ($keepAllAtPruneSites -eq 2) `
+    -Message "check script must pass -KeepAll at both prune sites, found $keepAllAtPruneSites (one runs before the -CheckOnly early return: just checking the version would delete packages)"
+Assert-True -Condition ($checkScriptText -match '\[switch\]\$KeepAll') `
+    -Message "check script must accept -KeepAll"
+# 开关必须落在**参数块**里：写成脚本中段的普通变量，上游传 -KeepAll 会因为「找不到参数」
+# 直接报错，自动化每天都会响。
+Assert-True -Condition ($checkScriptText -match '(?s)param\(.*?\[switch\]\$KeepAll') `
+    -Message "check script's -KeepAll must be a declared parameter"
 
 # ---------- 调用方必须看子脚本的退出码 ----------
 #
@@ -314,6 +442,11 @@ $maintenanceScriptText = Get-Content -LiteralPath $maintenanceScript -Raw
 Assert-True -Condition ($maintenanceScriptText -match 'update-installed-plugin\.ps1') -Message "maintenance script updates plugin first"
 Assert-True -Condition ($maintenanceScriptText -match 'check-codex-update\.ps1') -Message "maintenance script checks Codex package"
 Assert-True -Condition ($maintenanceScriptText -match 'InstallWithRestart') -Message "maintenance script installs Codex update with restart"
+# 每日自动化**故意**不带 -KeepAll：后台无人看着，缓存不能无界增长。
+# 这条与「桌面应用必须带」是一对 —— 只测一边的话，把开关默认翻过来或者顺手给自动化也加上，
+# 都不会有人发现。
+Assert-True -Condition (-not ($maintenanceScriptText -match 'KeepAll')) `
+    -Message "the daily automation must keep pruning by KeepCount (an unattended run cannot let the cache grow without bound)"
 
 # ---------- AppId 解析必须产出字符串 ----------
 #

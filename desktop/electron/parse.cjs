@@ -331,6 +331,59 @@ function parseCachedPackages(stdout) {
   return result;
 }
 
+/**
+ * 解析 clear-cached-codex-packages.ps1 的输出。
+ *
+ * 输出示例：
+ *   Cache directory: C:\Users\me\AppData\Roaming\Codex Updater\downloads
+ *   Cleared package count: 3
+ *   Cleared bytes: 2411724800
+ *   Failed package count: 1
+ *     C:\...\OpenAI.Codex_26.924.2738.0_x64__2p2nqsd0c76g0.msix
+ *
+ * 两个计数分开报，因为「清掉几个」与「有几个没清掉」对用户是两件事：全删成功时界面
+ * 只说一句「已释放 2.2 GB」，有残留时必须说清还剩几个、以及多半是被占用。
+ * 缩进的路径列表跟在 Failed package count 后面，与 list-cached 那份的计数+列表同形。
+ */
+function parseClearedPackages(stdout) {
+  const result = { downloadDirectory: null, clearedCount: 0, clearedBytes: 0, failedPaths: [] };
+
+  const lines = String(stdout || "").split(/\r?\n/);
+  for (let index = 0; index < lines.length; index++) {
+    const trimmed = lines[index].trim();
+    if (!trimmed) continue;
+
+    const directory = trimmed.match(/^Cache directory\s*:\s*(.+)$/);
+    if (directory) {
+      result.downloadDirectory = directory[1].trim();
+      continue;
+    }
+
+    const clearedCount = trimmed.match(/^Cleared package count\s*:\s*(\d+)$/);
+    if (clearedCount) {
+      result.clearedCount = Number(clearedCount[1]);
+      continue;
+    }
+
+    const clearedBytes = trimmed.match(/^Cleared bytes\s*:\s*(\d+)$/);
+    if (clearedBytes) {
+      result.clearedBytes = Number(clearedBytes[1]);
+      continue;
+    }
+
+    const failedCount = trimmed.match(/^Failed package count\s*:\s*(\d+)$/);
+    if (failedCount) {
+      for (let offset = 1; offset <= Number(failedCount[1]); offset++) {
+        const candidate = lines[index + offset];
+        if (!candidate || !/^\s{2}\S/.test(candidate)) break;
+        result.failedPaths.push(candidate.trim());
+      }
+    }
+  }
+
+  return result;
+}
+
 /** 下载中用于观测进度的临时文件名。Save-CodexPackage 先写 <名字>.partial 再改名。 */
 function partialNameFor(fileName) {
   return fileName ? `${fileName}.partial` : null;
@@ -474,6 +527,7 @@ module.exports = {
   STARTUP_DIAGNOSIS_VALUES,
   parseUpdateCheck,
   parseCachedPackages,
+  parseClearedPackages,
   partialNameFor,
   parseInstallLogLine,
   installLogTerminal,

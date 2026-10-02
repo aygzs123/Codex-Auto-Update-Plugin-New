@@ -31,7 +31,8 @@ automation template.
 - **Cache retention + rollback**: keeps the two most recent `OpenAI.Codex`
   installers in the download cache (about 1.67 GB) and prunes older ones, so a
   problematic update can be rolled back to the previous version (see "Version
-  rollback" below).
+  rollback" below). The **desktop app** does not apply this policy: it keeps
+  everything, shows how much the cache occupies, and lets the user clear it.
 - **Plugin self-update**: compares the local and remote `plugin.json` versions and
   updates this plugin from GitHub when the remote is newer.
 - **Proxy control**: `-NoProxy` disables proxy for the current download process.
@@ -111,14 +112,16 @@ Downloaded files are saved under:
 plugins/codex-ms-desktop-updater/downloads/
 ```
 
-> That directory is a runtime cache and is git-ignored. It deliberately keeps the
-> two most recent installers (~1.67 GB) as rollback targets; see "Version
-> rollback" below.
+> That directory is a runtime cache and is git-ignored. The daily automation
+> deliberately keeps the two most recent installers (~1.67 GB) as rollback targets
+> and prunes older ones; the desktop app applies no such policy and lets the user
+> clear the cache by hand. See "Retention policy" below.
 
 | Rollback / cache inspection | Command |
 |---------|---------|
 | List cached installers (read-only) | `list-cached-codex-packages.ps1 -DownloadDirectory "<dir>"` |
 | Install a specific package, downgrade allowed | `install-codex-msix-and-restart.ps1 -PackagePath "<path>" -AllowDowngrade` |
+| Clear every cached Codex installer (what the desktop app's "clear cache" button runs) | `clear-cached-codex-packages.ps1 -DownloadDirectory "<dir>"` |
 
 ## Install into local Codex
 
@@ -215,6 +218,10 @@ downloaded again**.
 
 ### Retention policy
 
+There are **two** policies, split by whether a human is watching.
+
+**Daily automation (unattended) — prunes automatically:**
+
 > Among cached packages whose version is **≤ the installed version**, keep the two
 > newest by version and delete the rest.
 
@@ -228,6 +235,27 @@ downloaded again**.
 Pruning happens inside the install worker (the only place that both knows the new
 version and sits in the cache directory), so the cache returns to 2 packages as
 soon as an install finishes, instead of briefly holding 3 (2.5 GB).
+
+**Desktop app (someone is watching) — deletes nothing.** It passes `-KeepAll` on
+all three PowerShell call paths (check, download, install), keeps every installer
+it ever downloaded, and shows the package count and total size in the "installer
+cache" card with a "clear cache" button (behind one confirmation).
+
+Why two policies: the automatic rule (keep the newest N by version) is **invisible**
+to the user — when a colleague finds several GB missing from the C: drive, the UI
+says nothing about what was deleted or why. Better to let the disk grow and let a
+human decide when to clear. The unattended path has nobody watching, so it stays
+bounded.
+
+`-KeepAll` is a separate switch rather than a large `-KeepCount`: `-KeepCount` means
+"keep N", and `0` deletes everything, so no value of it can express "unlimited".
+
+"Clear cache" deletes only the Codex installers that `Get-CachedCodexPackages`
+recognises — in-flight `.partial` files, other apps' packages and anything else the
+user put in the cache directory are left alone. The cache directory is a folder the
+user chose, so this action is **not** an `rm -rf` of it. Files that cannot be
+deleted (held by antivirus or an installer) are counted and reported to the UI
+instead of aborting the batch.
 
 ### How to use it
 

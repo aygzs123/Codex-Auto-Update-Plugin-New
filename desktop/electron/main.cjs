@@ -33,6 +33,7 @@ const allowedCommands = new Set([
   "verify_download_signature",
   "install_codex",
   "list_cached_packages",
+  "clear_cached_packages",
   "launch_codex",
   "check_health",
   "repair_bundles",
@@ -66,7 +67,17 @@ let isQuitting = false;
 //
 // 「检查更新」刻意不在里面：它不改动任何东西，网络往返跑到一半关窗完全无害，
 // 为它弹一句「确定要中断吗」是把用户当贼防，还会让人以为关窗有风险。
-const LONG_COMMANDS = new Set(["download_codex", "install_codex", "repair_bundles", "launch_codex"]);
+//
+// 「清空缓存」在里面：它是全应用唯一会真的删掉用户数据的命令，删到一半关窗会留下
+// 一个「删了几个、还剩几个」说不清的中间状态。它本身跑得不算久，但判据是「会不会
+// 改动系统」，不是「跑多久」。
+const LONG_COMMANDS = new Set([
+  "download_codex",
+  "install_codex",
+  "repair_bundles",
+  "launch_codex",
+  "clear_cached_packages",
+]);
 
 // ---------- 设置 ----------
 
@@ -337,6 +348,15 @@ async function executeCommand(event, command, args = {}) {
     case "list_cached_packages":
       // 「版本历史 / 回退」要用的缓存清单。只读，不写任何东西。
       return codex.listCachedPackages(args);
+    case "clear_cached_packages": {
+      // 桌面端不再自动剪枝（见 codex.cjs 的 KEEP_ALL_CACHE），所以这是用户回收磁盘空间的
+      // 唯一手段，也是唯一一个会真的删掉用户数据的命令 —— 先确认再动手。
+      // 用户在确认框里点了「取消」时返回 cancelled 而不是抛错：取消是正常选择，
+      // 不是失败，界面上不该出现一条红色的错误。
+      const confirmed = await confirmClearCache();
+      if (!confirmed) return { cancelled: true };
+      return codex.clearCachedPackages(args);
+    }
     case "launch_codex":
       // 启动要等主窗口出现（最多 20 秒），期间必须把进展推给界面，
       // 否则等待期就是一段「点了没反应」。
@@ -356,6 +376,9 @@ async function executeCommand(event, command, args = {}) {
       if ("downloadDirectory" in args) patch.downloadDirectory = String(args.downloadDirectory ?? "");
       if ("minimizeToTray" in args) patch.minimizeToTray = Boolean(args.minimizeToTray);
       if ("launchAtLogin" in args) patch.launchAtLogin = Boolean(args.launchAtLogin);
+      // 版本历史卡片是纯展示，隐藏它不动磁盘上的任何东西（缓存里的安装包照旧留着，
+      // 回退入口仍然在失败告警里）。清缓存是另一个明确的动作，见 clear_cached_packages。
+      if ("showVersionHistory" in args) patch.showVersionHistory = Boolean(args.showVersionHistory);
       const saved = writeSettings(patch);
       // 这两个开关不只是落盘，还要真的动系统与本进程：自启要写注册表，后台复查要起/停定时器。
       if ("launchAtLogin" in patch) applyLoginItem(saved.launchAtLogin);
@@ -640,6 +663,34 @@ async function confirmCloseWhileBusy(window) {
   } finally {
     closePromptOpen = false;
   }
+}
+
+/**
+ * 清空缓存前的确认。
+ *
+ * 放在主进程而不是渲染进程：这是**不可撤销**的删除，原生模态框不会被误点穿透，也不会
+ * 因为界面重渲染或忙态切换而消失。默认按钮是「取消」—— 回车键落到「清空缓存」上，
+ * 同事留着回退用的那几个包就没了。
+ *
+ * 措辞里必须点明「已安装的 Codex 不受影响」：用户看到「删除」第一反应是「会不会把
+ * Codex 卸了」，而这正是他最不能接受的结果。
+ */
+async function confirmClearCache() {
+  const options = {
+    type: "warning",
+    title: "清空安装包缓存",
+    message: "要删除缓存里的全部 Codex 安装包吗？",
+    detail: "已安装的 Codex 不受影响。但删除后无法再回退到旧版本，需要时得重新下载（每个约 800 MB）。",
+    buttons: ["取消", "清空缓存"],
+    defaultId: 0,
+    cancelId: 0,
+    noLink: true,
+  };
+  const parent = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null;
+  const { response } = parent
+    ? await dialog.showMessageBox(parent, options)
+    : await dialog.showMessageBox(options);
+  return response === 1;
 }
 
 // ---------- IPC ----------

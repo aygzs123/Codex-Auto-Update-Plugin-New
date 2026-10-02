@@ -23,6 +23,7 @@ const {
   healthRepairTargets,
   parseUpdateCheck,
   parseCachedPackages,
+  parseClearedPackages,
   partialNameFor,
   parseInstallLogLine,
   installLogTerminal,
@@ -66,6 +67,28 @@ function resolveDownloadDirectory(configured) {
   return value ? expandEnvironment(value) : downloadsRoot();
 }
 
+/**
+ * 桌面应用调用 PowerShell 时一律带上它：不清剪缓存里的旧安装包。
+ *
+ * 必须是显式的开关，不能靠调 KeepCount 表达 —— KeepCount 的语义是「按版本倒序留 N 个」，
+ * 而 0 表示一个不留（照旧删光），没有哪个取值能表示「不限制」。
+ *
+ * 为什么桌面端要关掉自动清理：清理的判据（按版本倒序留 N 个）对用户是完全隐形的。
+ * 同事某天发现 C 盘少了几个 GB，界面上一个字都没解释删了什么、为什么删；而他真正需要
+ * 的恰恰是留着旧包好回退。改由界面如实显示占用（版本历史卡片 + 安装包缓存卡片），
+ * 删不删、什么时候删由用户按「清空缓存」决定。
+ *
+ * 三条调用路径都要带，一条都不能漏：
+ *   - checkUpdate / downloadCodex 走的是 check-codex-update.ps1，它在**写模式判断之前**
+ *     就剪了一次枝，所以「只是想查一下版本」也会删掉旧包；
+ *   - installCodex 的剪枝在分离 worker 里（install-codex-msix-and-restart.ps1 转发）。
+ * 漏掉任何一条，用户看到的都是「明明设成了不限制，某次操作之后旧包还是没了」。
+ *
+ * 每日自动化（run-automatic-maintenance.ps1 那条路）不带这个开关，仍然保留最近 2 个：
+ * 后台无人看着，不能让缓存无界增长。
+ */
+const KEEP_ALL_CACHE = "-KeepAll";
+
 // ---------- 状态与更新检查 ----------
 
 /** 读取当前 Codex 安装状态与健康明细。退出码是状态而不是错误，见 parse.cjs。 */
@@ -88,7 +111,7 @@ async function getStatus({ probe = false } = {}) {
 async function checkUpdate({ downloadDirectory } = {}) {
   const directory = resolveDownloadDirectory(downloadDirectory);
   const { code, stdout, stderr } = await ps.captureScript(bundledScript("check-codex-update.ps1"), {
-    flags: ["-CheckOnly", "-NoProxy"],
+    flags: ["-CheckOnly", "-NoProxy", KEEP_ALL_CACHE],
     values: { "-DownloadDirectory": directory },
   });
   if (code !== 0) throw new Error(ps.describeFailure({ code, stdout, stderr }));
@@ -140,7 +163,7 @@ async function downloadCodex({ downloadDirectory } = {}, emit = () => {}) {
   const { done } = ps.streamScript(
     bundledScript("check-codex-update.ps1"),
     {
-      flags: ["-DownloadOnly", "-NoProxy"],
+      flags: ["-DownloadOnly", "-NoProxy", KEEP_ALL_CACHE],
       values: { "-DownloadDirectory": directory },
       onStdoutLine: (line) => {
         stdout += `${line}\n`;
@@ -321,11 +344,15 @@ async function installCodex({ path, allowDowngrade, downloadDirectory }, emit = 
     // 新版 Codex 的清单声明了一个以 localSystem 运行的打包服务，Windows 于是要求管理员
     // 上下文才能装，不带这个开关就会回 0x80073D28。仍然是一键，只是不再静默 ——
     // 需要时会弹一次 UAC。不加界面开关：用户无从判断哪个版本带服务，让他选只会选错。
-    flags: allowDowngrade ? ["-AllowElevation", "-AllowDowngrade"] : ["-AllowElevation"],
+    flags: allowDowngrade
+      ? ["-AllowElevation", "-AllowDowngrade", KEEP_ALL_CACHE]
+      : ["-AllowElevation", KEEP_ALL_CACHE],
     values: {
       "-PackagePath": target,
       "-LogPath": logPath,
-      // 装完之后 worker 要在**缓存目录**里剪枝（保留最近 2 个），目录由 main 解析好传进来。
+      // worker 拿这个目录做两件事：安装日志里记下它，以及（本来要）在装完之后剪枝。
+      // 剪枝由 KEEP_ALL_CACHE 关掉了，但目录仍然要传对 —— 桌面应用允许把缓存换到别的盘，
+      // 而 worker 无法从 -PackagePath 反推（那是调用方给什么就是什么）。
       // 拿不到就退回默认缓存根目录 —— 那正是 resolveDownloadDirectory("") 的语义，
       // 也就是「用户没自定义过缓存目录」时安装包真正所在的地方。
       "-DownloadDirectory": String(downloadDirectory || "") || resolveDownloadDirectory(""),
@@ -351,6 +378,27 @@ async function listCachedPackages({ downloadDirectory } = {}) {
   });
   if (code !== 0) throw new Error(ps.describeFailure({ code, stdout, stderr }));
   return parseCachedPackages(stdout);
+}
+
+/**
+ * 清空下载缓存里的 Codex 安装包。
+ *
+ * 关掉自动清理之后，「缓存会不会一直涨」这个担心就全压在这个动作上 —— 它是用户唯一的
+ * 回收手段，所以两件事必须成立：
+ *   - 只删 Codex 的安装包（判据在 PowerShell 侧，与 listCachedPackages 共用同一份文件
+ *     名规则）。这个动作不等价于清目录，用户自己放进去的东西不能碰。
+ *   - 删不掉的（被杀毒软件或正在跑的安装进程占着）不整体报错，而是把数量如实带回来，
+ *     让界面能说「清掉 3 个，有 1 个正被占用」。所以脚本始终以 0 退出。
+ *
+ * 已安装的 Codex 不受影响 —— 删的是安装包文件，不是应用；丢掉的只是回退能力。
+ */
+async function clearCachedPackages({ downloadDirectory } = {}) {
+  const directory = resolveDownloadDirectory(downloadDirectory);
+  const { code, stdout, stderr } = await ps.captureScript(bundledScript("clear-cached-codex-packages.ps1"), {
+    values: { "-DownloadDirectory": directory },
+  });
+  if (code !== 0) throw new Error(ps.describeFailure({ code, stdout, stderr }));
+  return parseClearedPackages(stdout);
 }
 
 /**
@@ -675,6 +723,7 @@ module.exports = {
   verifySignature,
   installCodex,
   listCachedPackages,
+  clearCachedPackages,
   tailInstallLog,
   launchCodex,
   repairBundles,

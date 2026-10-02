@@ -35,7 +35,7 @@ param(
     # 默认关 —— 提权是调用方显式同意的结果，脚本自己不该在没人看着的时候弹窗。
     [switch]$AllowElevation,
 
-    # 安装包缓存目录 —— 装完之后在这个目录里剪枝（保留最近 2 个，见模块里的保留策略）。
+    # 安装包缓存目录 —— 装完之后在这个目录里剪枝（默认保留最近 2 个，见模块里的保留策略）。
     #
     # 必须由调用方告诉 worker，不能让 worker 从 $PackagePath 反推：桌面应用允许把缓存
     # 换到别的盘，而 -PackagePath 是调用方给什么就是什么（旧包、手工下的包都行）。
@@ -43,6 +43,15 @@ param(
     # 不传时退回「安装包所在目录」：插件 CLI（check-codex-update.ps1 把包下到 downloads/
     # 之后调本脚本）走的就是这条，与既有行为一致。
     [string]$DownloadDirectory,
+
+    # 一个旧安装包都不删。桌面应用带它（缓存的增与清由用户自己决定，见模块里的说明），
+    # 每日自动化不带。
+    #
+    # 它必须由**本进程**转交给分离的 worker：剪枝实际发生在 worker 里（那是唯一「装完就
+    # 知道新版本号、且正站在缓存目录里」的地方），而 worker 是另一个进程，父进程的命令行
+    # 参数不会自动继承 —— 少了这行转发，桌面应用传进来的 -KeepAll 会在 worker 那侧失效，
+    # 缓存照旧被剪掉，用户看到的是「明明改成了不限制，装完一次还是只剩 2 个」。
+    [switch]$KeepAll,
 
     [switch]$Worker,
 
@@ -308,6 +317,10 @@ if (-not $Worker -and -not $ElevatedWorker) {
         $arguments += "-AllowElevation"
     }
 
+    if ($KeepAll) {
+        $arguments += "-KeepAll"
+    }
+
     if (-not [string]::IsNullOrWhiteSpace($DownloadDirectory)) {
         $arguments += @("-DownloadDirectory", $DownloadDirectory)
     }
@@ -451,7 +464,8 @@ try {
     $removedPaths = @(Remove-SupersededCodexPackageFiles `
         -DownloadDirectory $cacheDirectory `
         -InstalledVersion $installedVersion `
-        -PackageName $PackageName)
+        -PackageName $PackageName `
+        -KeepAll:$KeepAll)
 
     if ($removedPaths.Count -eq 0) {
         Write-InstallLog "No superseded package file to remove; keeping cached installers for rollback."

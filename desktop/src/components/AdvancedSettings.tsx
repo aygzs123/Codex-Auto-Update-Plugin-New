@@ -1,7 +1,11 @@
 import type { Settings } from "../types";
 
 /**
- * 高级设置：安装包缓存目录 + Codex 本体装在哪儿。
+ * 高级设置：Codex 本体装在哪儿 + 日志目录 / 复制诊断信息。
+ *
+ * 缓存目录**不在这里**了，搬去了上面的「安装包缓存」卡片：那张卡片标题上写着缓存占了
+ * 多少（`3 个 · 2.34 GB`），而「占了多少」和「放在哪个盘」是同一个问题的两半，分在两张
+ * 卡片里用户就得自己对。这里保留 installLocation，因为它是另一个问题。
  *
  * 关于「能不能设置 Codex 的安装位置」：不能，而这正是要把它**显示出来**的原因。
  * MSIX 应用装到哪个盘由 Windows 的部署服务决定（Add-AppxPackage 不带 -Volume 就
@@ -11,15 +15,13 @@ import type { Settings } from "../types";
  *      让「装哪儿了、C 盘是不是被占了」有据可查，而不是靠猜；
  *   2. 给出 Windows 自己那条改默认盘的口子（「新的应用将保存到」），而不是假装
  *      我们能替他改。
- * 真正由本应用控制的是上面的缓存目录：安装包（几百 MB）先下到那里再交给系统安装，
- * 换盘放它是能省 C 盘空间的。
+ * 真正由本应用控制的是缓存目录（在上面的卡片里）：安装包（几百 MB）先下到那里再交给
+ * 系统安装，换盘放它是能省 C 盘空间的。
  */
 export function AdvancedSettings({
   settings,
   installLocation,
   cacheDirectory,
-  onPick,
-  onClear,
   onOpen,
   onOpenStorageSettings,
   onCopyDiagnostics,
@@ -34,43 +36,16 @@ export function AdvancedSettings({
    * 同一张卡片上两个控件对同一件事给出两种答案。判据只留在 store 那一处。
    */
   cacheDirectory: string;
-  onPick: () => void;
-  onClear: () => void;
   onOpen: (path: string) => void;
   onOpenStorageSettings: () => void;
   onCopyDiagnostics: () => void;
 }) {
   if (!settings) return null;
-  const custom = (settings.downloadDirectory ?? "").trim();
 
   return (
     <details className="panel settings-card">
       <summary>高级设置</summary>
       <div className="settings-body">
-        <label className="field-label" htmlFor="download-directory">
-          安装包缓存目录
-        </label>
-        <div className="path-row">
-          <input
-            id="download-directory"
-            className="field-input"
-            readOnly
-            value={custom || settings.defaultDownloadDirectory}
-            title={custom || settings.defaultDownloadDirectory}
-          />
-          <button type="button" className="button" onClick={onPick}>
-            浏览…
-          </button>
-          {custom && (
-            <button type="button" className="button" onClick={onClear}>
-              恢复默认
-            </button>
-          )}
-        </div>
-        <p className="field-help">
-          下载的安装包和安装日志放在这里，可以换到别的盘。这是本应用唯一能替你选的目录。
-        </p>
-
         <label className="field-label" htmlFor="install-location">
           Codex 本体安装位置（由 Windows 决定，只读）
         </label>

@@ -9,7 +9,7 @@
 //（路径里带的用户名是按需的 —— 没有它，日志路径就没法定位）。
 
 import type { CachedPackageList, HealthReport, Settings, UpdateReport } from "../types";
-import { formatClock, formatStamp, healthComponentText, healthOverallText, healthStateText } from "./format";
+import { formatBytes, formatClock, formatStamp, healthComponentText, healthOverallText, healthStateText } from "./format";
 
 export interface DiagnosticsInput {
   status: HealthReport | null;
@@ -59,7 +59,16 @@ export function diagnosticsText(input: DiagnosticsInput): string {
   if (status?.appUserModelId) lines.push(`AppUserModelId：${status.appUserModelId}`);
 
   lines.push(`缓存目录：${cacheDirectory || "未知"}`);
-  lines.push(`缓存里的安装包：${cachedPackages ? `${cachedPackages.packages.length} 个` : "未枚举"}`);
+  // 个数和占用一起写：缓存不再自动清理之后，「同事说 C 盘满了」这条线索的第一站就是这里。
+  // 只写个数没法判断严重程度（3 个包可能占了 2.4 GB），只写占用则看不出还有没有可退的版本。
+  const cachedBytes = (cachedPackages?.packages ?? []).reduce((sum, pkg) => sum + (pkg.sizeBytes || 0), 0);
+  lines.push(
+    `缓存里的安装包：${
+      cachedPackages ? `${cachedPackages.packages.length} 个，共 ${formatBytes(cachedBytes)}` : "未枚举"
+    }`,
+  );
+  // 缓存保留策略也要写：看到这份文本的人得知道「不清理」是当前的设计，不是出了故障。
+  lines.push("缓存保留策略：不自动清理（由用户在「安装包缓存」卡片里手动清空）");
   lines.push(`自定义缓存目录：${(settings?.downloadDirectory ?? "").trim() || "（未设置，用默认）"}`);
   lines.push(`最近一次安装日志：${installLogPath || "本次运行还没有安装记录"}`);
 

@@ -185,6 +185,13 @@ h3 { margin-bottom: 9px; font-size: 15px; font-weight: 500; }
 .button:disabled { cursor: not-allowed; opacity: .45; transform: none; }
 .link-button { padding: 0; border: 0; color: var(--brand); background: transparent; font-size: 12px; text-decoration: underline; }
 
+/* 会删东西的链接按钮（目前只有「清空缓存」）。
+   用语义色而不是品牌蓝：它和旁边那几个「打开目录」不是一个量级的动作，颜色一样的话
+   一排四个下划线文字看上去完全等价，而其中一个会真的删掉用户的安装包。
+   置灰状态要能被看出来 —— 忙的时候它不可点，但必须还在原地、还看得出是什么。 */
+.link-button.danger { color: var(--danger); }
+.link-button:disabled { color: var(--text-3); cursor: not-allowed; text-decoration: none; }
+
 /* ---------- 进度 ---------- */
 .activity-card { padding: 22px 24px; }
 .progress-line { justify-content: space-between; gap: 12px; color: var(--text-2); font-size: 12px; }

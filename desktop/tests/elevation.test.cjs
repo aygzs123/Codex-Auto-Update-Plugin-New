@@ -82,9 +82,13 @@ test("桌面端：一键更新与回退都带上 -AllowElevation", () => {
   // 谁也装不回去，回退功能等于废掉。
   assert.match(
     codexSource,
-    /flags: allowDowngrade \? \["-AllowElevation", "-AllowDowngrade"\] : \["-AllowElevation"\]/,
+    /flags: allowDowngrade\s*\?\s*\["-AllowElevation", "-AllowDowngrade", KEEP_ALL_CACHE\]\s*:\s*\["-AllowElevation", KEEP_ALL_CACHE\]/,
     "installCodex 必须无条件带 -AllowElevation",
   );
+  // 无条件 = 两个分支里都有，不能只写在降级那一支上。
+  const flags = codexSource.match(/flags: allowDowngrade[\s\S]*?\],/)[0];
+  const elevationCount = (flags.match(/"-AllowElevation"/g) ?? []).length;
+  assert.equal(elevationCount, 2, `两个分支都要有 -AllowElevation，实际 ${elevationCount} 处`);
 });
 
 test("worker：提权分支排在「Worker started」之前，且只做关 + 装", () => {

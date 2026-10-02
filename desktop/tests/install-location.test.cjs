@@ -174,7 +174,7 @@ test("缓存目录：三个入口都用共享判据，组件不许自己去解�
   // 三处：原生菜单的打开动作 + 两张卡片各一处 cacheDirectory。
   assert.ok(uses.length >= 3, `App.tsx 里应有三处使用共享判据，实际 ${uses.length} 处`);
   // 卡片必须拿到算好的路径（props 传进去），而不是自己读设置。
-  // 注意：AdvancedSettings 里出现 defaultDownloadDirectory 是**正当的** ——
+  // 注意：CacheSettings 里出现 settings.defaultDownloadDirectory 是**正当的** ——
   // 那是输入框的占位提示（「不填就用这个」），不是打开的目标。所以这里不禁止这个标识符，
   // 只钉「由 App 传进来」这条。
   assert.match(app, /cacheDirectory=\{effectiveDownloadDirectory\(/, "卡片的 cacheDirectory 必须由 App 算好传进去");
@@ -182,7 +182,9 @@ test("缓存目录：三个入口都用共享判据，组件不许自己去解�
   // 算好传进来」这句话本身 —— 不剥注释，负向断言就会因为注释而恒假（正向断言则会恒真）。
   const stripComments = (source) =>
     source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1");
-  for (const name of ["AdvancedSettings.tsx", "VersionHistory.tsx"]) {
+  // 缓存目录那一行搬去了 CacheSettings（它和「占了多少」是同一个问题的两半），
+  // AdvancedSettings 仍然有「打开缓存目录」的链接，所以两者都得继续接收这个 prop。
+  for (const name of ["CacheSettings.tsx", "AdvancedSettings.tsx", "VersionHistory.tsx"]) {
     const text = stripComments(read("src", "components", name));
     assert.ok(
       !/effectiveDownloadDirectory/.test(text),

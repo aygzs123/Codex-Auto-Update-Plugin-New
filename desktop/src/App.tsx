@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { AdvancedSettings } from "./components/AdvancedSettings";
 import { ActivityPanel } from "./components/ActivityPanel";
 import { BackgroundSettings } from "./components/BackgroundSettings";
+import { CacheSettings } from "./components/CacheSettings";
 import { HealthPanel } from "./components/HealthPanel";
 import { NoticeDialog } from "./components/NoticeDialog";
 import { TitleBar } from "./components/TitleBar";
@@ -241,6 +242,7 @@ export default function App() {
     repairing,
     rollingBack,
     checkingUpdate,
+    clearingCache,
     error,
     notice,
     settings,
@@ -255,7 +257,8 @@ export default function App() {
     launch,
     pickDirectory,
     saveDownloadDirectory,
-    saveBackgroundOptions,
+    saveOptions,
+    clearCache,
     copyDiagnostics,
     openPath,
     openStorageSettings,
@@ -297,6 +300,10 @@ export default function App() {
 
   // 「上次检查 14:32」。查过才显示 —— 写「上次检查 --:--」还不如不写。
   const lastCheckClock = formatClock(lastCheckAt);
+
+  // 「版本历史」卡片的显示开关。`!== false` 而不是真值判断：老配置文件里没有这个键，
+  // 读出来是 undefined，那时必须显示（默认开），不能因为「假值」把卡片藏起来。
+  const showVersionHistory = settings?.showVersionHistory !== false;
   const lastCheckLabel = lastCheckClock ? `上次检查 ${lastCheckClock}` : "";
 
   const onPrimary = () => {
@@ -358,15 +365,26 @@ export default function App() {
               </p>
             )}
 
+            <CacheSettings
+              settings={settings}
+              cachedPackages={cachedPackages}
+              // 和「版本历史」卡片、worker 剪枝用的是同一个目录，判据只在 store 里。
+              cacheDirectory={effectiveDownloadDirectory({ settings, cachedPackages })}
+              busy={busy}
+              clearingCache={clearingCache}
+              onPick={() => void pickDirectory()}
+              onResetDirectory={() => void saveDownloadDirectory("")}
+              onOpen={(path) => void openPath(path)}
+              onToggleVersionHistory={(next) => void saveOptions({ showVersionHistory: next })}
+              onClearCache={() => void clearCache()}
+            />
+
             <AdvancedSettings
               settings={settings}
               // 安装位置取健康检查里那份真实路径（可能不在 C 盘）。健康自检刚跑过时
               // 以它为准，否则用启动时那份状态。
               installLocation={(healthDetail ?? status)?.installLocation ?? null}
-              // 和「版本历史」卡片、worker 剪枝用的是同一个目录，判据只在 store 里。
               cacheDirectory={effectiveDownloadDirectory({ settings, cachedPackages })}
-              onPick={() => void pickDirectory()}
-              onClear={() => void saveDownloadDirectory("")}
               onOpen={(path) => void openPath(path)}
               onOpenStorageSettings={() => void openStorageSettings()}
               onCopyDiagnostics={() => void copyDiagnostics()}
@@ -374,17 +392,21 @@ export default function App() {
 
             <BackgroundSettings
               settings={settings}
-              onToggle={(key, value) => void saveBackgroundOptions({ [key]: value })}
+              onToggle={(key, value) => void saveOptions({ [key]: value })}
             />
 
-            <VersionHistory
-              cachedPackages={cachedPackages}
-              cacheDirectory={effectiveDownloadDirectory({ settings, cachedPackages })}
-              busy={busy}
-              rollingBack={rollingBack}
-              onRollback={(pkg) => void rollback(pkg)}
-              onOpenDirectory={(path) => void openPath(path)}
-            />
+            {/* 可以整张关掉（开关在「安装包缓存」里，默认显示）。关掉的只是这张卡片，
+                缓存里的安装包、以及失败告警里的回退入口都不受影响。 */}
+            {showVersionHistory && (
+              <VersionHistory
+                cachedPackages={cachedPackages}
+                cacheDirectory={effectiveDownloadDirectory({ settings, cachedPackages })}
+                busy={busy}
+                rollingBack={rollingBack}
+                onRollback={(pkg) => void rollback(pkg)}
+                onOpenDirectory={(path) => void openPath(path)}
+              />
+            )}
 
             <HealthPanel
               health={healthDetail ?? status}

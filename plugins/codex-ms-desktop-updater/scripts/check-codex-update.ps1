@@ -10,6 +10,12 @@ param(
     [switch]$AllowElevation,
 
     [switch]$NoProxy,
+
+    # 剪枝时一个都不删（桌面应用带这个开关，见模块里的说明）。
+    #
+    # 它只影响「装完之后清理旧安装包」这一步，不影响检查、下载、安装任何一环；
+    # 每日自动化不带，仍然按默认的 KeepCount 保留最近 2 个。
+    [switch]$KeepAll,
     [string]$StoreUrl = "https://apps.microsoft.com/detail/9plm9xgg6vks?hl=en-GB&gl=HK",
     [string]$Ring = "Retail",
     [string]$Architecture = "x64",
@@ -64,7 +70,8 @@ Write-Host ("Update available: {0}" -f $updateAvailable)
 $removedPackagePaths = Remove-SupersededCodexPackageFiles `
     -DownloadDirectory $DownloadDirectory `
     -InstalledVersion $installedVersion `
-    -PackageName $PackageName
+    -PackageName $PackageName `
+    -KeepAll:$KeepAll
 if ($removedPackagePaths.Count -gt 0) {
     Write-Host ("Removed {0} superseded package file(s) from download cache:" -f $removedPackagePaths.Count)
     foreach ($removedPackagePath in $removedPackagePaths) {
@@ -94,7 +101,8 @@ if ($Install) {
     $removedAfterInstall = Remove-SupersededCodexPackageFiles `
         -DownloadDirectory $DownloadDirectory `
         -InstalledVersion $installedVersionAfterInstall `
-        -PackageName $PackageName
+        -PackageName $PackageName `
+        -KeepAll:$KeepAll
     if ($removedAfterInstall.Count -gt 0) {
         Write-Host ("Removed {0} superseded package file(s) after install:" -f $removedAfterInstall.Count)
         foreach ($removedPackagePath in $removedAfterInstall) {
