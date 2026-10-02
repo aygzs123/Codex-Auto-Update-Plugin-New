@@ -102,6 +102,16 @@ const noticeOpen = process.argv.includes("--notice");
 // 「已是最新」、主按钮是「打开 Codex」、次按钮「仅检查更新」隐去，而且**没有弹任何对话框**。
 const upToDateScenario = process.argv.includes("--up-to-date");
 
+// --boot：启动的**第一段** —— 只读本机（get_settings → get_status），网络那一步还没开始。
+//
+// 用户原话：「读取本机的时候应该给一下更好的提示吧，不然不知道」。这一段走得很快（两条本地
+// 命令，一次 IPC 往返），所以以前界面从空白直接蹦出一个版本号，中间发生过什么没人交代。
+//
+// 为什么非要单开一条渲染场景：别的场景全都在等 `phase !== "checking"`（那是它们的前提），
+// 只有这里把**第一条命令挂住**，让界面停在 checking 态上。没有它，主区那段提示就只有源码
+// 文本断言 —— 那只证明字符串写在代码里，证明不了它真的画在屏幕上、也没被别的分支盖掉。
+const bootHold = process.argv.includes("--boot");
+
 // --checking：「检查更新」跑到一半（网络往返挂住不返回）时的界面。
 //
 // 这条场景钉的是一个交互问题：命令跑着的时候，所有能再触发命令的入口都必须点不动。
@@ -256,6 +266,10 @@ const commandArgs = {};
 // --checking 场景里被挂住的 check_update，按调用顺序排队；测试侧调用 release() 放行。
 const releaseHeldUpdate = [];
 const releaseUpdate = () => releaseHeldUpdate.splice(0).forEach((resolve) => resolve());
+// --boot 场景里被挂住的 get_settings：bootstrap 的第一条命令，挂住它，界面就停在
+// 「正在读取本机」那一段上。放行之后启动照常往下走。
+const releaseHeldBoot = [];
+const releaseBoot = () => releaseHeldBoot.splice(0).forEach((resolve) => resolve());
 // --rollback 场景里被挂住的 install_codex，同上。
 const releaseHeldInstall = [];
 const releaseInstall = () => releaseHeldInstall.splice(0).forEach((resolve) => resolve());
@@ -268,6 +282,19 @@ function registerStubHandlers() {
     commandArgs[command] = args || {};
     switch (command) {
       case "get_settings":
+        // --boot 场景把它挂住：它是 bootstrap 的第一条命令，卡在这里界面就老老实实待在
+        // 「正在读取本机」那一段。真实运行时这一段只有一次 IPC 往返，不挂住根本量不到。
+        if (bootHold) {
+          return new Promise((resolve) => {
+            releaseHeldBoot.push(() =>
+              resolve({
+                downloadDirectory: "",
+                defaultDownloadDirectory: "C:\\Users\\me\\AppData\\Roaming\\Codex Updater\\downloads",
+                logsDirectory: "C:\\Users\\me\\AppData\\Roaming\\Codex Updater\\logs",
+              }),
+            );
+          });
+        }
         return {
           downloadDirectory: "",
           defaultDownloadDirectory: "C:\\Users\\me\\AppData\\Roaming\\Codex Updater\\downloads",
@@ -416,6 +443,13 @@ async function inspect(window) {
       hasAppShell: !!document.querySelector(".app-shell"),
       styleSheetCount: document.styleSheets.length,
       heading: text(".hero-card h1"),
+      // 主区那枚小标题（Up to date / Installed / One-click Setup / Local check）。
+      // 它也得跟着启动阶段走：第一段还没拿到 status，按老写法会掉到「One-click Setup」。
+      eyebrow: text(".hero-card .eyebrow"),
+      // 主区副标题。用户明确要求「读取本机的时候应该给一下更好的提示吧，不然不知道」——
+      // 启动是「只读本机」→「联网查最新版」两段，副标题是唯一能交代中间态的地方：
+      // 第一段要说清在读什么且不联网，第二段要自己声明查询还在飞。
+      lede: text(".hero-card .lede"),
       // 顶栏那一行（已安装 X · 已是最新 / 可更新到 Y）。启动自动检查的结论就落在它上面，
       // 是「开机就知道是不是最新」这件事在界面上的唯一落点。
       build: text(".build"),
@@ -792,6 +826,62 @@ async function main() {
   window.webContents.on("console-message", recordConsoleMessage);
 
   await window.loadFile(indexPath);
+
+  // --boot：故意**不**等它退出 checking 态，就停在这一段上量。它是自成一体的早期出口，
+  // 不掺进下面那套「先跑完所有交互、最后统一断言」的流程里 —— 那些交互的前提都是启动已经就绪。
+  if (bootHold) {
+    const bootDeadline = Date.now() + 10_000;
+    let bootReport = await inspect(window);
+    while (Date.now() < bootDeadline && bootReport.phase !== "checking") {
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      bootReport = await inspect(window);
+    }
+    const bootProblems = [];
+    if (bootReport.phase !== "checking") {
+      bootProblems.push(`界面没停在「正在读取本机」那一段（phase=${bootReport.phase}）`);
+    }
+    // 主区大字必须自己说清在读本机 —— 以前这里写的是「正在检查 Codex 状态」，含糊到
+    // 用户不知道它在读什么，也不知道后面还有一步。
+    if (!bootReport.heading.includes("读取本机")) {
+      bootProblems.push(`读取本机时主区标题没说清在读本机：${bootReport.heading}`);
+    }
+    // 「只读本机，不联网」这半句是重点：它交代了这只是第一段，后面还有一次网络往返。
+    if (!bootReport.lede.includes("只读本机") || !bootReport.lede.includes("不联网")) {
+      bootProblems.push(`读取本机时没说清这一步不联网、后面还有一步：${bootReport.lede}`);
+    }
+    // 小标题也要跟着阶段走。老写法在这时候掉到「One-click Setup」——标题说着在读取本机，
+    // 小标题却在承诺一键安装，两句话互相拆台。
+    if (bootReport.eyebrow !== "Local check") {
+      bootProblems.push(`读取本机时小标题不正确（不该承诺一键安装）：${bootReport.eyebrow}`);
+    }
+    // 两段式最硬的证据：本机还没读完，网络那一步一个字节都不该发出去。
+    if ((commandCalls.check_update || 0) !== 0) {
+      bootProblems.push(`本机还没读完就发了更新检查，实际 ${commandCalls.check_update} 次`);
+    }
+    if (screenshotDir) {
+      mkdirSync(screenshotDir, { recursive: true });
+      const image = await window.webContents.capturePage();
+      writeFileSync(join(screenshotDir, "boot.png"), image.toPNG());
+      console.log(`  截图：${join(screenshotDir, "boot.png")}`);
+    }
+    // 放行，让这条命令有个正常归宿（挂着的 Promise 不该带进进程退出）。
+    releaseBoot();
+    if (bootProblems.length > 0) {
+      console.error("✗ 渲染冒烟测试失败：");
+      for (const problem of bootProblems) console.error(`  - ${problem}`);
+      console.log(`  实测主区：${bootReport.heading} / ${bootReport.lede}（小标题 ${bootReport.eyebrow}）`);
+      app.exit(1);
+      return;
+    }
+    console.log("✓ 渲染冒烟测试通过（启动第一段：正在读取本机场景）");
+    console.log(`  主区标题：${bootReport.heading}`);
+    console.log(`  主区副标题：${bootReport.lede}`);
+    console.log(`  主区小标题：${bootReport.eyebrow}`);
+    console.log(`  此刻发出的 check_update：${commandCalls.check_update || 0} 次（两段式：本机读完才联网）`);
+    app.exit(0);
+    return;
+  }
+
   // 等 IPC 往返完成、界面退出 checking 态。轮询而不是固定等待，避免慢机器上误报。
   // 注意不能只等「标题非空」：checking 态本身就有标题，那样会立刻退出。
   const deadline = Date.now() + 10_000;
@@ -1355,6 +1445,18 @@ async function main() {
       // ——编一个「已是最新」比什么都不说更糟。
       problems.push(`结论未回来时主区标题未反映已安装状态：${report.heading}`);
     }
+    // --checking 是唯一能看到「本机读完了、结论还在网络上飞」这个中间态的场景：它把每一次
+    // check_update 都挂住了。用户原话：「读取本机的时候应该给一下更好的提示吧，不然不知道」
+    // —— 这几秒里主区只写「已安装 X」，一个看起来已经定稿的答案，用户会以为查完了、只是没
+    // 查到最新版。副标题必须自己声明还有一步在跑。
+    if (checkingHold) {
+      if (!report.lede.includes("正在向") || !report.lede.includes("查询最新版本")) {
+        problems.push(`结论还在路上时主区没说自己还在查（用户无从知道它没查完）：${report.lede}`);
+      }
+    } else if (report.lede.includes("正在向")) {
+      // 反过来：结论已经落地了还挂着「正在查询」，就是一句过期的谎话。
+      problems.push(`结论已经回来了，主区还挂着「正在查询」：${report.lede}`);
+    }
     if (report.healthRows !== 5) problems.push(`健康诊断应渲染 5 个组件行，实际 ${report.healthRows} 个`);
     // 夹具照抄真机形状，五项里 wsl-cli 是 missing，所以结论就该是「部分资源缺失」。
     // 这条只是把夹具本身钉住（脚本对任何非 ok 组件都判 degraded）——
@@ -1746,6 +1848,7 @@ async function main() {
   if (problems.length > 0) {
     console.error("✗ 渲染冒烟测试失败：");
     for (const problem of problems) console.error(`  - ${problem}`);
+    console.log(`  实测主区：${report.heading} / ${report.lede}`);
     console.log(`  实测路径行按钮：[${(report.pathRowButtons ?? []).map((b) => `${b.label} ${b.width}×${b.height} ${b.lineBoxes}行`).join(" | ")}]`);
     if (report.notice?.present) {
       const d = report.notice;
@@ -1786,6 +1889,9 @@ async function main() {
   console.log(`  根节点子元素：${report.rootChildren}`);
   console.log(`  样式表数量：${report.styleSheetCount}`);
   console.log(`  主区标题：${report.heading}`);
+  // 副标题也要印出来：启动两段（只读本机 → 联网查最新版）的中间态全靠它交代，
+  // 只打标题的话，「到底哪一段没说话」在日志里看不出来。
+  console.log(`  主区副标题：${report.lede}`);
   console.log(`  主操作按钮：${report.ctaLabel}`);
   console.log(`  健康组件行：${report.healthRows}（结论：${report.verdict}）`);
   if (report.cache) {

@@ -189,6 +189,38 @@ test("主区标题给出更新结论，而不是只报「已安装 X」", () => 
   assert.match(app, /title = `已安装 \$\{version \?\? "Codex"\}`/, "结论未回来时的退路文案不能丢");
 });
 
+test("读本机、查最新版这两段中间态，主区自己说清在干什么", () => {
+  // 用户原话：「读取本机的时候应该给一下更好的提示吧，不然不知道」。启动是两段的：先只读本机
+  // （Get-AppxPackage + 资源清单，不走网络），再联网查最新版。两段的中间态原来都是一片沉默 ——
+  // 用户看到的只是界面从空白蹦出一个版本号，再自己变成结论，中间发生过什么全靠猜。
+  //
+  // 第一段：说清在读什么、读的是哪儿、以及它不联网 ——「不联网」这句是重点，它让用户知道
+  // 后面还有一步，而不是「这就是全部了」。
+  assert.match(app, /title = "正在读取本机状态"/, "读本机时主区没有说自己正在读本机");
+  assert.match(app, /这一步只读本机，不联网/, "读本机时没说清这一步不联网、后面还有一步");
+  // 小标题也得跟着阶段走：这段时间还没拿到 status，按老写法会掉到「One-click Setup」——
+  // 标题说着「正在读取本机状态」，小标题却在承诺一键安装，两句话互相拆台。
+  assert.match(app, /phase === "checking"\s*\?\s*"Local check"/, "读本机时小标题仍会承诺一键安装");
+  // 第二段：本机读完了、结论还在网络上飞。必须由 checkingUpdate 驱动，且要说出来。
+  assert.match(
+    app,
+    /const \{ phase, status, checkingUpdate \} = useAppStore\(\);/,
+    "主区没订阅 checkingUpdate，就没法知道查询还在飞",
+  );
+  assert.match(app, /\} else if \(checkingUpdate\) \{/, "「结论在飞」这一段没有被 checkingUpdate 把关");
+  assert.match(
+    app,
+    /正在向 Microsoft Store 分发源查询最新版本…/,
+    "结论还在路上时主区没说自己还在查 —— 那行「已安装 X」看起来就是最终答案",
+  );
+  // 这一段必须排在「已是最新 / 可更新到」之后：结论一旦回来就先说结论，不能还挂着「正在查询」。
+  const inFlight = app.indexOf("} else if (checkingUpdate) {");
+  assert.ok(
+    inFlight > app.indexOf("title = `可更新到 ${availableVersion}`"),
+    "「正在查询」必须让位给已经回来的结论，否则会出现「已是最新版」旁边还写着「正在查询」",
+  );
+});
+
 // ---------- runner ----------
 
 let failed = 0;

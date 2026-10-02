@@ -91,7 +91,7 @@ function Hero({
   upToDate: boolean;
   availableVersion: string | null;
 }) {
-  const { phase, status } = useAppStore();
+  const { phase, status, checkingUpdate } = useAppStore();
   const installed = status?.installed ?? false;
   const version = status?.version ?? null;
 
@@ -100,8 +100,12 @@ function Hero({
     "从 Microsoft Store 官方分发源获取最新版本，校验 OpenAI 签名后自动安装并启动。不会改动你已有的 Codex 配置；若该版本声明了 Windows 服务，安装时会弹一次 UAC 授权。";
 
   if (phase === "checking") {
-    title = "正在检查 Codex 状态";
-    lede = "读取已安装的版本与启动所需资源。";
+    // 启动分两段：先只读本机（这一步，`Get-AppxPackage` + 资源清单，不走网络），再联网查最新版。
+    // 这一段快得一闪而过，界面空白期又恰好是最容易让人以为「卡住了」的时候，所以文案一次说清
+    // 三件事：在读什么、读的是哪儿、接下来还有一步。用户原话：「读取本机的时候应该给一下更好
+    // 的提示吧，不然不知道」——说不清，用户看到的就是界面从空白直接蹦出一个版本号。
+    title = "正在读取本机状态";
+    lede = "查已安装的版本、装在哪个盘、启动所需资源是否齐全。这一步只读本机，不联网。";
   } else if (installed) {
     // 主区这行大字是全页最显眼的一处，它要回答的是**「我是不是最新版」**——用户接着要做
     // 的决定（点不点那颗按钮）取决于它，而「装没装」顶栏那行已经说过了。这里原先只写
@@ -119,6 +123,13 @@ function Hero({
       // 有新版时两个版本号都要在：标题给结论（可更新到哪一版），副标题交代现在装的是哪一版。
       title = `可更新到 ${availableVersion}`;
       lede = `当前已安装 ${version ?? "未知版本"}。${health}`;
+    } else if (checkingUpdate) {
+      // 本机已经读完了、更新结论还在网络上飞。这几秒里主区大字写着「已安装 X」—— 一个看起来
+      // 已经定稿的答案，用户看到的就是「先给了个版本号，然后才进入检测」，中间发生过什么没人
+      // 交代（用户原话：「顶栏显示了版本号，然后再进入检测判断是不是最新版本」）。本地这两项
+      // 确实是现成的，照常给；把在飞的那一步接在后面，让它自己声明「还没查完」。
+      title = `已安装 ${version ?? "Codex"}`;
+      lede = `${health} · 正在向 Microsoft Store 分发源查询最新版本…`;
     } else {
       // 结论还没回来（没查 / 查失败）时才退回「已安装 X」—— 这时候确实没有结论可说，
       // 编一个「已是最新」比什么都不说更糟。
@@ -130,7 +141,16 @@ function Hero({
   return (
     <section className="panel hero-card">
       <p className="eyebrow">
-        {upToDate ? "Up to date" : installed ? "Installed" : "One-click Setup"}
+        {/* 这枚小标题也必须跟着阶段走。启动第一段还没拿到 status，按老写法会掉到
+            「One-click Setup」——标题正说着「正在读取本机状态」，小标题却在承诺一键安装，
+            两句话互相拆台。 */}
+        {phase === "checking"
+          ? "Local check"
+          : upToDate
+            ? "Up to date"
+            : installed
+              ? "Installed"
+              : "One-click Setup"}
       </p>
       <h1>{title}</h1>
       <p className="lede">{lede}</p>
