@@ -66,6 +66,13 @@ export interface UpdateReport {
   updateAvailable: boolean | null;
   downloadedPath: string | null;
   skipped: boolean;
+  /**
+   * 这次检查顺带从下载缓存里剪掉的旧包（脚本按「保留最近两个」剪枝）。
+   *
+   * 即便只是 `-CheckOnly` 不下载，脚本也会执行剪枝 —— 所以检查完可能真的少了文件，
+   * 「版本历史」卡片要跟着刷新，否则它列的是已经不在磁盘上的包。
+   */
+  removedCacheFiles: string[];
   downloadDirectory: string;
 }
 

@@ -88,7 +88,17 @@ const healthPartial = process.argv.includes("--health-partial");
 // 以前是右下角 toast：用户点完按钮，视线还在主区（视线的另一头），很容易整个错过
 // —— 而这里弹的是命令唯一的反馈。所以这个场景断言的不是「它出现了」，而是
 // 「居中、完整落在视口内、按钮点得到、点完真的会关掉」。
+//
+// 顺带钉住自动检查的反面：启动时那次检查**不弹模态**。用户什么都没要求，启动就糊一个
+// 居中对话框是打扰，所以这个场景要断言「手动点之前页面上没有 .modal-dialog」。
 const noticeOpen = process.argv.includes("--notice");
+
+// --up-to-date：桩返回「装的已经是最新版本」（installed == available == 26.930.2377.0）。
+//
+// 用户原话：「启动的时候只读取了版本，不会识别到是不是最新的版本号……要点检查版本号
+// 才能查到是最新的」。这个场景就是那句话的回归测试：启动后什么都不点，顶栏就该写着
+// 「已是最新」、主按钮是「打开 Codex」、次按钮「仅检查更新」隐去，而且**没有弹任何对话框**。
+const upToDateScenario = process.argv.includes("--up-to-date");
 
 // --checking：「检查更新」跑到一半（网络往返挂住不返回）时的界面。
 //
@@ -97,6 +107,11 @@ const noticeOpen = process.argv.includes("--notice");
 // 检查、连弹好几次结论；反过来，标志位若漏清，界面会永久锁死，用户只能重启应用。
 // 所以这里两件事都要看到：跑着时点不动（按钮 disabled + 再发命令不产生第二次 IPC），
 // 跑完之后重新点得动。
+//
+// 桩把**每一次** check_update 都挂住，所以启动时那次自动检查本身就提供了「命令跑着」
+// 的窗口 —— 这正是本场景现在挂住的那条命令。这一点很关键：断言从「用户点出来的那次」
+// 变成了「启动自动跑的那次」，如果照旧按「先发一次再连点」写，计数虽然还是 1，
+// 但证明的东西已经换了，属于假绿。
 const checkingHold = process.argv.includes("--checking");
 
 // --rollback：点一次「版本历史」里的回退按钮，走完整条真实链路
@@ -187,7 +202,24 @@ const STUB_UPDATE = {
   updateAvailable: true,
   downloadedPath: null,
   skipped: false,
+  // 真实脚本即便只跑 `-CheckOnly` 也会剪枝下载缓存（保留最近两个），所以这个字段有内容
+  // 是常态；夹具给空数组，因为这里没有真的动过磁盘。
+  removedCacheFiles: [],
   downloadDirectory: "C:\\Users\\me\\AppData\\Roaming\\Codex Updater\\downloads",
+};
+
+// --up-to-date 用的结论：装的就是最新版 —— updateAvailable=false，且
+// installedVersion 与 availableVersion 相等（脚本判「已是最新」就是这两个相等）。
+//
+// installedVersion 必须与 STUB_HEALTH 里那个版本一致：真实运行里 get_status 与
+// check_update 报的是同一个已安装版本，夹具让它们不一致就造出了一种现实中不存在的形状，
+// 顶栏那行断言也就不再说明任何事情。
+const STUB_UPDATE_LATEST = {
+  ...STUB_UPDATE,
+  installedVersion: "26.901.6511.0",
+  availableVersion: "26.901.6511.0",
+  fileName: null,
+  updateAvailable: false,
 };
 
 // 「版本历史」卡片的数据源。三行一次覆盖三种 relation：比当前新的（已下载未安装）、
@@ -327,12 +359,15 @@ function registerStubHandlers() {
         // --checking 场景把它挂住：真实的 check_update 是一次网络往返，几秒不回话。
         // 返回一个由测试侧决定何时 resolve 的 Promise，就有了一段稳定的「命令跑着」
         // 的窗口可以用来观察界面。每次调用各挂一个，方便反复观察。
+        //
+        // 注意挂住的是**每一次**调用，包括启动时那次自动检查 —— 这正好给场景提供了
+        // 一个真实形状的「启动就在忙」的窗口（用户什么都没点，界面已经置灰）。
         if (checkingHold) {
           return new Promise((resolve) => {
             releaseHeldUpdate.push(() => resolve({ ...STUB_UPDATE }));
           });
         }
-        return { ...STUB_UPDATE };
+        return { ...(upToDateScenario ? STUB_UPDATE_LATEST : STUB_UPDATE) };
       default:
         return {};
     }
@@ -370,8 +405,14 @@ async function inspect(window) {
       hasAppShell: !!document.querySelector(".app-shell"),
       styleSheetCount: document.styleSheets.length,
       heading: text(".hero-card h1"),
+      // 顶栏那一行（已安装 X · 已是最新 / 可更新到 Y）。启动自动检查的结论就落在它上面，
+      // 是「开机就知道是不是最新」这件事在界面上的唯一落点。
+      build: text(".build"),
       ctaLabel: cta ? cta.textContent.trim() : "",
       ctaDisabled: cta ? cta.disabled : null,
+      // 主区一共几颗按钮。次按钮「仅检查更新」在「已是最新」时应当隐去 ——
+      // 已经没什么可检查的了，留着一颗只会让人以为还有别的事可做。
+      ctaCount: document.querySelectorAll(".cta-row button").length,
       healthRows: document.querySelectorAll(".health-row").length,
       verdict: text(".verdict"),
       fieldHelp: Array.from(document.querySelectorAll(".field-help")).map((node) => node.textContent.trim()).join(" | "),
@@ -718,6 +759,46 @@ async function main() {
     report = await inspect(window);
   }
 
+  // 还要等启动时那次自动检查的结论落到顶栏。
+  //
+  // bootstrap 刻意不 await 它（界面就绪不该等一次网络往返），所以「phase 不再是 checking」
+  // 只说明设置与状态到手了，不说明那次检查回来了。少了这段等待，下面所有关于主按钮文案和
+  // 顶栏的断言都是在跟一次异步 IPC 赛跑 —— 快机器上绿、慢机器上红，而且红得没有规律。
+  //
+  // 两个场景不适用：未安装时不查（没有「是不是最新」可言），--checking 场景里桩把
+  // 每一次 check_update 都挂住（那正是它要演的「命令一直在跑」）。
+  const expectAutoCheck = !notInstalled && !checkingHold;
+  let autoCheckLanded = !expectAutoCheck;
+  // 这里还不能往 problems 里推 —— 它在后面才声明（本文件是「先把所有场景跑完、再统一
+  // 断言」的写法）。先记下来，等 problems 就位再并进去，免得变成一颗定时炸弹：
+  // 只有失败路径才会执行到，平时永远发现不了。
+  let autoCheckProblem = null;
+  if (expectAutoCheck) {
+    const autoDeadline = Date.now() + 5000;
+    while (Date.now() < autoDeadline) {
+      const build = await window.webContents.executeJavaScript(
+        `(() => { const node = document.querySelector(".build"); return node ? node.textContent.trim() : ""; })()`,
+      );
+      if (build.includes("已是最新") || build.includes("可更新到")) {
+        autoCheckLanded = true;
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    report = await inspect(window);
+    if (!autoCheckLanded) {
+      autoCheckProblem =
+        `启动后 5 秒内顶栏既没有「已是最新」也没有「可更新到」，自动检查的结论没有落到界面上：${report.build || "(空)"}`;
+    }
+  }
+
+  // 启动刚就绪、用户还没点过任何东西的那一刻。
+  //
+  // 后面几个场景会真的去点按钮、覆盖 report，而「自动检查不弹模态」这条断言说的恰恰是
+  // 启动这一刻 —— 拿被覆盖后的 report 去断，等于说「手动点检查之后没有对话框」，
+  // 那是另一件事（而且必然是错的）。
+  const startupReport = report;
+
   // 展开「高级设置」，让路径行（输入框 + 浏览按钮）真的进入布局再测量。
   // 折叠状态下 <details> 内容不参与布局，量不到裁切。必须在状态数据到位之后做：
   // settings 未就绪时 AdvancedSettings 渲染 null，那时还拿不到这个元素。
@@ -786,6 +867,10 @@ async function main() {
 
   // 「检查更新」的结论场景：走真实的菜单链路（菜单 → runAction → store.checkUpdate
   // → IPC），桩返回「有新版本」，于是结论变成「发现新版本 26.902.100.0」。
+  //
+  // 这里同时也是「自动检查不弹模态」的对照面：启动那次检查跑完时页面上**没有**对话框
+  // （断言在下面那个分支里），而手动点这一次必须弹。两条放在一起才说明差别是「谁触发的」
+  // 而不是「弹框坏了」。
   let noticeAfterClose = null;
   if (noticeOpen) {
     window.webContents.send("desktop:menu-action", "check");
@@ -811,24 +896,45 @@ async function main() {
   }
 
   // 「命令跑着的时候点不动」场景。步骤与要证明的事一一对应：
-  //   1. 发一次「检查更新」，桩把它挂住 → 命令处于跑着的状态；
-  //   2. 再发三次 → 若闸门有效，IPC 只该发生一次（连点不叠加）；
+  //   1. **启动时那次自动检查**被桩挂住 —— 用户什么都没点，界面已经处于「命令跑着」；
+  //   2. 再发四次菜单动作 → 若闸门有效，IPC 不该增加（连点不叠加）；
   //   3. 量界面：主按钮、次按钮、诊断按钮、五个命令菜单项都必须 disabled，
   //      而「打开日志目录 / 打开缓存目录」必须仍然可点（它们秒回，且正是跑着时最有用的）；
   //   4. 放行 → 界面必须重新可点（标志位漏清就是永久锁死，用户只能重启应用）。
+  //
+  // 第 1 步以前是「先发一次检查」：那时启动不查更新，界面上没有任何命令在跑。现在启动
+  // 自己就会发起一次检查，所以那条命令**就是**自动检查。这一步不是换个写法而已 ——
+  // 如果照旧先发一次再连点，计数仍然是 1，但证明的已经变成「用户点出来的那次的闸门」，
+  // 自动检查那次的闸门没人验，属于假绿。
   let busyReport = null;
   let idleReport = null;
   if (checkingHold) {
-    window.webContents.send("desktop:menu-action", "check");
-    await new Promise((resolve) => setTimeout(resolve, 300));
-    // 连点三次：菜单动作（runAction）是渲染进程里所有入口的汇合点，这里走的就是真实链路。
-    for (let attempt = 0; attempt < 3; attempt++) {
+    // 等界面进入「忙」。轮询而不是固定 sleep：慢机器上固定等待会把「还没开始」量成
+    // 「没有置灰」，又快机器上白等。判据是主按钮 disabled —— 那是 busy 的直接投影。
+    const busyDeadline = Date.now() + 5000;
+    let busy = false;
+    while (Date.now() < busyDeadline) {
+      busy = await window.webContents.executeJavaScript(
+        `(() => { const b = document.querySelector(".cta-row .button.primary"); return !!(b && b.disabled); })()`,
+      );
+      if (busy) break;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    // 启动就应该在查：这条断言正是「自动检查会置忙」的证据，也是本次改动的回归点。
+    if (!busy) problems.push("启动自动检查没有让界面进入「命令跑着」态（主按钮仍然可点）");
+    // 记下连点之前的基线，后面按增量断言。用绝对值 1 会把「自动检查压根没发生」
+    // 也算成通过 —— 而那种情况下这一整段什么都没证明。
+    const beforeFlood = commandCalls.check_update || 0;
+
+    // 连点四次：菜单动作（runAction）是渲染进程里所有入口的汇合点，这里走的就是真实链路。
+    for (let attempt = 0; attempt < 4; attempt++) {
       window.webContents.send("desktop:menu-action", "check");
     }
     await new Promise((resolve) => setTimeout(resolve, 300));
     report = await inspect(window);
     busyReport = await readBusyState(window);
     busyReport.checkUpdateCalls = commandCalls.check_update || 0;
+    busyReport.callsBeforeFlood = beforeFlood;
     busyReport.ctaLabel = report.ctaLabel;
     busyReport.phase = report.phase;
 
@@ -934,6 +1040,7 @@ async function main() {
   }
 
   const problems = [];
+  if (autoCheckProblem) problems.push(autoCheckProblem);
   if (failedLoads.length > 0) problems.push(`资源加载失败：\n    ${failedLoads.join("\n    ")}`);
   if (packaged) {
     const missingScripts = PACKAGED_SCRIPTS.filter((name) => !existsSync(join(packagedScriptsDir, name)));
@@ -1065,8 +1172,7 @@ async function main() {
     if (!activity.logText.includes("Worker started for package")) problems.push("日志区缺少 worker 启动行");
     if (!activity.logText.includes("06:20:41")) problems.push("日志区缺少带时间戳的清理告警行");
   } else if (notInstalled) {
-    // 这个 exe 的主用途：新机器上把 Codex 装起来。启动只读状态、不查更新，
-    // 所以此时按钮就该是「一键安装 Codex」。
+    // 这个 exe 的主用途：新机器上把 Codex 装起来。此时按钮就该是「一键安装 Codex」。
     if (!report.heading.includes("一键安装")) problems.push(`未安装时主区标题不正确：${report.heading}`);
     if (report.ctaLabel !== "一键安装 Codex") problems.push(`未安装时主操作按钮文案不正确：${report.ctaLabel}`);
     if (report.verdict !== "未安装") problems.push(`未安装时健康结论不正确：${report.verdict}`);
@@ -1074,12 +1180,54 @@ async function main() {
     if (!report.fieldHelp.includes("尚未检测到已安装")) problems.push("未安装时缺少说明文案");
     // 新机器上没有插件可物化，这条提示不该出现。
     if (report.fieldHelp.includes("插件资源尚未物化")) problems.push("未安装时不应提示插件未物化");
+    // 没装就没有「是不是最新」可言，启动那次自动检查必须一个字节都不发 ——
+    // 它是一次真实网络往返，不该在用户还没装任何东西的时候就跑起来。
+    if ((commandCalls.check_update || 0) !== 0) {
+      problems.push(`未安装时不该发起更新检查，check_update 实际发出 ${commandCalls.check_update} 次`);
+    }
+    if (report.build !== "未安装") problems.push(`未安装时顶栏文案不正确：${report.build}`);
   } else {
-    // 启动只读设置与状态、不查更新，所以此时还不知道有没有新版本。
-    // 按钮应当是「一键检查并更新」——点一下就把查更新→下载→安装整条链走完。
-    // --notice 场景例外：它本来就执行了一次真实的检查，按钮随结果变成「一键更新到 X」，
-    // 那是正确行为，这里按初始态断言会误报。
-    if (!noticeOpen && report.ctaLabel !== "一键检查并更新") problems.push(`主操作按钮文案不正确：${report.ctaLabel}`);
+    // 启动会自动查一次，所以界面**开机就知道**有没有新版本 —— 这正是本次改动本身。
+    // 断言分两种形状：默认桩说「有 26.902.100.0 可更新」，--up-to-date 桩说「已是最新」。
+    //
+    // --checking 场景例外：它量的是「命令还跑着」那一刻，结论当然还没回来，顶栏与按钮
+    // 仍是旧样子。那一条路由 busyReport 单独证明「启动确实发起了检查」，这里跳过 ——
+    // 否则就是把「还没查完」当成「没查」。
+    if (expectAutoCheck && upToDateScenario) {
+      // 用户抱怨的原话就是这一条：以前启动只读版本，必须点一下「检查版本号」才知道已经在
+      // 最新版上。现在什么都不点，顶栏就该写着「已是最新」。
+      if (!report.build.includes("已是最新")) {
+        problems.push(`已是最新时顶栏没有说出来（用户仍要点一下才知道）：${report.build || "(空)"}`);
+      }
+      if (report.build.includes("可更新到")) problems.push(`已是最新时不该同时出现「可更新到」：${report.build}`);
+      if (!report.build.includes("已安装 26.901.6511.0")) problems.push(`顶栏缺少已安装版本：${report.build}`);
+      // 结论落到按钮上：既然是最新，主按钮就是「打开 Codex」，「仅检查更新」没有存在意义
+      //（它只会重复一遍已经知道的结论，还多弹一个对话框）。
+      if (report.ctaLabel !== "打开 Codex") problems.push(`已是最新时主操作按钮应为「打开 Codex」：${report.ctaLabel}`);
+      if (report.ctaCount !== 1) {
+        problems.push(`已是最新时主区应只剩 1 颗按钮（「仅检查更新」应隐去），实际 ${report.ctaCount} 颗`);
+      }
+      // 自动检查必须是静默的：用户什么都没点，页面上不该冒出任何对话框。
+      // 看的是 startupReport（用户还没点过任何东西的那一刻）—— --notice 场景后面会
+      // 手动点一次检查、故意弹出对话框，拿那时的 report 来断「没有对话框」就是张冠李戴。
+      if (startupReport.notice?.present) {
+        problems.push(`启动自动检查弹出了模态对话框：${startupReport.notice.message || startupReport.notice.heading}`);
+      }
+    } else if (expectAutoCheck) {
+      // 默认桩说「有新版可更新」，所以启动后主按钮应当是「一键更新到 X」——
+      // 这条同时是「自动检查真的跑了、结论真的到了界面」的端到端证据。
+      if (report.ctaLabel !== "一键更新到 26.902.100.0") {
+        problems.push(`启动自动检查的结论没有落到主按钮上：${report.ctaLabel}`);
+      }
+      if (!report.build.includes("已安装 26.901.6511.0")) problems.push(`顶栏缺少已安装版本：${report.build}`);
+      if (!report.build.includes("可更新到 26.902.100.0")) {
+        problems.push(`顶栏没有写出可更新到的版本（用户仍要点一下才知道）：${report.build || "(空)"}`);
+      }
+      // 有新版可更新 ≠ 该弹对话框。用户什么都没点 —— 弹框是手动检查的表达方式。
+      if (startupReport.notice?.present) {
+        problems.push(`启动自动检查弹出了模态对话框：${startupReport.notice.message || startupReport.notice.heading}`);
+      }
+    }
     if (!report.heading.includes("已安装")) problems.push(`主区标题未反映已安装状态：${report.heading}`);
     if (report.healthRows !== 5) problems.push(`健康诊断应渲染 5 个组件行，实际 ${report.healthRows} 个`);
     // 夹具照抄真机形状，五项里 wsl-cli 是 missing，所以结论就该是「部分资源缺失」。
@@ -1288,6 +1436,11 @@ async function main() {
 
   // 「检查更新」的结论：必须是看得见的模态，且必须关得掉。
   if (noticeOpen) {
+    // 对照面：手动点之前（启动自动检查已经跑完了）页面上不该有任何对话框。
+    // 与下面那条「点了之后必须弹」合起来，说明弹不弹取决于**谁触发的**，不是弹框坏了。
+    if (startupReport.notice?.present) {
+      problems.push("启动自动检查弹出了模态对话框：用户什么都没点，不该有对话框挡在面前");
+    }
     const dialog = report.notice;
     if (dialog?.toast) problems.push("页面上仍有 .toast 浮层（右下角提示已废弃）");
     if (!dialog?.present) {
@@ -1348,9 +1501,17 @@ async function main() {
         else if (item.disabled) problems.push(`命令执行中不该禁用目录项：${label}`);
       }
 
-      // 连点不叠加：上面发了 4 次「检查更新」，真跑到的只该是第一次。
-      if (busyReport.checkUpdateCalls !== 1) {
-        problems.push(`命令执行中重复点击叠加了命令：check_update 实际发出 ${busyReport.checkUpdateCalls} 次（应为 1 次）`);
+      // 连点不叠加：上面又发了 4 次「检查更新」（此前还发过 3 次），真跑到的只该是
+      // **启动时那一次**自动检查。按增量断言而不是绝对值 1：绝对值在「自动检查压根没
+      // 发生」时同样成立（0 之后还是 0 也不算增加），那这一整段就什么都没证明。
+      if (busyReport.checkUpdateCalls !== busyReport.callsBeforeFlood) {
+        problems.push(
+          `命令执行中重复点击叠加了命令：check_update 从 ${busyReport.callsBeforeFlood} 次变成 ` +
+            `${busyReport.checkUpdateCalls} 次（连点不该产生新的 IPC）`,
+        );
+      }
+      if (busyReport.callsBeforeFlood !== 1) {
+        problems.push(`启动自动检查应当恰好发出一次 check_update，实际 ${busyReport.callsBeforeFlood} 次`);
       }
       if (busyReport.phase !== "ready") {
         problems.push(`检查更新不应改动安装状态，phase 变成了 ${busyReport.phase}`);
@@ -1379,7 +1540,9 @@ async function main() {
       ? "notice"
       : checkingHold
         ? "checking"
-        : launchNoWindow
+        : upToDateScenario
+          ? "up-to-date"
+          : launchNoWindow
           ? "launch-no-window"
           : rollbackScenario
             ? "rollback"

@@ -1,6 +1,6 @@
 {
   "name": "codex-ms-desktop-updater",
-  "version": "0.4.7",
+  "version": "0.4.8",
   "description": "Checks for Codex Desktop MSIX updates and keeps the local updater plugin current from GitHub.",
   "author": {
     "name": "lijunyuan",

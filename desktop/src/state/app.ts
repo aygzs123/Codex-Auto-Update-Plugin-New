@@ -18,6 +18,17 @@ import type {
 
 const MAX_LOG_LINES = 300;
 
+/**
+ * 启动时那次自动检查的等待上限。
+ *
+ * `electron/ps.cjs` 没有进程级超时（全文没有 timeout / kill），而脚本侧
+ * `Invoke-RgAdguardQuery` 最多重试 3 轮、每轮还有 HTTPS→HTTP→curl 三层兜底，
+ * 一次查询在坏网络下能拖很久。手动检查卡住只是「用户自己那次没了」，自动检查卡住
+ * 却是**启动即永久锁死** —— checkingUpdate 为真意味着所有入口一直置灰，
+ * 而用户什么都没点，连「是不是我在等」都无从判断。所以这一条路自带超时。
+ */
+const AUTO_CHECK_TIMEOUT_MS = 30_000;
+
 interface AppState {
   phase: Phase;
   status: HealthReport | null;
@@ -58,6 +69,13 @@ interface AppState {
   /** 回退到指定的旧版本安装包。走的是和安装同一条链路，只是允许降级。 */
   rollback: (pkg: CachedPackage) => Promise<void>;
   checkUpdate: () => Promise<void>;
+  /**
+   * 启动时静默判断「装的是不是最新版本」。
+   *
+   * 与 checkUpdate（用户点出来的那次）共用同一个命令，差别全在**怎么呈现**：
+   * 不弹模态、失败不报错、有超时。详见实现处的注释。
+   */
+  autoCheckUpdate: () => Promise<void>;
   runHealthProbe: () => Promise<void>;
   runRepair: () => Promise<void>;
   launch: () => Promise<void>;
@@ -157,6 +175,19 @@ export const useAppStore = create<AppState>((set, get) => ({
     // 缓存清单；而 refreshCachedPackages 恰恰不依赖那次失败的调用（拿不到 settings 时
     // 主进程会按默认缓存目录解析），没有理由跳过。
     await get().refreshCachedPackages();
+
+    // 启动时顺手问一次「是不是最新版本」，答案落在顶栏那一行。
+    // 以前只读本机版本，用户要点一下才知道 —— 而点上那一下还会弹一个居中模态。
+    //
+    // 这两处的**顺序不能动**：
+    //   1. 必须在上面 set({ phase: "ready" }) 之后。isCommandRunning 把
+    //      phase === "checking" 也算忙，此时调用会被 autoCheckUpdate 自己那道
+    //      「已经有一条命令在跑」的 guard 挡掉，功能静默失效 —— 不报错、不变红，
+    //      只是永远不查，最难查的一种坏法。
+    //   2. 必须在 refreshCachedPackages 之后。检查会顺带剪枝缓存目录，反过来就
+    //      会让「版本历史」卡片显示一批刚被删掉的包。
+    // 不 await：界面就绪不该等一次网络往返，检查期间次按钮照旧显示「正在检查…」。
+    void get().autoCheckUpdate();
   },
 
   /**
@@ -209,6 +240,11 @@ export const useAppStore = create<AppState>((set, get) => ({
       const installResult = await invokeCommand<InstallResult>("install_codex", { path: download.path });
       const status = await invokeCommand<HealthReport>("get_status").catch(() => get().status);
       set({ installResult, status, phase: "done", activity: null, healthDetail: null });
+      // 此刻 update 还是安装**前**那份报告，照它渲染顶栏就会自相矛盾：
+      // 「已安装 26.930.2377.0 · 可更新到 26.930.2377.0」。刚装完，重新问一次
+      // 「是不是最新」，结论才会回到「已是最新」。此时 phase 已是 done，
+      // autoCheckUpdate 那道忙判据不会把它自己挡掉。
+      void get().autoCheckUpdate();
     } catch (error) {
       set({ phase: "failed", activity: null, error: describe(error) });
     } finally {
@@ -300,6 +336,53 @@ export const useAppStore = create<AppState>((set, get) => ({
     } catch (error) {
       set({ error: describe(error) });
     } finally {
+      set({ checkingUpdate: false });
+    }
+  },
+
+  /**
+   * 启动时静默判断「装的是不是最新版本」。
+   *
+   * 与 checkUpdate 共用 `check_update` 这一条命令，差别全在**怎么呈现**，三处都是刻意的：
+   *
+   *   1. 不弹模态：不碰 notice。用户什么都没要求，启动就糊一个居中对话框是打扰；
+   *      结论落在顶栏那一行（App.tsx 的 .build），看一眼就有。
+   *   2. 失败不报错：不碰 error。离线、分发源抽风都不该把启动界面染红 ——
+   *      那比「不知道结论」更糟。静默退回未检查态，用户想确认还可以自己点一次。
+   *   3. 有超时：见 AUTO_CHECK_TIMEOUT_MS 那段注释，这条是守卫不是优化。
+   */
+  autoCheckUpdate: async () => {
+    const current = get();
+    // 没装就没有「是不是最新」可言；顺带避开未安装时顶栏那句「可更新到 X」的怪语义。
+    if (!current.status?.installed) return;
+    // 已经有命令在跑就不叠。忙判据仍然只有 isCommandRunning 一处，不另写一份。
+    if (isCommandRunning(current)) return;
+
+    set({ checkingUpdate: true });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const update = await Promise.race([
+        invokeCommand<UpdateReport>("check_update", {
+          downloadDirectory: get().settings?.downloadDirectory ?? "",
+        }),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error(`自动检查超过 ${AUTO_CHECK_TIMEOUT_MS / 1000} 秒未返回`)),
+            AUTO_CHECK_TIMEOUT_MS,
+          );
+        }),
+      ]);
+      set({ update });
+      // -CheckOnly 不下载，但仍然会剪枝缓存目录（脚本按「保留最近两个」剪），
+      // 所以缓存清单可能真的变了 —— 不刷，「版本历史」卡片列的就是已经不在磁盘上的包。
+      if (update.removedCacheFiles?.length) void get().refreshCachedPackages();
+    } catch {
+      // 静默：不碰 error 也不碰 notice。自动检查失败不该在启动界面留下任何痕迹，
+      // update 保持原值（通常是 null = 未检查），顶栏就不显示「已是最新」。
+    } finally {
+      // 必须清：漏清就是所有入口永久置灰，而用户这次什么都没点，只能重启应用。
+      // 超时这条出口尤其要清 —— 超时后那次 PowerShell 还在后台跑，界面得先活过来。
+      if (timer) clearTimeout(timer);
       set({ checkingUpdate: false });
     }
   },

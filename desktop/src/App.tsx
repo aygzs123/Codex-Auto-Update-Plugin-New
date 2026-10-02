@@ -305,6 +305,7 @@ export default function App() {
             </span>
             <span className="build">
               {status?.installed ? `已安装 ${status.version ?? "未知版本"}` : "未安装"}
+              {upToDate ? " · 已是最新" : ""}
               {availableVersion && update?.updateAvailable ? ` · 可更新到 ${availableVersion}` : ""}
             </span>
           </div>
