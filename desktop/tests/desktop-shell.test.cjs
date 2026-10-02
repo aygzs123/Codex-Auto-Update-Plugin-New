@@ -157,6 +157,28 @@ test("只有会改动系统的长命令才拦关窗", () => {
   assert.match(create, /event\.preventDefault\(\)/, "拦下来必须 preventDefault，否则窗口照样关掉");
 });
 
+// ---------- 白名单命令数：文档里那个数字必须是真的 ----------
+//
+// desktop/README.md 写着「只接受 N 个固定白名单命令」。这个数字**错了两次**：
+// 上一批加命令时没改（实际 16、文档写 17），这一批又顺手 +1 写成 18（实际 17）。
+// 两次都是「按加一条就 +1」推的，没人真的数过。它不会让任何东西坏掉，所以永远不会有人
+// 发现 —— 正好是那种只靠人自觉就一定漂移的数字，改成从源码数出来比对。
+test("README 里的白名单命令数与 main.cjs 实际数量一致", () => {
+  const allowList = main.match(/const allowedCommands = new Set\(\[([^\]]*)\]\)/);
+  assert.ok(allowList, "找不到 allowedCommands");
+  const actual = new Set([...allowList[1].matchAll(/"([^"]+)"/g)].map((match) => match[1]));
+
+  const claimed = read("README.md").match(/只接受 (\d+) 个固定白名单命令/);
+  assert.ok(claimed, "README 里找不到白名单命令数那句");
+  assert.equal(
+    Number(claimed[1]),
+    actual.size,
+    `README 说 ${claimed[1]} 个，main.cjs 里实际 ${actual.size} 个：加命令时顺手改一下那个数字`,
+  );
+  // 顺带钉住「清空缓存」确实在白名单里 —— 界面那颗按钮点了要有人接。
+  assert.ok(actual.has("clear_cached_packages"), "清空缓存必须在白名单里");
+});
+
 test("计数只在长命令上加减，且退出路径不被拦", () => {
   const handler = main.match(/ipcMain\.handle\("desktop:command"[\s\S]*?\r?\n\}\);/);
   const body = handler[0];

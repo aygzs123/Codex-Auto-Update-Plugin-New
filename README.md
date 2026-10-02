@@ -609,7 +609,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File docs\codex-desktop-encrypted
 
 插件版本唯一来源是
 `plugins\codex-ms-desktop-updater\.codex-plugin\plugin.json` 的 `version` 字段。
-推送仓库改动前请递增该版本(数值 SemVer 风格,当前 `0.6.0`)。GitHub CI 在 PR 和
+推送仓库改动前请递增该版本(数值 SemVer 风格,当前 `0.6.1`)。GitHub CI 在 PR 和
 push 到 `main` 时运行 `tools\Test-PluginVersionBump.ps1`,要求 head 版本大于
 基线版本。
 

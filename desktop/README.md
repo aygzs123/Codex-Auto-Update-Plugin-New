@@ -91,7 +91,7 @@ AGENTS.md 那条「后台运行绝不弹 UAC」）。
   `app.asar` 里的 `.ps1`）。开发态则直接读 `desktop/resources/scripts/`。
   所以这个 exe 是自包含的：机器上没装过插件也能用，也不会去动
   `%USERPROFILE%\.codex` 下的任何东西。
-- Electron 主进程只接受 18 个固定白名单命令（见 `electron/main.cjs` 的
+- Electron 主进程只接受 17 个固定白名单命令（见 `electron/main.cjs` 的
   `allowedCommands`），不接受任意 shell 命令，也不接受渲染进程传脚本路径；
   每个命令对应的脚本名在主进程里写死。剪贴板只有**写**（`copy_text`）没有**读** ——
   一个能把用户剪贴板内容读走的接口没有任何存在的理由；要复制的文本由渲染进程拼
