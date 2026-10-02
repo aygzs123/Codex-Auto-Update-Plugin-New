@@ -26,6 +26,12 @@ npm run electron:build
 安装包输出到 `desktop/release/`，默认是当前用户安装的 NSIS `.exe`
 （不需要管理员权限）。
 
+打包的最后一步会自动跑 `npm run verify:package`：校验 `app.asar` 的索引自洽（所有条目
+声明的大小之和必须恰好铺满数据区），再真的把 exe 拉起来确认它没有立刻退出。索引错位是
+**静默**的 —— 用户双击后只会「没反应」，没有窗口也没有日志，所以这条验收不允许跳过。
+本机若撞上 `EPERM ... rename 'win-unpacked.tmp' -> 'win-unpacked'`，改用
+`npm run electron:build:local`（详见仓库根 `README.md`）。
+
 ## 运行时边界
 
 - **脚本是内置的，不是调用已安装的插件。** 仓库里 `plugins/` 下的 PowerShell 脚本由

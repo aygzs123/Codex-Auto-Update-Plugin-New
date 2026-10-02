@@ -293,6 +293,7 @@ wsl-cli / wsl-rg / cua_node)的实际状态与路径,启动探测能识别「进
 npm test                        # 解析层 + PowerShell 拼装层 + 窗口/结论对话框/安装位置/命令锁接线单元测试,不联网
 npm run verify:render           # 把 dist/ 真正加载进 Electron,跑八个界面场景
 npm run verify:render:packaged  # 同上(已安装/未安装/窗口缺失),校验 app.asar 产物与 asar 外的脚本布局
+npm run verify:package          # 验收打包产物:app.asar 索引自洽 + 打出来的 exe 真的能起来(需先打包)
 npm run verify:backend         # 真实调用内置脚本(含网络),校验解析对得上脚本输出
 npm run verify:simulate        # 模拟安装流程:不下载不安装,只跑进度管线
 npm run verify:launch          # 真机启动一次 Codex 并等主窗口(会真的把 Codex 拉起来)
@@ -318,6 +319,20 @@ npm run verify:launch          # 真机启动一次 Codex 并等主窗口(会真
 `verify:render:packaged` 跑其中的「已安装 / 未安装 / 窗口缺失」三遍:打包产物才是
 用户真正拿到的那一份,而这两条路径(exe 的主用途、官方 bug 的可见形态)最不能被
 打包差异悄悄弄坏。它同时校验 5 个脚本确实落在 `app.asar` 之外。
+
+`verify:package` 验收的是**产物本身**,已挂进 `electron:build` 与
+`electron:build:local`,所以每次打包都会跑 —— 本地和发 Release 的 CI 都绕不过去。
+它做两件事:一是校验 `app.asar` 的索引自洽,数据区是紧凑排布的,「所有条目声明的大小
+之和」必须**恰好等于**「文件长度 - 数据区起点」,少一个字节就说明写进去的内容和索引记的
+不是同一份,排在错位点之后的条目会整体偏移;二是**真的把打包出来的 exe 拉起来**,
+确认它没有立刻退出。
+
+存在的原因是 2026-10-02 那次事故:索引里 `electron/codex.cjs` 少记了 1 字节,于是排在
+它后面的条目全部前移 1 字节,而 `package.json` 恰好是数据区的最后一条,那 1 字节正好把
+收尾的 `}` 挤出它的声明窗口 —— Electron 报 `Unable to parse .../package.json` 后以退出码
+1 结束,用户双击**毫无反应**:没有窗口、没有日志、没有别的信息。当时两道验证都看不见它:
+`verify:render:packaged` 只从 asar 里读 `dist/` 和脚本目录,而 `dist/` 排在错位点**之前**,
+读出来完全正常;打包出来的 exe 则从来没有被真的启动过一次,CI 构建完就直接传 Release。
 
 `verify:launch` 是**真机**校验,会真的启动 Codex 并等主窗口出现,按时间线打印阶段
 与日志。退出码:`0` 主窗口出现 / `3` 进程在但窗口没出现 / `1` 出错。它不在默认校验
