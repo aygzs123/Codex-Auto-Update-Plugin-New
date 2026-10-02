@@ -17,6 +17,8 @@ contextBridge.exposeInMainWorld("desktop", {
     minimize: () => ipcRenderer.invoke("desktop:window", "minimize"),
     maximize: () => ipcRenderer.invoke("desktop:window", "maximize"),
     close: () => ipcRenderer.invoke("desktop:window", "close"),
+    /** 真正退出应用（不是藏到托盘）。 */
+    quit: () => ipcRenderer.invoke("desktop:window", "quit"),
     // 最大化状态下按钮要显示「还原」图标：先查一次初始值，再订阅后续变化。
     isMaximized: () => ipcRenderer.invoke("desktop:window", "is-maximized"),
     onStateChange: (callback) => {
@@ -24,6 +26,14 @@ contextBridge.exposeInMainWorld("desktop", {
       ipcRenderer.on("desktop:window-state", listener);
       return () => ipcRenderer.removeListener("desktop:window-state", listener);
     },
+  },
+  // 后台模式下主进程每 6 小时敲一次，让界面自己再查一遍「是不是最新」。
+  // 主进程不发命令、只发「该查了」：走的是和启动时完全相同的那条路径（autoCheckUpdate），
+  // 不新增第二条会走网络的代码。
+  onBackgroundCheck: (callback) => {
+    const listener = () => callback();
+    ipcRenderer.on("desktop:background-check", listener);
+    return () => ipcRenderer.removeListener("desktop:background-check", listener);
   },
   drag: {
     start: (screenX, screenY) => ipcRenderer.send("desktop:drag-start", { screenX, screenY }),

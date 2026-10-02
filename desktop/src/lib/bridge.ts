@@ -22,3 +22,9 @@ export function subscribeMenuAction(callback: (action: string) => void): () => v
   const desktop = typeof window !== "undefined" ? window.desktop : undefined;
   return desktop ? desktop.onMenuAction(callback) : () => {};
 }
+
+/** 后台模式的定时复查。主进程只说「该查了」，查什么由 store 决定。 */
+export function subscribeBackgroundCheck(callback: () => void): () => void {
+  const desktop = typeof window !== "undefined" ? window.desktop : undefined;
+  return desktop ? desktop.onBackgroundCheck(callback) : () => {};
+}

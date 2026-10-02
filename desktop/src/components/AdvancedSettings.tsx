@@ -22,6 +22,7 @@ export function AdvancedSettings({
   onClear,
   onOpen,
   onOpenStorageSettings,
+  onCopyDiagnostics,
 }: {
   settings: Settings | null;
   installLocation: string | null;
@@ -37,6 +38,7 @@ export function AdvancedSettings({
   onClear: () => void;
   onOpen: (path: string) => void;
   onOpenStorageSettings: () => void;
+  onCopyDiagnostics: () => void;
 }) {
   if (!settings) return null;
   const custom = (settings.downloadDirectory ?? "").trim();
@@ -97,6 +99,12 @@ export function AdvancedSettings({
           </button>
           <button type="button" className="link-button" onClick={() => onOpen(settings.logsDirectory)}>
             打开日志目录
+          </button>
+          {/* 复制诊断信息：同事报障时点一下就能把现场粘到聊天窗口里，不必截图。
+              刻意不置灰（它不跑命令、瞬间返回），而且最需要它的时刻恰恰是安装刚失败、
+              界面还忙着的那个时候。 */}
+          <button type="button" className="link-button" onClick={onCopyDiagnostics}>
+            复制诊断信息
           </button>
         </div>
       </div>

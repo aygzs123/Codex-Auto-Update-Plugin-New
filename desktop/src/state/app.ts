@@ -1,5 +1,6 @@
 import { create } from "zustand";
-import { invokeCommand, subscribeProgress } from "../lib/bridge";
+import { invokeCommand, subscribeBackgroundCheck, subscribeProgress } from "../lib/bridge";
+import { diagnosticsText } from "../lib/diagnostics";
 import type {
   Activity,
   ActivityId,
@@ -59,6 +60,14 @@ interface AppState {
    * update / notice 上），但它同样是一次网络往返，跑着的时候不许再触发任何命令。
    */
   checkingUpdate: boolean;
+  /**
+   * 上一次「检查更新」拿到结论的时刻（毫秒）。从没查过就是 null。
+   *
+   * 存的是时间戳而不是格式化好的字符串：格式化是渲染的事，存在 state 里的应该是事实。
+   * 手动检查和启动自动检查都会写它 —— 「上次检查」问的是「上一次真的问到答案是什么时候」，
+   * 谁问的不重要。
+   */
+  lastCheckAt: number | null;
   error: string | null;
   notice: string | null;
 
@@ -80,6 +89,15 @@ interface AppState {
   runRepair: () => Promise<void>;
   launch: () => Promise<void>;
   saveDownloadDirectory: (value: string) => Promise<void>;
+  /**
+   * 保存后台常驻相关的开关（托盘 / 开机自启）。
+   *
+   * 传一个**只含要改的键**的 patch：主进程按出现的键组 patch，多传一个会把没打算动的
+   * 设置一起擦掉。
+   */
+  saveBackgroundOptions: (patch: { minimizeToTray?: boolean; launchAtLogin?: boolean }) => Promise<void>;
+  /** 把当前现场拼成一段文本复制到剪贴板，同事报障时不必截图。 */
+  copyDiagnostics: () => Promise<void>;
   pickDirectory: () => Promise<void>;
   openPath: (path: string) => Promise<void>;
   /** 打开 Windows 的「新的应用将保存到」设置页；Codex 装在哪个盘由它决定。 */
@@ -156,6 +174,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   repairing: false,
   rollingBack: false,
   checkingUpdate: false,
+  lastCheckAt: null,
   error: null,
   notice: null,
 
@@ -328,6 +347,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       });
       set({
         update,
+        // 只有真拿到结论才记时间。失败时记的话，顶栏会写着一个「上次检查」而那次其实
+        // 什么都没查到 —— 比不显示更误导人。
+        lastCheckAt: Date.now(),
         notice:
           update.updateAvailable === false
             ? `已是最新版本${update.installedVersion ? `（${update.installedVersion}）` : ""}`
@@ -372,7 +394,13 @@ export const useAppStore = create<AppState>((set, get) => ({
           );
         }),
       ]);
-      set({ update });
+      set({ update, lastCheckAt: Date.now() });
+      // 有新版才提醒，且提醒本身有条件（窗口是否聚焦、这个版本是不是已经提醒过）——
+      // 那三条判据的依据都在主进程手上，所以判断留给主进程，这里只把结论递过去。
+      // 失败静默：本地通知发不出来不该在界面上留下任何痕迹。
+      if (update.updateAvailable && update.availableVersion) {
+        void invokeCommand("notify_update", { version: update.availableVersion }).catch(() => {});
+      }
       // -CheckOnly 不下载，但仍然会剪枝缓存目录（脚本按「保留最近两个」剪），
       // 所以缓存清单可能真的变了 —— 不刷，「版本历史」卡片列的就是已经不在磁盘上的包。
       if (update.removedCacheFiles?.length) void get().refreshCachedPackages();
@@ -462,6 +490,39 @@ export const useAppStore = create<AppState>((set, get) => ({
       // 换了缓存目录，「版本历史」列的还是旧目录里的包 —— 必须跟着刷新。
       // 否则用户改完目录看到的是一份对不上的清单，回退按钮指向的文件也不在新目录里。
       await get().refreshCachedPackages();
+    } catch (error) {
+      set({ error: describe(error) });
+    }
+  },
+
+  saveBackgroundOptions: async (patch) => {
+    try {
+      await invokeCommand<Settings>("save_settings", patch);
+      // 回读而不是本地合并：主进程可能对值做了归一化（Boolean 化），也可能因为没打包
+      // 而没真的写注册表 —— 界面显示的状态应该以主进程实际落盘的为准。
+      const settings = await invokeCommand<Settings>("get_settings");
+      set({ settings });
+    } catch (error) {
+      set({ error: describe(error) });
+    }
+  },
+
+  copyDiagnostics: async () => {
+    try {
+      const state = get();
+      await invokeCommand("copy_text", {
+        text: diagnosticsText({
+          status: state.healthDetail ?? state.status,
+          update: state.update,
+          lastCheckAt: state.lastCheckAt,
+          cachedPackages: state.cachedPackages,
+          settings: state.settings,
+          cacheDirectory: effectiveDownloadDirectory(state),
+          installLogPath: state.installResult?.logPath ?? null,
+        }),
+      });
+      // 必须有回执：剪贴板是看不见的，不给一句话，用户会以为没点着又点一次。
+      set({ notice: "诊断信息已复制到剪贴板，粘贴给对方即可" });
     } catch (error) {
       set({ error: describe(error) });
     }
@@ -577,4 +638,17 @@ function describeSignature(signature: SignatureReport): string {
 /** 在应用启动时订阅一次主进程进度推送。 */
 export function connectProgress(): () => void {
   return subscribeProgress((event) => useAppStore.getState().applyProgress(event));
+}
+
+/**
+ * 后台常驻时的定时复查。
+ *
+ * 主进程只说「该查了」，查什么完全由这里决定 —— 复用启动时那条 autoCheckUpdate
+ *（自带 30 秒超时、不弹模态、失败静默）。刻意不在主进程里直接跑脚本：那会多出第二条
+ * 检查路径，两边的结论迟早会对不上。
+ */
+export function connectBackgroundCheck(): () => void {
+  return subscribeBackgroundCheck(() => {
+    void useAppStore.getState().autoCheckUpdate();
+  });
 }

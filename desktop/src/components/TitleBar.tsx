@@ -4,6 +4,7 @@ import type { PointerEvent as ReactPointerEvent } from "react";
 // command 标记这一项会真跑一条命令，因而「有命令在跑」时要置灰。
 // 打开目录不带这个标记：它只弹一个资源管理器窗口，永远秒回，而且正是在安装/自检
 // 跑着的时候最有用（用户想去看日志）。把它一起禁掉是帮倒忙。
+// 复制诊断信息同理，而且更极端：最需要它的时刻就是安装刚失败、界面还忙着的那个时候。
 const MENU_GROUPS = [
   {
     label: "操作",
@@ -18,6 +19,7 @@ const MENU_GROUPS = [
     items: [
       { label: "健康自检（含窗口探测）", action: "health", command: true },
       { label: "修复资源副本", action: "repair", command: true },
+      { label: "复制诊断信息", action: "copy-diagnostics", command: false },
       { label: "打开日志目录", action: "open-logs", command: false },
       { label: "打开缓存目录", action: "open-cache", command: false },
     ],

@@ -1,26 +1,17 @@
 import { useEffect } from "react";
 import { AdvancedSettings } from "./components/AdvancedSettings";
 import { ActivityPanel } from "./components/ActivityPanel";
+import { BackgroundSettings } from "./components/BackgroundSettings";
 import { HealthPanel } from "./components/HealthPanel";
 import { NoticeDialog } from "./components/NoticeDialog";
 import { TitleBar } from "./components/TitleBar";
 import { VersionHistory } from "./components/VersionHistory";
 import { isElectronRuntime, subscribeMenuAction } from "./lib/bridge";
 import { diagnosisCopy } from "./lib/diagnosis";
-import { healthComponentText } from "./lib/format";
-import { connectProgress, effectiveDownloadDirectory, isCommandRunning, useAppStore } from "./state/app";
+import { formatClock, healthComponentText, healthOverallText } from "./lib/format";
+import { connectBackgroundCheck, connectProgress, effectiveDownloadDirectory, isCommandRunning, useAppStore } from "./state/app";
 
-// degraded 只陈述「有的资源副本不在」，不说后果：组件状态预测不了窗口能不能开，
-// 两个方向都不行（2026-09-07 的真实搬迁 bug 里 win-cli 反倒是 ok 的，而 2026-10-02
-// 一台完全正常的机器上 wsl-cli 就是 missing）。写成「可能无法正常启动」就是那次
-// 误诊的轻症版。能不能开以窗口自检为准。
-const OVERALL_TEXT: Record<string, string> = {
-  ok: "启动所需资源完整",
-  degraded: "部分资源副本不在（是否影响启动以窗口自检为准）",
-  "not-installed": "尚未安装",
-};
-
-/** 会真正跑一条命令的菜单动作。打开目录不算 —— 它只是弹个资源管理器，永远秒回。 */
+/** 会真正跑一条命令的菜单动作。打开目录、复制诊断都不算 —— 它们瞬间返回，永远不冲突。 */
 const COMMAND_ACTIONS = new Set(["check", "install", "launch", "health", "repair"]);
 
 /**
@@ -56,6 +47,14 @@ function runAction(action: string) {
       // 一个空的默认目录，而安装包在别处。判据统一走 effectiveDownloadDirectory。
       void store.openPath(effectiveDownloadDirectory(store));
       break;
+    case "copy-diagnostics":
+      // 即时动作，不列入 COMMAND_ACTIONS：同事报障时点它的时机恰恰是安装刚失败的那一刻，
+      // 那时候界面正忙，把它一起禁掉就等于在最需要的时候不可用。
+      void store.copyDiagnostics();
+      break;
+    case "quit":
+      void window.desktop?.window.quit();
+      break;
     case "minimize":
       void window.desktop?.window.minimize();
       break;
@@ -88,7 +87,7 @@ function Hero({ onPrimary, onSecondary, primaryLabel, secondaryLabel, busy }: {
     lede = "读取已安装的版本与启动所需资源。";
   } else if (installed) {
     title = `已安装 ${version ?? "Codex"}`;
-    lede = OVERALL_TEXT[status?.overall ?? ""] ?? "读取到本机已安装的 Codex Desktop。";
+    lede = healthOverallText(status?.overall) ?? "读取到本机已安装的 Codex Desktop。";
   }
 
   return (
@@ -185,6 +184,13 @@ function ResultBanners() {
         <section className="panel ok-card">
           <h3>安装完成{installResult.version ? ` · ${installResult.version}` : ""}</h3>
           <p>Codex 已经安装并启动完成。之后可以随时回到这个窗口检查更新或运行健康诊断。</p>
+          {/* 装完了，Codex 自己也起来了，更新器留着没有意义 —— 给一个明确的收尾动作，
+              而不是让用户去右上角找那个 ×（开着托盘常驻时那个 × 还只是把它藏起来）。 */}
+          <div className="dash-actions">
+            <button type="button" className="button" onClick={() => runAction("quit")}>
+              关闭更新器
+            </button>
+          </div>
         </section>
       )}
 
@@ -239,6 +245,7 @@ export default function App() {
     notice,
     settings,
     cachedPackages,
+    lastCheckAt,
     bootstrap,
     oneClick,
     checkUpdate,
@@ -248,6 +255,8 @@ export default function App() {
     launch,
     pickDirectory,
     saveDownloadDirectory,
+    saveBackgroundOptions,
+    copyDiagnostics,
     openPath,
     openStorageSettings,
     dismissNotice,
@@ -257,9 +266,12 @@ export default function App() {
     void bootstrap();
     const offProgress = connectProgress();
     const offMenu = subscribeMenuAction(runAction);
+    // 后台常驻时主进程每 6 小时敲一次；走的是启动那条同样的静默检查，不新增第二条路径。
+    const offBackground = connectBackgroundCheck();
     return () => {
       offProgress();
       offMenu();
+      offBackground();
     };
   }, [bootstrap]);
 
@@ -283,6 +295,10 @@ export default function App() {
   // 「正在检查…」，用户就知道是自己在等，不是按钮坏了。
   const secondaryLabel = installed && !upToDate ? (checkingUpdate ? "正在检查…" : "仅检查更新") : undefined;
 
+  // 「上次检查 14:32」。查过才显示 —— 写「上次检查 --:--」还不如不写。
+  const lastCheckClock = formatClock(lastCheckAt);
+  const lastCheckLabel = lastCheckClock ? `上次检查 ${lastCheckClock}` : "";
+
   const onPrimary = () => {
     if (upToDate) void launch();
     else void oneClick();
@@ -303,10 +319,19 @@ export default function App() {
               <i />
               Codex Desktop
             </span>
-            <span className="build">
-              {status?.installed ? `已安装 ${status.version ?? "未知版本"}` : "未安装"}
-              {upToDate ? " · 已是最新" : ""}
-              {availableVersion && update?.updateAvailable ? ` · 可更新到 ${availableVersion}` : ""}
+            {/* .build 与 .last-check 必须是兄弟节点，不能再往里嵌一层：
+                .window-head 是 space-between，直接加第三个孩子会把 .build 挤到中间，
+                所以两者一起包进 .head-meta。 */}
+            <span className="head-meta">
+              <span className="build">
+                {status?.installed ? `已安装 ${status.version ?? "未知版本"}` : "未安装"}
+                {upToDate ? " · 已是最新" : ""}
+                {availableVersion && update?.updateAvailable ? ` · 可更新到 ${availableVersion}` : ""}
+                {/* 启动那次自动检查要跑好几秒，期间顶栏什么都不说，用户不知道它在忙。
+                    只能写纯文本，不能在这里嵌 <span>（有测试按非贪婪正则切这段）。 */}
+                {checkingUpdate ? " · 正在检查…" : ""}
+              </span>
+              {lastCheckLabel && <span className="last-check">{lastCheckLabel}</span>}
             </span>
           </div>
 
@@ -344,6 +369,12 @@ export default function App() {
               onClear={() => void saveDownloadDirectory("")}
               onOpen={(path) => void openPath(path)}
               onOpenStorageSettings={() => void openStorageSettings()}
+              onCopyDiagnostics={() => void copyDiagnostics()}
+            />
+
+            <BackgroundSettings
+              settings={settings}
+              onToggle={(key, value) => void saveBackgroundOptions({ [key]: value })}
             />
 
             <VersionHistory

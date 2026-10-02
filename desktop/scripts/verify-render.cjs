@@ -13,7 +13,7 @@
 //   npm run verify:render           校验 dist/ 构建产物
 //   npm run verify:render:packaged  校验 electron-builder 打包后的 app.asar 内产物
 
-const { app, BrowserWindow, ipcMain } = require("electron");
+const { app, BrowserWindow, clipboard, ipcMain } = require("electron");
 const { existsSync, mkdirSync, writeFileSync } = require("node:fs");
 const { join } = require("node:path");
 
@@ -368,6 +368,15 @@ function registerStubHandlers() {
           });
         }
         return { ...(upToDateScenario ? STUB_UPDATE_LATEST : STUB_UPDATE) };
+      case "copy_text":
+        // 「复制诊断信息」的链路要真的走完才叫验证过：菜单 → runAction → store 拼文本 →
+        // IPC → 剪贴板。这里写进**真实的**系统剪贴板，断言再从主进程读回来。
+        clipboard.writeText(String(args?.text ?? ""));
+        return { ok: true };
+      case "notify_update":
+        // 自动检查拿到「有新版」之后会调它。断言在真机上做不了（开发模式下通知不一定
+        // 显示得出来），这里只确认调用真的发生了，别让它落进默认分支里悄无声息。
+        return { shown: false, reason: "stub" };
       default:
         return {};
     }
@@ -408,6 +417,9 @@ async function inspect(window) {
       // 顶栏那一行（已安装 X · 已是最新 / 可更新到 Y）。启动自动检查的结论就落在它上面，
       // 是「开机就知道是不是最新」这件事在界面上的唯一落点。
       build: text(".build"),
+      // 「上次检查 14:32」。它和 .build 是兄弟节点（不是嵌在里面）—— 嵌进去会破坏
+      // 按 .build 取整行文案的那些断言。
+      lastCheck: text(".last-check"),
       ctaLabel: cta ? cta.textContent.trim() : "",
       ctaDisabled: cta ? cta.disabled : null,
       // 主区一共几颗按钮。次按钮「仅检查更新」在「已是最新」时应当隐去 ——
@@ -1039,6 +1051,40 @@ async function main() {
     }
   }
 
+  // 「诊断 → 复制诊断信息」走一遍完整链路，再从主进程读回剪贴板。
+  //
+  // 这条链路横跨渲染进程与主进程（菜单 → runAction → store 拼文本 → IPC → 剪贴板），
+  // 只看源码文本证明不了它真的通 —— 少接一根线的话，界面会弹一句「已复制」而剪贴板
+  // 里什么都没有，正是那种「看起来成功了」的坏法。
+  let diagnosticsCopied = "";
+  if (menuOpen) {
+    clipboard.writeText("");
+    await window.webContents.executeJavaScript(`(() => {
+      const trigger = document.querySelectorAll(".menu-trigger")[1];
+      if (trigger) trigger.click();
+      return true;
+    })()`);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    await window.webContents.executeJavaScript(`(() => {
+      const popover = document.querySelector(".menu-popover");
+      const item = popover
+        ? [...popover.querySelectorAll("button")].find((button) => button.textContent.includes("复制诊断信息"))
+        : null;
+      if (item) item.click();
+      return !!item;
+    })()`);
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    diagnosticsCopied = clipboard.readText();
+    // 复制成功会弹一句回执（剪贴板是看不见的，不给回执用户会以为没点着）。收掉它，
+    // 否则后面每一处「页面上没有对话框」的断言都会因为这一次点击而失效。
+    await window.webContents.executeJavaScript(`(() => {
+      const button = document.querySelector(".modal-actions button");
+      if (button) button.click();
+      return !!button;
+    })()`);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+
   const problems = [];
   if (autoCheckProblem) problems.push(autoCheckProblem);
   if (failedLoads.length > 0) problems.push(`资源加载失败：\n    ${failedLoads.join("\n    ")}`);
@@ -1148,6 +1194,21 @@ async function main() {
         problems.push(`菜单与窗口按钮重叠了 ${-menuReport.gapToControls}px（窗口太窄时挤在一起）`);
       }
     }
+
+    // 复制出的文本必须能脱离界面单独读懂：报障的人只会粘这一段，没有截图。
+    if (!diagnosticsCopied) {
+      problems.push("「诊断 → 复制诊断信息」没有往剪贴板写任何东西");
+    } else {
+      for (const expected of ["Codex Updater 诊断信息", "已安装", "更新结论", "健康结论", "缓存目录"]) {
+        if (!diagnosticsCopied.includes(expected)) {
+          problems.push(`复制的诊断信息里缺少「${expected}」：\n${diagnosticsCopied}`);
+        }
+      }
+      // 只写结论不写依据是最要命的：说「健康：degraded」而不说是哪个组件，对方还得再问一遍。
+      if (!diagnosticsCopied.includes("WSL 命令行工具")) {
+        problems.push(`诊断信息没有逐项列出资源副本状态：\n${diagnosticsCopied}`);
+      }
+    }
   }
 
   if (installing) {
@@ -1222,6 +1283,11 @@ async function main() {
       if (!report.build.includes("已安装 26.901.6511.0")) problems.push(`顶栏缺少已安装版本：${report.build}`);
       if (!report.build.includes("可更新到 26.902.100.0")) {
         problems.push(`顶栏没有写出可更新到的版本（用户仍要点一下才知道）：${report.build || "(空)"}`);
+      }
+      // 「上次检查 HH:MM」。结论已经出来了，就必须能说出它是什么时候问到的 ——
+      // 一个没有时间戳的「可更新到 X」无法判断是不是上周的残留。
+      if (!/^上次检查 \d{2}:\d{2}$/.test(report.lastCheck)) {
+        problems.push(`顶栏没有写出「上次检查 HH:MM」：${report.lastCheck || "(空)"}`);
       }
       // 有新版可更新 ≠ 该弹对话框。用户什么都没点 —— 弹框是手动检查的表达方式。
       if (startupReport.notice?.present) {
@@ -1486,7 +1552,9 @@ async function main() {
       }
 
       const commandItems = ["检查更新", "一键安装 / 更新", "打开 Codex", "健康自检（含窗口探测）", "修复资源副本"];
-      const instantItems = ["打开日志目录", "打开缓存目录"];
+      // 「复制诊断信息」归在这一档：它不跑命令、瞬间返回，而且最需要它的时刻恰恰是
+      // 安装刚失败、界面还忙着的那个时候 —— 忙时把它一起禁掉就是帮倒忙。
+      const instantItems = ["复制诊断信息", "打开日志目录", "打开缓存目录"];
       const byLabel = new Map((busyReport.menu ?? []).map((item) => [item.label, item]));
       if (byLabel.size === 0) problems.push("命令执行中没有采集到任何菜单项");
       for (const label of commandItems) {

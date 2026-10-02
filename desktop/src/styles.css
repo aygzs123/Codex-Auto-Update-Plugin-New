@@ -1,11 +1,96 @@
 /* 设计语言沿用原型的浅色玻璃拟态：蓝色主色 #1677ff、绿色成功 #158957、圆角面板与
    柔和阴影。这里只保留单页一键流程真正用到的类，原型里那套四步向导的样式
-   （.stepper / .dashboard-* / .complete-* 等）已随流程一起删除。 */
+   （.stepper / .dashboard-* / .complete-* 等）已随流程一起删除。
+
+   颜色一律走下面这套变量：这个应用要发给整个团队用，同事的系统主题不一定跟我们在
+   同一档，跟随系统深浅色是基本要求。字面量散在 60 条规则里的话，深色模式就得把每条
+   规则再抄一遍，抄漏一处就是深色底上的一行黑字 —— 所以只在文件末尾用
+   @media (prefers-color-scheme: dark) 重定义变量，既有规则一条都不动。
+   唯一的例外是卡片标题栏上那三个 mac 圆点：它们本来就是 macOS 的固定配色，
+   不跟着主题变（也与一条测试断言绑着）。 */
 
 :root {
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", "Microsoft YaHei", sans-serif;
-  color: #1f2937;
-  background: #edf1f7;
+
+  /* 文字：一级正文 / 二级说明 / 三级注释 / 禁用 */
+  --text: #1f2937;
+  --text-2: #687386;
+  --text-3: #9aa4b2;
+  --text-4: #a9b2c0;
+  --text-menu: #445064;
+  --text-control: #4a5568;
+
+  /* 品牌与语义色 */
+  --brand: #1677ff;
+  --brand-deep: #0a64d8;
+  --brand-soft: #4b9cff;
+  --ok: #158957;
+  --warn: #b55737;
+  --amber: #b87408;
+  --danger: #e5484d;
+  --danger-deep: #cf3b40;
+
+  /* 页面底色（顶层渐变） */
+  --page: #edf1f7;
+  --page-2: #f9fafc;
+  --page-3: #e6ebf3;
+  --page-glow: rgba(130, 174, 238, .22);
+
+  /* 表面。玻璃拟态靠 alpha 叠出层次，深色下换成深底 + 白 alpha 才是同一套观感。 */
+  --window-bg: rgba(255, 255, 255, .78);
+  --panel-bg: rgba(255, 255, 255, .64);
+  --button-bg: rgba(255, 255, 255, .54);
+  --input-bg: rgba(255, 255, 255, .82);
+  --chip-bg: rgba(255, 255, 255, .6);
+  --row-bg: rgba(255, 255, 255, .5);
+  --modal-bg: #fff;
+  --bar-bg: rgba(250, 251, 253, .88);
+  --head-bg: rgba(250, 251, 253, .62);
+  --popover-bg: rgba(255, 255, 255, .96);
+  --code-bg: rgba(245, 247, 250, .86);
+  --code-bg-2: rgba(245, 247, 250, .9);
+
+  /* 边框：常规 / 次级 / 最浅 */
+  --line: rgba(31, 41, 55, .14);
+  --line-2: rgba(31, 41, 55, .13);
+  --line-3: rgba(31, 41, 55, .12);
+  --line-4: rgba(31, 41, 55, .1);
+
+  /* 中性填充：hover 底、进度槽、徽章底 */
+  --fill: rgba(31, 41, 55, .09);
+  --fill-strong: rgba(31, 41, 55, .15);
+  --fill-soft: rgba(31, 41, 55, .06);
+  --track: rgba(31, 41, 55, .1);
+
+  /* 阴影 */
+  --shadow-window: 0 28px 80px rgba(55, 65, 81, .22);
+  --shadow-panel: 0 10px 28px rgba(64, 78, 99, .06);
+  --shadow-bar: 0 1px 12px rgba(55, 65, 81, .06);
+  --shadow-popover: 0 14px 35px rgba(55, 65, 81, .18);
+  --shadow-button: 0 2px 5px rgba(64, 78, 99, .06);
+  --shadow-modal: 0 28px 80px rgba(55, 65, 81, .3);
+  --shadow-brand: 0 5px 14px rgba(22, 119, 255, .24);
+
+  /* 语义色的浅底与描边 */
+  --brand-tint: rgba(22, 119, 255, .08);
+  --brand-tint-2: rgba(22, 119, 255, .1);
+  --brand-edge: rgba(22, 119, 255, .55);
+  --brand-edge-2: rgba(22, 119, 255, .32);
+  --brand-ring: rgba(22, 119, 255, .12);
+  --ok-tint: rgba(21, 137, 87, .05);
+  --ok-tint-2: rgba(21, 137, 87, .06);
+  --ok-edge: rgba(21, 137, 87, .3);
+  --ok-edge-2: rgba(21, 137, 87, .28);
+  --warn-tint: rgba(181, 87, 55, .05);
+  --warn-tint-2: rgba(181, 87, 55, .06);
+  --warn-edge: rgba(181, 87, 55, .3);
+  --warn-edge-2: rgba(181, 87, 55, .32);
+  --amber-tint: rgba(184, 116, 8, .06);
+  --amber-edge: rgba(184, 116, 8, .3);
+  --scrim: rgba(15, 23, 42, .38);
+
+  color: var(--text);
+  background: var(--page);
   font-synthesis: none;
 }
 * { box-sizing: border-box; }
@@ -16,8 +101,8 @@ body {
   margin: 0;
   min-width: 320px;
   overflow: hidden;
-  background: radial-gradient(circle at 78% 8%, rgba(130, 174, 238, .22), transparent 28rem),
-    linear-gradient(135deg, #edf1f7, #f9fafc 56%, #e6ebf3);
+  background: radial-gradient(circle at 78% 8%, var(--page-glow), transparent 28rem),
+    linear-gradient(135deg, var(--page), var(--page-2) 56%, var(--page-3));
 }
 button, input { font: inherit; }
 button { cursor: pointer; }
@@ -35,49 +120,56 @@ h3 { margin-bottom: 9px; font-size: 15px; font-weight: 500; }
    菜单的 z-index 就被关在这个上下文里了；而内容区的 .window 同样带 backdrop-filter
    也是个层叠上下文，两者同层时按文档顺序比大小 —— 内容在后面，就会连菜单一起盖住
    顶栏。给顶栏一个正 z-index 才能把它整体提到内容之上。 */
-.topbar { position: relative; z-index: 30; display: flex; flex: 0 0 auto; justify-content: space-between; align-items: center; gap: 12px; height: 48px; padding: 0 8px 0 20px; border-bottom: 1px solid rgba(31, 41, 55, .12); background: rgba(250, 251, 253, .88); box-shadow: 0 1px 12px rgba(55, 65, 81, .06); backdrop-filter: blur(20px); user-select: none; cursor: move; }
+.topbar { position: relative; z-index: 30; display: flex; flex: 0 0 auto; justify-content: space-between; align-items: center; gap: 12px; height: 48px; padding: 0 8px 0 20px; border-bottom: 1px solid var(--line-3); background: var(--bar-bg); box-shadow: var(--shadow-bar); backdrop-filter: blur(20px); user-select: none; cursor: move; }
 .brand, .top-actions, .window-title, .progress-line, .subline, .path-row, .signature-row, .health-row, .rollback-row, .dash-actions, .cta-row, .settings-links { display: flex; align-items: center; }
 .brand { gap: 11px; font-size: 14px; }
-.brand-mark { display: grid; place-items: center; width: 34px; height: 34px; border: 1px solid rgba(22, 119, 255, .32); border-radius: 11px; color: #1677ff; background: rgba(22, 119, 255, .08); font-weight: 600; }
-.top-actions, .build, .mini-label, .tab-detail { color: #687386; font-size: 12px; }
+.brand-mark { display: grid; place-items: center; width: 34px; height: 34px; border: 1px solid var(--brand-edge-2); border-radius: 11px; color: var(--brand); background: var(--brand-tint); font-weight: 600; }
+.top-actions, .build, .mini-label, .tab-detail { color: var(--text-2); font-size: 12px; }
 .top-actions { gap: 14px; }
 .app-menu { display: flex; align-items: center; gap: 2px; margin-left: 12px; margin-right: auto; -webkit-app-region: no-drag; }
 .menu-group { position: relative; }
-.menu-trigger { padding: 7px 10px; border: 0; border-radius: 8px; color: #687386; background: transparent; font-size: 12px; }
-.menu-trigger:hover, .menu-trigger.active { color: #1677ff; background: rgba(22, 119, 255, .08); }
-.menu-popover { position: absolute; top: 100%; left: 0; z-index: 20; min-width: 200px; padding: 6px; border: 1px solid rgba(31, 41, 55, .13); border-radius: 12px; background: rgba(255, 255, 255, .96); box-shadow: 0 14px 35px rgba(55, 65, 81, .18); backdrop-filter: blur(18px); }
-.menu-popover button { display: block; width: 100%; padding: 9px 10px; border: 0; border-radius: 7px; color: #445064; background: transparent; text-align: left; font-size: 12px; }
-.menu-popover button:hover:not(:disabled) { color: #1677ff; background: rgba(22, 119, 255, .08); }
+.menu-trigger { padding: 7px 10px; border: 0; border-radius: 8px; color: var(--text-2); background: transparent; font-size: 12px; }
+.menu-trigger:hover, .menu-trigger.active { color: var(--brand); background: var(--brand-tint); }
+.menu-popover { position: absolute; top: 100%; left: 0; z-index: 20; min-width: 200px; padding: 6px; border: 1px solid var(--line-2); border-radius: 12px; background: var(--popover-bg); box-shadow: var(--shadow-popover); backdrop-filter: blur(18px); }
+.menu-popover button { display: block; width: 100%; padding: 9px 10px; border: 0; border-radius: 7px; color: var(--text-menu); background: transparent; text-align: left; font-size: 12px; }
+.menu-popover button:hover:not(:disabled) { color: var(--brand); background: var(--brand-tint); }
 /* 有命令在跑时，会真跑命令的菜单项置灰。:hover 必须一起排除 —— disabled 的按钮
    仍然会命中 :hover，不排除的话鼠标划过照样变蓝，看起来就是「能点」。 */
-.menu-popover button:disabled { cursor: not-allowed; color: #a9b2c0; }
+.menu-popover button:disabled { cursor: not-allowed; color: var(--text-4); }
 /* 真正能操作窗口的三个按钮，按 Windows 习惯贴在最右侧：无底色、hover 才亮，
    关闭键整块变红。图标是 SVG（见 TitleBar.tsx），尺寸和基线不受字体影响。 */
 .window-controls { display: flex; flex: 0 0 auto; gap: 2px; align-items: center; -webkit-app-region: no-drag; }
-.window-control { display: grid; place-items: center; width: 40px; height: 30px; padding: 0; border: 0; border-radius: 8px; color: #4a5568; background: transparent; transition: background .14s ease, color .14s ease; }
-.window-control:hover { color: #1f2937; background: rgba(31, 41, 55, .09); }
-.window-control:active { background: rgba(31, 41, 55, .15); }
-.window-control.close:hover { color: #fff; background: #e5484d; }
-.window-control.close:active { background: #cf3b40; }
-.window-control:focus-visible { outline: 2px solid #1677ff; outline-offset: 2px; }
+.window-control { display: grid; place-items: center; width: 40px; height: 30px; padding: 0; border: 0; border-radius: 8px; color: var(--text-control); background: transparent; transition: background .14s ease, color .14s ease; }
+.window-control:hover { color: var(--text); background: var(--fill); }
+.window-control:active { background: var(--fill-strong); }
+.window-control.close:hover { color: #fff; background: var(--danger); }
+.window-control.close:active { background: var(--danger-deep); }
+.window-control:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
 .window-control svg { display: block; }
 
 /* ---------- 主窗口 ---------- */
 /* 限宽居中从 .app-shell 挪到这里：顶栏要铺满整窗，内容区仍然收窄到 1000px。 */
-.window { width: min(1000px, calc(100% - 42px)); margin: 0 auto; overflow: hidden; border: 1px solid rgba(31, 41, 55, .14); border-radius: 24px; background: rgba(255, 255, 255, .78); box-shadow: 0 28px 80px rgba(55, 65, 81, .22); backdrop-filter: blur(24px); }
-.window-head { position: relative; display: flex; justify-content: space-between; align-items: center; padding: 20px 30px 20px 94px; border-bottom: 1px solid rgba(31, 41, 55, .12); background: rgba(250, 251, 253, .62); user-select: none; cursor: move; }
+.window { width: min(1000px, calc(100% - 42px)); margin: 0 auto; overflow: hidden; border: 1px solid var(--line); border-radius: 24px; background: var(--window-bg); box-shadow: var(--shadow-window); backdrop-filter: blur(24px); }
+.window-head { position: relative; display: flex; justify-content: space-between; align-items: center; padding: 20px 30px 20px 94px; border-bottom: 1px solid var(--line-3); background: var(--head-bg); user-select: none; }
+/* 这里刻意没有 cursor: move —— 拖拽只挂在 .topbar（见 TitleBar.tsx），卡片标题栏拖不动。
+   挂一个移动光标在那儿，用户会真的去拖，然后发现没反应。 */
 /* 卡片标题栏上的三个圆点是**装饰**，照原型 .window-head::before 的配色与位置
    （红=关闭、黄=最小化、绿=最大化）。它们不是按钮、不接事件：真正能关窗口的是
    顶栏右上角那三个按钮 —— 这张卡片在滚动容器里，往下滚圆点就跟着走了，
-   让它们承担窗口操作会得到一个「滚到底就关不掉窗口」的界面。 */
+   让它们承担窗口操作会得到一个「滚到底就关不掉窗口」的界面。
+   这三个颜色是 macOS 的固定配色，不走主题变量。 */
 .window-head::before { content: ""; position: absolute; left: 31px; top: 50%; width: 11px; height: 11px; border-radius: 50%; background: #ff5f57; box-shadow: 18px 0 #febc2e, 36px 0 #28c840; transform: translateY(-50%); }
-.window-title { gap: 9px; color: #687386; font-size: 12px; letter-spacing: .12em; text-transform: uppercase; }
-.window-title i { width: 7px; height: 7px; border-radius: 50%; background: #1677ff; box-shadow: 0 0 0 5px rgba(22, 119, 255, .1); }
+.window-title { gap: 9px; color: var(--text-2); font-size: 12px; letter-spacing: .12em; text-transform: uppercase; }
+.window-title i { width: 7px; height: 7px; border-radius: 50%; background: var(--brand); box-shadow: 0 0 0 5px var(--brand-tint-2); }
+/* 右侧这一组是「已安装 X · 可更新到 Y」+「上次检查 14:32」。两者必须是兄弟节点：
+   .window-head 是 space-between，直接塞第三个孩子会把版本那行挤到中间去。 */
+.head-meta { display: flex; align-items: center; gap: 12px; }
+.last-check { padding-left: 12px; border-left: 1px solid var(--line-4); color: var(--text-3); font-size: 12px; }
 .body { display: grid; gap: 18px; padding: 30px 34px 34px; }
 
-.panel { border: 1px solid rgba(31, 41, 55, .14); border-radius: 16px; background: rgba(255, 255, 255, .64); box-shadow: 0 10px 28px rgba(64, 78, 99, .06); }
-.eyebrow { margin: 0 0 12px; color: #1677ff; font-size: 11px; letter-spacing: .19em; text-transform: uppercase; }
-.lede { max-width: 660px; margin-bottom: 24px; color: #687386; font-size: 14px; line-height: 1.75; }
+.panel { border: 1px solid var(--line); border-radius: 16px; background: var(--panel-bg); box-shadow: var(--shadow-panel); }
+.eyebrow { margin: 0 0 12px; color: var(--brand); font-size: 11px; letter-spacing: .19em; text-transform: uppercase; }
+.lede { max-width: 660px; margin-bottom: 24px; color: var(--text-2); font-size: 14px; line-height: 1.75; }
 .mini-label { margin: 0 0 4px; }
 .tab-detail { margin: 0 0 16px; line-height: 1.6; }
 
@@ -86,92 +178,98 @@ h3 { margin-bottom: 9px; font-size: 15px; font-weight: 500; }
 .cta-row { display: flex; flex-wrap: wrap; gap: 12px; }
 @keyframes rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
 
-.button { min-height: 42px; padding: 0 18px; border: 1px solid rgba(31, 41, 55, .14); border-radius: 11px; color: #1f2937; background: rgba(255, 255, 255, .54); box-shadow: 0 2px 5px rgba(64, 78, 99, .06); transition: .18s ease; }
-.button:hover:not(:disabled) { border-color: rgba(22, 119, 255, .55); transform: translateY(-1px); }
-.button.primary { border-color: transparent; color: #fff; background: #1677ff; box-shadow: 0 5px 14px rgba(22, 119, 255, .24); }
+.button { min-height: 42px; padding: 0 18px; border: 1px solid var(--line); border-radius: 11px; color: var(--text); background: var(--button-bg); box-shadow: var(--shadow-button); transition: .18s ease; }
+.button:hover:not(:disabled) { border-color: var(--brand-edge); transform: translateY(-1px); }
+.button.primary { border-color: transparent; color: #fff; background: var(--brand); box-shadow: var(--shadow-brand); }
 .button.large { min-height: 50px; padding: 0 28px; font-size: 15px; }
 .button:disabled { cursor: not-allowed; opacity: .45; transform: none; }
-.link-button { padding: 0; border: 0; color: #1677ff; background: transparent; font-size: 12px; text-decoration: underline; }
+.link-button { padding: 0; border: 0; color: var(--brand); background: transparent; font-size: 12px; text-decoration: underline; }
 
 /* ---------- 进度 ---------- */
 .activity-card { padding: 22px 24px; }
-.progress-line { justify-content: space-between; gap: 12px; color: #687386; font-size: 12px; }
+.progress-line { justify-content: space-between; gap: 12px; color: var(--text-2); font-size: 12px; }
 .progress-line { margin-bottom: 9px; }
-.progress-line strong { color: #1f2937; font-weight: 500; }
-.progress-track { height: 8px; overflow: hidden; border-radius: 99px; background: rgba(31, 41, 55, .1); }
-.progress-fill { height: 100%; border-radius: inherit; background: linear-gradient(90deg, #0a64d8, #4b9cff); transition: width .25s ease; }
+.progress-line strong { color: var(--text); font-weight: 500; }
+.progress-track { height: 8px; overflow: hidden; border-radius: 99px; background: var(--track); }
+.progress-fill { height: 100%; border-radius: inherit; background: linear-gradient(90deg, var(--brand-deep), var(--brand-soft)); transition: width .25s ease; }
 /* 下载阶段总字节数未知，用滑动条纹表示「进行中」而不是编造百分比。 */
 .progress-track.indeterminate .progress-fill { width: 35%; animation: slide 1.4s ease-in-out infinite; }
 @keyframes slide { from { transform: translateX(-100%); } to { transform: translateX(300%); } }
-.subline { justify-content: space-between; gap: 12px; margin-top: 10px; color: #9aa4b2; font-size: 11px; }
+.subline { justify-content: space-between; gap: 12px; margin-top: 10px; color: var(--text-3); font-size: 11px; }
 .log-details { margin-top: 18px; }
-.log-details summary { color: #687386; font-size: 12px; cursor: pointer; }
-.log { height: 190px; overflow: auto; margin-top: 12px; padding: 14px; border: 1px solid rgba(31, 41, 55, .12); border-radius: 11px; color: #687386; background: rgba(245, 247, 250, .86); font: 11px/1.8 Consolas, "Cascadia Mono", monospace; }
-.log-time { color: #9aa4b2; }
+.log-details summary { color: var(--text-2); font-size: 12px; cursor: pointer; }
+.log { height: 190px; overflow: auto; margin-top: 12px; padding: 14px; border: 1px solid var(--line-3); border-radius: 11px; color: var(--text-2); background: var(--code-bg); font: 11px/1.8 Consolas, "Cascadia Mono", monospace; }
+.log-time { color: var(--text-3); }
 
 /* ---------- 结果与提示 ---------- */
 .signature-summary { padding: 20px 22px; }
-.signature-status { display: inline-flex; align-items: center; gap: 8px; margin-bottom: 14px; padding: 9px 10px; border: 1px solid rgba(31, 41, 55, .14); border-radius: 9px; color: #687386; font-size: 11px; }
-.signature-status::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: #9aa4b2; }
-.signature-status.warning { color: #b55737; border-color: rgba(181, 87, 55, .32); background: rgba(181, 87, 55, .06); }
-.signature-status.warning::before { background: #b55737; }
-.signature-status.verified { color: #158957; border-color: rgba(21, 137, 87, .28); background: rgba(21, 137, 87, .05); }
-.signature-status.verified::before { background: #158957; }
+.signature-status { display: inline-flex; align-items: center; gap: 8px; margin-bottom: 14px; padding: 9px 10px; border: 1px solid var(--line); border-radius: 9px; color: var(--text-2); font-size: 11px; }
+.signature-status::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--text-3); }
+.signature-status.warning { color: var(--warn); border-color: var(--warn-edge-2); background: var(--warn-tint-2); }
+.signature-status.warning::before { background: var(--warn); }
+.signature-status.verified { color: var(--ok); border-color: var(--ok-edge-2); background: var(--ok-tint); }
+.signature-status.verified::before { background: var(--ok); }
 .signature-grid { display: grid; gap: 8px; }
-.signature-row { justify-content: space-between; gap: 12px; color: #9aa4b2; font-size: 11px; }
-.signature-row strong { max-width: 74%; color: #687386; font-weight: 500; text-align: right; overflow-wrap: anywhere; }
+.signature-row { justify-content: space-between; gap: 12px; color: var(--text-3); font-size: 11px; }
+.signature-row strong { max-width: 74%; color: var(--text-2); font-weight: 500; text-align: right; overflow-wrap: anywhere; }
 .mono { font-family: Consolas, "Cascadia Mono", monospace; }
 .ok-card, .warn-card { padding: 20px 22px; }
-.ok-card { border-color: rgba(21, 137, 87, .3); background: rgba(21, 137, 87, .05); }
-.ok-card h3 { color: #158957; }
-.warn-card { border-color: rgba(181, 87, 55, .3); background: rgba(181, 87, 55, .05); }
-.warn-card h3 { color: #b55737; }
-.ok-card p, .warn-card p { margin: 0; color: #687386; font-size: 12px; line-height: 1.65; }
-.error-text { margin: 0; padding: 12px 14px; border: 1px solid rgba(181, 87, 55, .3); border-radius: 10px; color: #b55737; background: rgba(181, 87, 55, .06); font-size: 12px; line-height: 1.6; white-space: pre-wrap; }
-.error-text.soft { color: #b87408; border-color: rgba(184, 116, 8, .3); background: rgba(184, 116, 8, .06); }
-.raw-output { margin: 10px 0 0; padding: 11px 13px; overflow-x: auto; border: 1px solid rgba(31, 41, 55, .12); border-radius: 10px; color: #687386; background: rgba(245, 247, 250, .9); font: 11px/1.7 Consolas, "Cascadia Mono", monospace; white-space: pre-wrap; }
+.ok-card { border-color: var(--ok-edge); background: var(--ok-tint); }
+.ok-card h3 { color: var(--ok); }
+.warn-card { border-color: var(--warn-edge); background: var(--warn-tint); }
+.warn-card h3 { color: var(--warn); }
+.ok-card p, .warn-card p { margin: 0; color: var(--text-2); font-size: 12px; line-height: 1.65; }
+.error-text { margin: 0; padding: 12px 14px; border: 1px solid var(--warn-edge); border-radius: 10px; color: var(--warn); background: var(--warn-tint-2); font-size: 12px; line-height: 1.6; white-space: pre-wrap; }
+.error-text.soft { color: var(--amber); border-color: var(--amber-edge); background: var(--amber-tint); }
+.raw-output { margin: 10px 0 0; padding: 11px 13px; overflow-x: auto; border: 1px solid var(--line-3); border-radius: 10px; color: var(--text-2); background: var(--code-bg-2); font: 11px/1.7 Consolas, "Cascadia Mono", monospace; white-space: pre-wrap; }
 
 /* ---------- 高级设置 ---------- */
 .settings-card { padding: 0; }
-.settings-card > summary { padding: 17px 22px; color: #687386; font-size: 13px; cursor: pointer; list-style: none; }
+.settings-card > summary { padding: 17px 22px; color: var(--text-2); font-size: 13px; cursor: pointer; list-style: none; }
 .settings-card > summary::-webkit-details-marker { display: none; }
-.settings-card > summary::before { content: "▸"; display: inline-block; width: 14px; color: #9aa4b2; transition: transform .16s ease; }
+.settings-card > summary::before { content: "▸"; display: inline-block; width: 14px; color: var(--text-3); transition: transform .16s ease; }
 .settings-card[open] > summary::before { transform: rotate(90deg); }
-.settings-card > summary:hover { color: #1677ff; }
+.settings-card > summary:hover { color: var(--brand); }
 .settings-body { padding: 0 22px 22px; }
-.field-label { display: block; margin-bottom: 8px; color: #687386; font-size: 12px; }
-.field-help { margin: 9px 0 0; color: #9aa4b2; font-size: 11px; line-height: 1.6; }
+.field-label { display: block; margin-bottom: 8px; color: var(--text-2); font-size: 12px; }
+.field-help { margin: 9px 0 0; color: var(--text-3); font-size: 11px; line-height: 1.6; }
 /* 输入框吃掉剩余宽度、按钮永远按内容宽度显示：否则窄窗口下按钮被挤成两行
    「浏 / 览…」。min-width:0 是让 flex 子项真的允许收缩，不然输入框会把按钮顶出去。 */
 .path-row { gap: 10px; align-items: center; }
 .path-row .field-input { flex: 1 1 auto; width: auto; min-width: 0; }
 .path-row .button { flex: 0 0 auto; white-space: nowrap; }
-.field-input { width: 100%; height: 44px; padding: 0 13px; border: 1px solid rgba(31, 41, 55, .14); border-radius: 10px; outline: none; color: #687386; background: rgba(255, 255, 255, .82); }
-.field-input:focus { border-color: #1677ff; box-shadow: 0 0 0 3px rgba(22, 119, 255, .12); }
+.field-input { width: 100%; height: 44px; padding: 0 13px; border: 1px solid var(--line); border-radius: 10px; outline: none; color: var(--text-2); background: var(--input-bg); }
+.field-input:focus { border-color: var(--brand); box-shadow: 0 0 0 3px var(--brand-ring); }
 .settings-links { display: flex; gap: 18px; margin-top: 16px; }
+/* 后台与启动卡片里的两个开关。整行都是 label，点文字也能勾 —— 只有 16px 的方框可点
+   对「要不要开机自启」这种需要看清楚说明再决定的事太不友好。 */
+.switch-row { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 16px; cursor: pointer; }
+.switch-row input { flex: 0 0 auto; width: 16px; height: 16px; margin: 2px 0 0; accent-color: var(--brand); }
+.switch-row span { color: var(--text); font-size: 13px; }
+.switch-row small { display: block; margin-top: 5px; color: var(--text-3); font-size: 11px; line-height: 1.6; }
 
 /* ---------- 诊断 ---------- */
 .health-card { padding: 22px 24px; }
 .health-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
-.verdict { flex: 0 0 auto; padding: 7px 11px; border: 1px solid rgba(31, 41, 55, .14); border-radius: 9px; color: #687386; background: rgba(255, 255, 255, .6); font-size: 11px; }
-.verdict.ok { color: #158957; border-color: rgba(21, 137, 87, .28); background: rgba(21, 137, 87, .06); }
-.verdict.degraded { color: #b55737; border-color: rgba(181, 87, 55, .32); background: rgba(181, 87, 55, .06); }
+.verdict { flex: 0 0 auto; padding: 7px 11px; border: 1px solid var(--line); border-radius: 9px; color: var(--text-2); background: var(--chip-bg); font-size: 11px; }
+.verdict.ok { color: var(--ok); border-color: var(--ok-edge-2); background: var(--ok-tint-2); }
+.verdict.degraded { color: var(--warn); border-color: var(--warn-edge-2); background: var(--warn-tint-2); }
 .health-grid { display: grid; gap: 8px; margin: 18px 0 4px; }
 /* 版本历史的行沿用健康行同一套外壳，但**不带 .health-row 这个类**：渲染冒烟测试按
    .health-row 的个数断言「健康诊断渲染了 5 个组件行」，复用它会让那条断言数到 8。 */
-.health-row, .rollback-row { gap: 12px; padding: 11px 13px; border: 1px solid rgba(31, 41, 55, .1); border-radius: 11px; background: rgba(255, 255, 255, .5); }
-.health-dot { flex: 0 0 auto; width: 8px; height: 8px; border-radius: 50%; background: #9aa4b2; }
-.health-row.ok .health-dot { background: #158957; }
-.health-row.missing .health-dot, .health-row.error .health-dot { background: #b55737; }
-.health-row.partial .health-dot { background: #b87408; }
+.health-row, .rollback-row { gap: 12px; padding: 11px 13px; border: 1px solid var(--line-4); border-radius: 11px; background: var(--row-bg); }
+.health-dot { flex: 0 0 auto; width: 8px; height: 8px; border-radius: 50%; background: var(--text-3); }
+.health-row.ok .health-dot { background: var(--ok); }
+.health-row.missing .health-dot, .health-row.error .health-dot { background: var(--warn); }
+.health-row.partial .health-dot { background: var(--amber); }
 .health-labels { min-width: 0; flex: 1; }
 .health-labels strong, .health-labels small { display: block; }
 .health-labels strong { font-size: 12px; font-weight: 500; }
-.health-labels small { margin-top: 3px; overflow: hidden; color: #9aa4b2; font: 10px/1.5 Consolas, "Cascadia Mono", monospace; text-overflow: ellipsis; white-space: nowrap; }
-.health-state { flex: 0 0 auto; color: #158957; font-size: 11px; }
-.health-row.missing .health-state, .health-row.error .health-state { color: #b55737; }
-.health-row.partial .health-state { color: #b87408; }
-.health-state em { font-style: normal; color: #9aa4b2; }
+.health-labels small { margin-top: 3px; overflow: hidden; color: var(--text-3); font: 10px/1.5 Consolas, "Cascadia Mono", monospace; text-overflow: ellipsis; white-space: nowrap; }
+.health-state { flex: 0 0 auto; color: var(--ok); font-size: 11px; }
+.health-row.missing .health-state, .health-row.error .health-state { color: var(--warn); }
+.health-row.partial .health-state { color: var(--amber); }
+.health-state em { font-style: normal; color: var(--text-3); }
 .dash-actions { flex-wrap: wrap; gap: 10px; margin-top: 18px; }
 
 /* ---------- 版本历史 / 回退 ---------- */
@@ -181,24 +279,24 @@ h3 { margin-bottom: 9px; font-size: 15px; font-weight: 500; }
 .rollback-row { flex-wrap: wrap; gap: 12px; }
 /* 可回退的那一行用蓝色圆点：它是这张卡片上唯一「有动作」的行。
    当前已安装保持中性灰，已下载未安装（比当前新）用琥珀色。 */
-.rollback-row.older .health-dot { background: #1677ff; }
-.rollback-row.older .health-state { color: #1677ff; }
-.rollback-row.newer .health-dot { background: #b87408; }
-.rollback-row.newer .health-state { color: #b87408; }
-.rollback-row.installed .health-state { color: #687386; }
+.rollback-row.older .health-dot { background: var(--brand); }
+.rollback-row.older .health-state { color: var(--brand); }
+.rollback-row.newer .health-dot { background: var(--amber); }
+.rollback-row.newer .health-state { color: var(--amber); }
+.rollback-row.installed .health-state { color: var(--text-2); }
 .rollback-row .health-state { flex: 0 0 auto; }
 .rollback-action { min-height: 34px; padding: 0 14px; margin-left: auto; font-size: 12px; flex: 0 0 auto; }
 /* 卡片右上角的「当前 X」。样式上跟健康面板的结论徽章一致，但不复用 .verdict 这个类。 */
-.rollback-current { flex: 0 0 auto; padding: 6px 11px; border-radius: 999px; color: #687386; background: rgba(31, 41, 55, .06); font-size: 12px; }
+.rollback-current { flex: 0 0 auto; padding: 6px 11px; border-radius: 999px; color: var(--text-2); background: var(--fill-soft); font-size: 12px; }
 
 /* ---------- 结果对话框 ---------- */
 /* 命令的结论必须看得见。以前是右下角 toast：用户点完按钮眼睛还在主区，正好是视线的
    另一头，很容易整个错过——而这里弹的是「装完了 / 已经是最新版本」这类命令唯一的
    反馈。所以改成模态：浮在正中、压暗背景、有明确的确认按钮。 */
-.modal-backdrop { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; padding: 24px; background: rgba(15, 23, 42, .38); animation: fade .16s ease both; }
-.modal-dialog { width: min(440px, 100%); padding: 24px; border: 1px solid rgba(31, 41, 55, .14); border-radius: 18px; background: #fff; box-shadow: 0 28px 80px rgba(55, 65, 81, .3); animation: rise .2s ease both; }
+.modal-backdrop { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; padding: 24px; background: var(--scrim); animation: fade .16s ease both; }
+.modal-dialog { width: min(440px, 100%); padding: 24px; border: 1px solid var(--line); border-radius: 18px; background: var(--modal-bg); box-shadow: var(--shadow-modal); animation: rise .2s ease both; }
 .modal-dialog h3 { margin-bottom: 10px; font-size: 16px; }
-.modal-dialog p { margin-bottom: 0; color: #687386; font-size: 13px; line-height: 1.7; overflow-wrap: anywhere; }
+.modal-dialog p { margin-bottom: 0; color: var(--text-2); font-size: 13px; line-height: 1.7; overflow-wrap: anywhere; }
 .modal-actions { display: flex; justify-content: flex-end; margin-top: 20px; }
 @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
 
@@ -215,6 +313,8 @@ h3 { margin-bottom: 9px; font-size: 15px; font-weight: 500; }
   /* 卡片收窄后给装饰圆点留的空位也跟着收，否则标题被挤到右边去。 */
   .window-head { padding: 17px 19px 17px 76px; }
   .window-head::before { left: 23px; transform: translateY(-50%) scale(.85); }
+  /* 窄窗口下顶栏这一组会挤成两行，把「上次检查」收起来（它是最不可惜的那条信息）。 */
+  .last-check { display: none; }
   .body { padding: 22px 18px 26px; }
   .hero-card { padding: 22px; }
   .cta-row, .path-row { align-items: stretch; flex-direction: column; }
@@ -227,4 +327,84 @@ h3 { margin-bottom: 9px; font-size: 15px; font-weight: 500; }
      挤在同一行会被压成两三行文字，或者溢出容器到点不到。 */
   .rollback-row { align-items: flex-start; }
   .rollback-action { width: 100%; margin-left: 0; }
+}
+
+/* ---------- 跟随系统深浅色 ----------
+   只重定义变量，不动上面任何一条规则。加在这里而不是散在各处，是为了让「深色下哪些
+   颜色变了」一眼可查：这个块里出现的名字，就是全部会变的东西。
+   注意三个 mac 圆点不在此列（它们是 macOS 的固定配色）。 */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --text: #e8ecf3;
+    --text-2: #9ca8bb;
+    --text-3: #78849a;
+    --text-4: #5a6474;
+    --text-menu: #c2cbda;
+    --text-control: #aab4c6;
+
+    /* 深色底上 #1677ff 偏闷，提亮一档才不至于糊进背景里。 */
+    --brand: #4b9cff;
+    --brand-deep: #2f7fe0;
+    --brand-soft: #7cb6ff;
+    --ok: #46b97c;
+    --warn: #e08a6a;
+    --amber: #d8a33f;
+    --danger: #e5484d;
+    --danger-deep: #cf3b40;
+
+    --page: #101317;
+    --page-2: #171b21;
+    --page-3: #0b0e12;
+    --page-glow: rgba(60, 110, 190, .16);
+
+    /* 深色下「表面」靠白 alpha 提亮，和浅色下靠白 alpha 压亮是同一套叠法。 */
+    --window-bg: rgba(28, 33, 41, .82);
+    --panel-bg: rgba(33, 39, 48, .66);
+    --button-bg: rgba(255, 255, 255, .06);
+    --input-bg: rgba(15, 19, 24, .6);
+    --chip-bg: rgba(255, 255, 255, .05);
+    --row-bg: rgba(255, 255, 255, .04);
+    --modal-bg: #1b2028;
+    --bar-bg: rgba(18, 22, 28, .9);
+    --head-bg: rgba(24, 28, 35, .7);
+    --popover-bg: rgba(30, 35, 44, .97);
+    --code-bg: rgba(12, 15, 19, .72);
+    --code-bg-2: rgba(12, 15, 19, .78);
+
+    --line: rgba(255, 255, 255, .14);
+    --line-2: rgba(255, 255, 255, .13);
+    --line-3: rgba(255, 255, 255, .11);
+    --line-4: rgba(255, 255, 255, .09);
+
+    --fill: rgba(255, 255, 255, .1);
+    --fill-strong: rgba(255, 255, 255, .16);
+    --fill-soft: rgba(255, 255, 255, .07);
+    --track: rgba(255, 255, 255, .12);
+
+    /* 深色下的阴影要更黑才看得出层次 —— 灰色的阴影落在深底上等于没有。 */
+    --shadow-window: 0 28px 80px rgba(0, 0, 0, .55);
+    --shadow-panel: 0 10px 28px rgba(0, 0, 0, .3);
+    --shadow-bar: 0 1px 12px rgba(0, 0, 0, .4);
+    --shadow-popover: 0 14px 35px rgba(0, 0, 0, .5);
+    --shadow-button: 0 2px 5px rgba(0, 0, 0, .3);
+    --shadow-modal: 0 28px 80px rgba(0, 0, 0, .6);
+    --shadow-brand: 0 5px 14px rgba(75, 156, 255, .28);
+
+    --brand-tint: rgba(75, 156, 255, .14);
+    --brand-tint-2: rgba(75, 156, 255, .16);
+    --brand-edge: rgba(75, 156, 255, .6);
+    --brand-edge-2: rgba(75, 156, 255, .38);
+    --brand-ring: rgba(75, 156, 255, .2);
+    --ok-tint: rgba(70, 185, 124, .1);
+    --ok-tint-2: rgba(70, 185, 124, .12);
+    --ok-edge: rgba(70, 185, 124, .38);
+    --ok-edge-2: rgba(70, 185, 124, .36);
+    --warn-tint: rgba(224, 138, 106, .1);
+    --warn-tint-2: rgba(224, 138, 106, .12);
+    --warn-edge: rgba(224, 138, 106, .38);
+    --warn-edge-2: rgba(224, 138, 106, .4);
+    --amber-tint: rgba(216, 163, 63, .12);
+    --amber-edge: rgba(216, 163, 63, .38);
+    --scrim: rgba(0, 0, 0, .55);
+  }
 }

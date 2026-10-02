@@ -24,13 +24,64 @@ npm run electron:build
 ```
 
 安装包输出到 `desktop/release/`，默认是当前用户安装的 NSIS `.exe`
-（不需要管理员权限）。
+（不需要管理员权限）。应用图标是代码生成的（`resources/icon.ico`，七个尺寸、32 位
+DIB 条目），改了 `scripts/make-icon.cjs` 之后跑 `npm run icon:make` 重建，并把产物一起
+提交 —— `tests/icon.test.cjs` 会逐字节比对生成器输出与入库文件，忘了重建就是红的。
+图标接了三处：`build.win.icon`（exe 与安装包）、`extraResources`（打包后托盘与窗口
+运行期要读 `process.resourcesPath` 下那一份）、`BrowserWindow({ icon })`（开发态）。
 
 打包的最后一步会自动跑 `npm run verify:package`：校验 `app.asar` 的索引自洽（所有条目
 声明的大小之和必须恰好铺满数据区），再真的把 exe 拉起来确认它没有立刻退出。索引错位是
 **静默**的 —— 用户双击后只会「没反应」，没有窗口也没有日志，所以这条验收不允许跳过。
 本机若撞上 `EPERM ... rename 'win-unpacked.tmp' -> 'win-unpacked'`，改用
 `npm run electron:build:local`（详见仓库根 `README.md`）。
+
+> 跑 `verify:package` 或 `verify:render:packaged` 之前**先关掉正在运行的 Codex Updater**。
+> 它们 spawn 一个真实 exe 并要求存活若干秒，而应用有单实例锁 —— 已经有一个实例在跑时，
+> 新起来的那个会立刻退出，脚本会判成「启动后立刻退出」。这是单实例锁的正常行为。
+
+## 界面行为
+
+- **单实例。** 双击第二次只会把已有窗口 `restore` + `show` + `focus` 到前台，不会出现
+  两个更新器同时点「一键安装」。
+- **窗口位置尺寸记忆。** 存 `settings.json` 的 `windowBounds`，`resize`/`move` 防抖后写入；
+  最大化时存的是 `getNormalBounds()`（还原矩形）而不是整屏尺寸。恢复前会拿
+  `screen.getAllDisplays()` 的工作区求交集，外接显示器被拔掉时窗口不会开到看不见的地方。
+- **任务栏进度。** 所有 `desktop:progress` 事件都要过 `progressReporter()`，在那里顺手喂
+  `setProgressBar()`：阶段事件按百分比，下载字节数是不确定态（下载总量本就无从得知，
+  不编造百分比）。命令结束在 `ipcMain.handle` 的 `finally` 里清成 `-1`。
+- **关窗保护。** 只拦**会改动系统的长命令**（`download_codex` / `install_codex` /
+  `repair_bundles` / `launch_codex`）——「检查更新」跑一半关掉完全无害，为它弹框是打扰。
+  确认框默认按钮是「继续等待」，`app.quit()` 经 `before-quit` 置标志放行。
+- **跟随系统深浅色。** `styles.css` 的颜色全在 `:root` 变量里，深色只由一个
+  `@media (prefers-color-scheme: dark)` 重定义变量；窗口底色由 `nativeTheme` 决定，并订阅
+  `nativeTheme.on("updated")`，免得系统切主题后新窗口闪一下白。卡片上那三个 macOS 装饰
+  圆点保持字面量配色。
+- **启动即查一次。** 界面就绪后异步跑一遍静默检查（不弹对话框），顶栏写出「上次检查
+  HH:MM」。「诊断 → 复制诊断信息」把完整现场拼成一段文本写进剪贴板 —— 这是**即时动作**，
+  界面忙的时候也必须能点，同事报障时正是安装刚失败的那一刻。
+
+## 后台与启动（可选项，默认关）
+
+「后台与启动（可选）」卡片里两个开关，默认全关：**关窗后留在托盘里**、**开机自动启动**。
+两个都会改变应用在用户机器上的存在方式，所以不默认开。
+
+打开后：主进程每 6 小时发一次 `desktop:background-check`，渲染进程复用启动时那条
+`autoCheckUpdate()` 再查一轮（**不新增第二条会走网络的代码**）；发现新版本时渲染进程调
+`notify_update`，弹一条系统通知。三个条件缺一不可，依据都在主进程手上：窗口可见且聚焦时
+不弹（用户正看着界面，顶栏已经写着结论）、`lastNotifiedVersion` 与本次版本相同不弹
+（同一版本只提醒一次，且**只在真的弹出去之后才记账**）、系统支持通知。点通知只显示窗口。
+
+**通知里不带任何安装动作**，也永远不会自动安装 —— 需要提权的安装永远由人点（见
+AGENTS.md 那条「后台运行绝不弹 UAC」）。
+
+开机自启只在 `app.isPackaged` 下真的写注册表（开发态 `process.execPath` 是
+`electron.exe`，注册它等于往注册表里塞垃圾），启动参数带 `--hidden`，所以开机只是静默
+起来查一次，不会弹窗。
+
+> Windows 的系统通知要求应用有带 AppUserModelID 的快捷方式（`whenReady` 里设了
+> `com.codex.updater`）。用安装包装出来的版本才有这个快捷方式，直接跑源码时通知不一定
+> 弹得出来 —— 这是 Windows 的既有约束，不是代码问题。
 
 ## 运行时边界
 
@@ -40,9 +91,11 @@ npm run electron:build
   `app.asar` 里的 `.ps1`）。开发态则直接读 `desktop/resources/scripts/`。
   所以这个 exe 是自包含的：机器上没装过插件也能用，也不会去动
   `%USERPROFILE%\.codex` 下的任何东西。
-- Electron 主进程只接受 15 个固定白名单命令（见 `electron/main.cjs` 的
+- Electron 主进程只接受 17 个固定白名单命令（见 `electron/main.cjs` 的
   `allowedCommands`），不接受任意 shell 命令，也不接受渲染进程传脚本路径；
-  每个命令对应的脚本名在主进程里写死。
+  每个命令对应的脚本名在主进程里写死。剪贴板只有**写**（`copy_text`）没有**读** ——
+  一个能把用户剪贴板内容读走的接口没有任何存在的理由；要复制的文本由渲染进程拼
+  （它手上才有完整状态），主进程只负责写进去。
 - 渲染进程不启用 Node.js，使用 `contextIsolation` 和受控 preload IPC。
 - MSIX 本体装到哪个盘由 Windows 的部署服务决定，本应用改不了（界面上只如实显示）。
   应用自己控制的是安装包缓存目录：安装包（几百 MB）和安装日志放在那里。
@@ -83,3 +136,7 @@ Release。不需要额外服务器。
 > 当前构建**未做代码签名**。用户首次运行会看到 SmartScreen 的「Windows 已保护你的
 > 电脑」提示，需要点「更多信息 → 仍要运行」。要消除这个提示只能买 Authenticode
 > 证书并在工作流里配置签名。
+
+发给同事最省事的方式是**直接把 `desktop/release/` 里那个 `Codex Updater Setup x.y.z.exe`
+发过去**（仓库是私有的，让每个人去 Release 页下载反而多一道权限门槛）。安装包是当前
+用户安装、不需要管理员权限，装完在开始菜单和桌面上都有带图标的快捷方式。

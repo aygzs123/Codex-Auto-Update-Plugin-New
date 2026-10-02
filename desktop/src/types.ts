@@ -160,6 +160,25 @@ export interface LaunchResult {
 
 export interface Settings {
   downloadDirectory?: string;
+  /**
+   * 关窗时留在托盘里继续跑（后台常驻）。默认关 —— 用户没要求过的常驻进程不该自己出现。
+   *
+   * 三个后台相关的键都可选：老版本 settings.json 里没有它们，读出来是 undefined，
+   * 界面按「关」处理。
+   */
+  minimizeToTray?: boolean;
+  /**
+   * 开机自动启动（带 --hidden，只常驻托盘、不弹窗）。默认关。
+   *
+   * 打开后**不会自动安装任何东西**：它只是让更新器自己起来查一次，发现新版本弹一条
+   * 系统通知，装不装仍然由人点。
+   */
+  launchAtLogin?: boolean;
+  /**
+   * 上一次已经弹过通知的版本号。由主进程写入，防止同一个版本每次开机都提醒一遍。
+   * 界面只读，不显示。
+   */
+  lastNotifiedVersion?: string;
   defaultDownloadDirectory: string;
   logsDirectory: string;
 }
