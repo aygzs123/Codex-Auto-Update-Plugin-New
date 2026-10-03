@@ -42,8 +42,8 @@ jobs:
         run: powershell -NoProfile -ExecutionPolicy Bypass -File plugins\codex-ms-desktop-updater\tests\CodexStoreUpdater.Tests.ps1
 
   # 桌面应用单独一个 job，和上面的 PowerShell 测试并行跑。
-  # 以前 CI 里完全没有 Node 步骤，desktop/ 下的 8 套测试一次都没在 CI 上跑过 ——
-  # 只有人记得在本地敲 npm test 时才跑。
+  # 以前 CI 里完全没有 Node 步骤，desktop/ 下的测试一次都没在 CI 上跑过 ——
+  # 只有人记得在本地敲 npm test 时才跑（现在 desktop/tests 下有 15 个 *.test.cjs）。
   desktop:
     name: Desktop updater tests
     runs-on: windows-latest

@@ -34,7 +34,8 @@ DIB 条目），改了 `scripts/make-icon.cjs` 之后跑 `npm run icon:make` 重
 声明的大小之和必须恰好铺满数据区），再真的把 exe 拉起来确认它没有立刻退出。索引错位是
 **静默**的 —— 用户双击后只会「没反应」，没有窗口也没有日志，所以这条验收不允许跳过。
 本机若撞上 `EPERM ... rename 'win-unpacked.tmp' -> 'win-unpacked'`，改用
-`npm run electron:build:local`（详见仓库根 `README.md`）。
+`npm run electron:build:local`（详见 [`../docs/development.md`](../docs/development.md)
+的 EPERM 一节）。
 
 > 跑 `verify:package` 或 `verify:render:packaged` 之前**先关掉正在运行的 Codex Updater**。
 > 它们 spawn 一个真实 exe 并要求存活若干秒，而应用有单实例锁 —— 已经有一个实例在跑时，

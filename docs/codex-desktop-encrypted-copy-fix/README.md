@@ -136,8 +136,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File docs/codex-desktop-encrypted
 
 > **必须能在 Windows PowerShell 5.1 下运行。** 桌面端的「修复资源副本」按钮走
 > `desktop/electron/ps.cjs`,那里把解释器写死成 `powershell.exe`(5.1 / .NET Framework
-> 4.8),**不是 `pwsh`**(原因见根 `README.md` 的 PowerShell 约束一节)。所以脚本里
-> 不得使用 .NET Framework 4.8 没有的 API,典型如
+> 4.8),**不是 `pwsh`**(原因见根 `README.md`「三个必须遵守的实现约束」第 2 条)。
+> 所以脚本里不得使用 .NET Framework 4.8 没有的 API,典型如
 > `[System.Security.Cryptography.SHA256]::HashData()` 和 `[Convert]::ToHexString()`
 > —— 这两个只在 .NET 5+ / pwsh 7 存在,在 5.1 下会抛「找不到方法」。
 >

@@ -1,150 +1,82 @@
-# Codex MS Desktop Auto-Updater
+# Codex Updater
 
+[![CI](https://github.com/aygzs123/Codex-Auto-Update-Plugin-New/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/aygzs123/Codex-Auto-Update-Plugin-New/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 [English](README_EN.md) | [中文](README.md)
 
-A Windows tool for keeping Codex Desktop (Microsoft Store / MSIX build) updated.
-It queries `store.rg-adguard.net` for the Codex Store package, compares versions,
-downloads a newer MSIX/bundle, and runs `Add-AppxPackage` only when you explicitly
-ask. It ships with a local web UI, health check / window probe, and a daily
-automation template.
+Keep the **Microsoft Store / MSIX build of Codex Desktop** up to date on Windows, and
+deal with the potholes on the way: packages that need administrator rights, an update
+that leaves no window behind, and wanting the previous version back.
 
-## Features
+![Codex Updater UI](docs/images/app-ready.png)
 
-- **Update check**: queries `https://store.rg-adguard.net/api/GetFiles` for the
-  Codex Store entry (`9plm9xgg6vks`) and parses `OpenAI.Codex_*.msix` / bundle links.
-- **Download & install on demand**: downloads only with `-DownloadOnly` /
-  `-Install` / `-InstallWithRestart`; runs `Add-AppxPackage` only with `-Install`
-  / `-InstallWithRestart`.
-- **Restart after install**: `-InstallWithRestart` starts a detached workflow that
-  closes Codex, installs the MSIX, verifies the installed version is not older
-  than the downloaded one, then restarts Codex.
-- **Elevation when required**: newer Codex packages declare a packaged Windows
-  service running as `localSystem` (`Category="windows.service"`), so Windows
-  requires an administrator context for `Add-AppxPackage` and otherwise fails with
-  `0x80073D28`. The scripts read the package manifest first
-  (`Test-CodexPackageRequiresElevation`) and, when needed, spawn a short-lived
-  elevated child (`-Verb RunAs`) that only closes Codex and installs — one UAC
-  prompt. Elevation is **off by default**: without `-AllowElevation` the run
-  refuses honestly (nothing installed, nothing changed, no prompt), which is why
-  automatic maintenance can no longer finish an elevation-requiring version — open
-  the desktop app and click update instead (see "Automatic maintenance").
-- **Cache retention + rollback**: keeps the two most recent `OpenAI.Codex`
-  installers in the download cache (about 1.67 GB) and prunes older ones, so a
-  problematic update can be rolled back to the previous version (see "Version
-  rollback" below). The **desktop app** does not apply this policy: it keeps
-  everything, shows how much the cache occupies, and lets the user clear it.
-- **Plugin self-update**: compares the local and remote `plugin.json` versions and
-  updates this plugin from GitHub when the remote is newer.
-- **Proxy control**: `-NoProxy` disables proxy for the current download process.
-- **Web UI**: local, visual, button-driven operations (see "Web UI" below).
-- **Health check + window probe**: detects "process running but no main window"
-  and states the verdict the evidence supports (still preparing / the official
-  encrypted-relocation bug / undecidable). Only the relocation-bug verdict
-  points at the repair script (see below and `docs/`).
+## What this is
 
-## Layout
+It solves one problem: **updating the Store build of Codex Desktop is awkward to
+automate and awkward on a fresh machine.** When the Store's own update does not happen
+there is no message, newer packages need an administrator context to install, and an
+update can occasionally leave the app running with no window. This repository turns
+all of that into one button that walks the whole chain and shows its evidence at every
+step.
 
-```text
-plugins/codex-ms-desktop-updater/   The Codex plugin itself
-  .codex-plugin/plugin.json         plugin manifest (single source of truth for version)
-  skills/codex-ms-desktop-updater/  plugin skill description
-  scripts/                          core scripts (see "Commands")
-  tests/                            PowerShell tests
-webui/                              local web UI (extension)
-docs/codex-desktop-encrypted-copy-fix/  write-up + repair script for the "no window" bug
-install/                            one-shot local install + daily automation template
-tools/Test-PluginVersionBump.ps1    CI version-bump guard
-```
+Three entry points — pick one:
 
-## Commands
+| Entry point | What it is | Who it is for |
+| --- | --- | --- |
+| **Desktop app** | a single self-contained NSIS `.exe` | most users; new machines; anyone avoiding the command line; you want diagnostics and rollback |
+| **Plugin + daily automation** | `install\install.ps1` | already using the Codex plugin system; you want an unattended daily check |
+| **Web UI** | clone the repo, run `webui\start-webui.bat` | you already cloned the repo and want buttons plus live logs (needs Python 3) |
 
-Run all commands from the **repository root** with PowerShell.
+**They do not cooperate — one is enough.** The desktop app copies the same PowerShell
+scripts into its own installer (`npm run sync:scripts` → `extraResources`), so it
+**never reads or writes** the plugin under `%USERPROFILE%\.codex` and works on a machine
+that never had the plugin. The plugin and the Web UI are the two that share the scripts
+in this repository (the Web UI calls exactly the plugin's scripts).
 
-### Automatic maintenance (plugin self-update + Codex update)
+## Requirements
 
-Updates this plugin first, then downloads / installs / restarts Codex when a newer
-package is available:
+- **Windows 10 / 11**, x64.
+- **Codex Desktop must be the Microsoft Store / MSIX build.** A non-Store build (a
+  self-downloaded installer, a third-party distribution) has no Store entry, and the
+  whole chain is a no-op for it.
+- **Windows PowerShell 5.1** (`powershell.exe`). The scripts deliberately do not
+  support PowerShell 7 / `pwsh` — see
+  [Three implementation constraints](#three-implementation-constraints).
+- The Web UI needs **Python 3**; running the desktop app from source needs **Node 22**.
+  The packaged `.exe` needs neither.
 
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File plugins\codex-ms-desktop-updater\scripts\run-automatic-maintenance.ps1 -NoProxy
-```
+## Quick start
 
-**Automatic maintenance never requests administrator privileges.** An unattended
-run must not block on a UAC prompt, so when a package needs elevation (see
-"Features") it prints `ADMIN_PRIVILEGES_REQUIRED`, states that the package has
-already been downloaded and that nothing was changed, and does **not** start the
-install. That check deliberately runs *before* the detached worker is spawned: the
-worker is a separate process and the call site only sees whether it started, so
-letting it fail asynchronously would make the automation report success.
+### Desktop app (recommended)
 
-For an elevation-requiring version use the manual (or desktop app) path, which
-shows a single UAC prompt:
+Download the latest `Codex Updater Setup x.y.z.exe` from
+[Releases](https://github.com/aygzs123/Codex-Auto-Update-Plugin-New/releases) and
+double-click it — it installs per-user and needs no administrator rights. One button
+runs the whole chain: check → download → signature check → install → launch probe.
 
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File plugins\codex-ms-desktop-updater\scripts\check-codex-update.ps1 -InstallWithRestart -NoProxy -AllowElevation
-```
+> The build is **not code-signed**, so the first run shows SmartScreen's "Windows
+> protected your PC". Click "More info → Run anyway".
 
-### Manual Codex update control
+### Install into your local Codex
 
-| Purpose | Command |
-|---------|---------|
-| Check only | `check-codex-update.ps1 -CheckOnly` |
-| Download only | `check-codex-update.ps1 -DownloadOnly` |
-| Download and install (no restart) | `check-codex-update.ps1 -Install` |
-| Download → close → install → restart | `check-codex-update.ps1 -InstallWithRestart -NoProxy` |
-| Same, allowing one UAC prompt | `check-codex-update.ps1 -InstallWithRestart -NoProxy -AllowElevation` |
-| Force-download newest package (even if installed) | `download-latest-codex-msix.ps1 -NoProxy` |
-| Install a downloaded MSIX and restart | `install-codex-msix-and-restart.ps1 -PackagePath "<path>"` |
-| Roll back to the previous version (must still be cached) | `install-codex-msix-and-restart.ps1 -PackagePath "<path>" -AllowDowngrade -AllowElevation` |
-
-`-AllowElevation` exists only on `check-codex-update.ps1`'s `-InstallWithRestart`
-path (not on `-CheckOnly` / `-DownloadOnly` / `-Install`);
-`install-codex-msix-and-restart.ps1` accepts it directly. Without it a package that
-needs elevation does not fail on `0x80073D28` — it is refused with
-`ADMIN_PRIVILEGES_REQUIRED` before anything touches Codex.
-
-`run-automatic-maintenance.ps1`, `update-installed-plugin.ps1`, and
-`download-latest-codex-msix.ps1` all accept `-NoProxy`.
-
-Downloaded files are saved under:
-
-```text
-plugins/codex-ms-desktop-updater/downloads/
-```
-
-> That directory is a runtime cache and is git-ignored. The daily automation
-> deliberately keeps the two most recent installers (~1.67 GB) as rollback targets
-> and prunes older ones; the desktop app applies no such policy and lets the user
-> clear the cache by hand. See "Retention policy" below.
-
-| Rollback / cache inspection | Command |
-|---------|---------|
-| List cached installers (read-only) | `list-cached-codex-packages.ps1 -DownloadDirectory "<dir>"` |
-| Install a specific package, downgrade allowed | `install-codex-msix-and-restart.ps1 -PackagePath "<path>" -AllowDowngrade` |
-| Clear every cached Codex installer (what the desktop app's "clear cache" button runs) | `clear-cached-codex-packages.ps1 -DownloadDirectory "<dir>"` |
-
-## Install into local Codex
-
-For the current Windows user (copies the plugin and writes the daily automation):
+From the **repository root**:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File install\install.ps1
 ```
 
-It:
+It copies `plugins\codex-ms-desktop-updater` to
+`%USERPROFILE%\.codex\plugins\codex-ms-desktop-updater` (**skipping** the `downloads`
+cache) and writes the daily automation from the `install\automation.toml` template to
+`%USERPROFILE%\.codex\automations\daily-codex-desktop-update-check\automation.toml`.
+The template stays portable via the `{{CODEX_PLUGIN_ROOT}}` and
+`{{CODEX_MAINTENANCE_SCRIPT}}` placeholders rather than hard-coded drive letters (see
+[`AGENTS.md`](AGENTS.md)).
 
-- copies `plugins\codex-ms-desktop-updater` to
-  `%USERPROFILE%\.codex\plugins\codex-ms-desktop-updater` (**skipping** the
-  `downloads` cache);
-- writes the daily automation from the portable `install\automation.toml`
-  template, substituting real machine paths for the placeholders:
-  `%USERPROFILE%\.codex\automations\daily-codex-desktop-update-check\automation.toml`;
-- the template stays portable (no drive-letter paths; uses placeholders such as
-  `{{CODEX_PLUGIN_ROOT}}`).
+**Restart Codex Desktop if the plugin does not appear immediately.**
 
-Restart Codex Desktop if the plugin does not appear immediately.
-
-### Manual copy (without install.ps1)
+<details>
+<summary>Manual copy instead of install.ps1</summary>
 
 Copy the plugin directory to
 `%USERPROFILE%\.codex\plugins\codex-ms-desktop-updater`, then register it in
@@ -159,163 +91,113 @@ Copy the plugin directory to
 }
 ```
 
-To recreate the daily automation on another device, create it in that device's
-Codex Desktop to run `run-automatic-maintenance.ps1 -NoProxy` daily.
+</details>
 
-## Web UI (visual control · extension)
+## Features
 
-Prefer buttons over the command line? Launch the local web UI to check / download /
-install / restart / health-check Codex:
+- **Update check**: queries `https://store.rg-adguard.net/api/GetFiles` for the Codex
+  Store entry (`9plm9xgg6vks`) and parses `OpenAI.Codex_*.msix` / bundle links.
+- **Download and install on demand**: only `-DownloadOnly` / `-Install` /
+  `-InstallWithRestart` download; only `-Install` / `-InstallWithRestart` run
+  `Add-AppxPackage`.
+- **Restart after install**: `-InstallWithRestart` starts a detached workflow that
+  closes Codex, installs the MSIX, verifies the installed version is not older than the
+  downloaded one, then restarts Codex.
+- **Elevation when required**: newer packages declare a packaged service running as
+  `localSystem`, so Windows requires an administrator context (otherwise
+  `0x80073D28`). The scripts read the package manifest first and ask for **one** UAC
+  prompt only when it is genuinely needed. Elevation is **off by default**: without
+  `-AllowElevation` the run refuses honestly (see [FAQ](#faq)).
+- **Cache retention + rollback**: the cache keeps the two most recent Codex installers
+  (~1.67 GB) as rollback targets; the desktop app deletes nothing and lets you clear it
+  by hand (see [`docs/rollback.md`](docs/rollback.md)).
+- **Plugin self-update**: compares local and remote `plugin.json` versions and updates
+  the plugin from GitHub when the remote is newer.
+- **Web UI**: local, button-driven, with logs streaming over SSE.
+- **Health check + window probe**: detects "process running but no main window" and
+  states the verdict the evidence supports (still preparing / the official
+  encrypted-relocation bug / undecidable). Only the relocation-bug verdict points at
+  the repair script.
 
-```text
-webui/
-  server.py         local bridge service (Python stdlib only, zero third-party deps)
-  index.html        single-file UI (no external CDN, works offline)
-  start-webui.ps1   launcher script
-  start-webui.bat   double-click entry
+## Usage
+
+### Desktop app
+
+It self-checks on startup and the headline states the conclusion directly ("Up to date:
+X" / "Update available: Y"). Diagnostics are real, not decoration: the health check
+lists the live status and path of all five resource components (win-cli / win-rg /
+wsl-cli / wsl-rg / cua_node), the launch probe recognises the official "process running,
+no main window" bug and offers the repair entry point, and a failed signature check
+**aborts the install**.
+
+The "installer cache" card shows how many packages the cache holds and how much space
+they take, next to "open cache directory" and "clear cache" — that directory holds both
+the downloaded installers and the install logs. The "Version History" card
+provides the rollback entry point and can be hidden by anyone who does not need it
+(it only hides the card — it changes no behaviour). "Keep running in the tray" and
+"Start with Windows" are **optional and off by default**; when enabled they only check
+once and post a system notification for a new version — they **never install
+automatically**, because an install requiring administrator rights is always started by
+a human.
+
+Interface behaviour (single-instance lock, window bounds memory, taskbar progress,
+light/dark theme, the startup check) and the reasoning behind it live in
+[`desktop/README.md`](desktop/README.md) and
+[`docs/design-notes.md`](docs/design-notes.md).
+
+### Command reference
+
+Run all commands from the **repository root**, with PowerShell.
+
+| Purpose | Command |
+|---------|---------|
+| Check only | `check-codex-update.ps1 -CheckOnly` |
+| Download only | `check-codex-update.ps1 -DownloadOnly` |
+| Download and install (no restart) | `check-codex-update.ps1 -Install` |
+| Download → close → install → restart | `check-codex-update.ps1 -InstallWithRestart -NoProxy` |
+| Same, allowing one UAC prompt | `check-codex-update.ps1 -InstallWithRestart -NoProxy -AllowElevation` |
+| Force-download newest package (even if installed) | `download-latest-codex-msix.ps1 -NoProxy` |
+| Install a downloaded MSIX and restart | `install-codex-msix-and-restart.ps1 -PackagePath "<path>"` |
+| Roll back to the previous version (must still be cached) | `install-codex-msix-and-restart.ps1 -PackagePath "<path>" -AllowDowngrade -AllowElevation` |
+
+Every row omits the `plugins\codex-ms-desktop-updater\scripts\` prefix; the real
+invocation is `powershell -NoProfile -ExecutionPolicy Bypass -File <script> <args>`.
+
+**Arguments**
+
+- `-AllowElevation` exists **only on the `-InstallWithRestart` path** (not on
+  `-CheckOnly` / `-DownloadOnly` / `-Install`); `install-codex-msix-and-restart.ps1`
+  accepts it directly. Without it, a package that needs elevation does not fail on
+  `0x80073D28` — it is refused with `ADMIN_PRIVILEGES_REQUIRED` before anything touches
+  Codex.
+- `-NoProxy` is accepted by three scripts: `run-automatic-maintenance.ps1`,
+  `update-installed-plugin.ps1`, and `download-latest-codex-msix.ps1`.
+
+**Automatic maintenance (plugin self-update + Codex update)**:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File plugins\codex-ms-desktop-updater\scripts\run-automatic-maintenance.ps1 -NoProxy
 ```
 
-### Launch
+**It never requests administrator privileges.** An unattended run must not block on a
+UAC prompt, so when a package needs elevation it prints `ADMIN_PRIVILEGES_REQUIRED`,
+states that the package was downloaded and that nothing was changed, and does **not**
+start the install. Use the desktop app or the `-AllowElevation` command above for such a
+version.
 
-Double-click `webui\start-webui.bat` (or run `start-webui.ps1`). It:
+Downloaded installers are saved under
+`plugins\codex-ms-desktop-updater\downloads\` (git-ignored).
 
-1. detects Python on this machine (`py` → `python` → `python3`);
-2. starts `server.py` in the background, listening only on `127.0.0.1:8765`;
-3. opens the UI in the browser (or just opens it if the service is already up).
+### Version rollback
 
-### What the UI offers
+When a fresh update turns out badly, the desktop app's "Version History" card offers
+"Roll back to this version"; on the plugin side, start with
+`list-cached-codex-packages.ps1 -DownloadDirectory "<dir>"` to see what the cache holds.
+The two retention policies (automation prunes to 2 / the desktop app deletes nothing),
+the three implementation points and the **known limitation** are in
+[`docs/rollback.md`](docs/rollback.md).
 
-Three status cards on top: installed Codex version, **running processes / main
-window**, and local plugin version. Logs stream live via SSE.
-
-| Button | Backing script |
-|--------|----------------|
-| 🔍 Check Codex update | `check-codex-update.ps1 -CheckOnly -NoProxy` |
-| ⬇️ Download, install + restart | `check-codex-update.ps1 -InstallWithRestart -NoProxy` |
-| 📦 Check plugin update | `update-installed-plugin.ps1 -CheckOnly -NoProxy` |
-| 🔄 Update plugin | `update-installed-plugin.ps1 -NoProxy` |
-| 🩺 Health check | `check-codex-desktop-health.ps1` |
-| 🚀 Health check + launch probe | `check-codex-desktop-health.ps1 -Probe` |
-
-> Security: the service binds `127.0.0.1` only. Buttons only run fixed project
-> scripts with fixed arguments; no arbitrary command execution surface.
-
-## Version rollback (extension)
-
-Rolling back after a bad update used to be impossible — not "unimplemented", but
-actively prevented by three things working together:
-
-1. the version check deleted every package whose version was **≤ the installed
-   version**, i.e. exactly the one the user was running and knew to be good;
-2. the install workflow deleted the package it had just used;
-3. both install paths called a bare `Add-AppxPackage`, without
-   `-ForceUpdateFromAnyVersion`, so **even if the package survived, Windows
-   refuses to install a lower version**.
-
-The distribution source only serves the newest version (verified here: `Retail`,
-`Slow` and `Fast` all return the same build), so a deleted installer **cannot be
-downloaded again**.
-
-### Retention policy
-
-There are **two** policies, split by whether a human is watching.
-
-**Daily automation (unattended) — prunes automatically:**
-
-> Among cached packages whose version is **≤ the installed version**, keep the two
-> newest by version and delete the rest.
-
-- The floor is 2, not 1: the package just installed is the **next** update's
-  rollback target. Keeping only 1 leaves nothing to go back to after the next
-  update, so the feature would not exist.
-- Packages **newer** than the installed version (downloaded, not yet installed)
-  are left alone, as are other apps' packages and `.partial` downloads.
-- At two ~800 MB packages, the cache holds roughly **1.67 GB** at rest.
-
-Pruning happens inside the install worker (the only place that both knows the new
-version and sits in the cache directory), so the cache returns to 2 packages as
-soon as an install finishes, instead of briefly holding 3 (2.5 GB).
-
-**Desktop app (someone is watching) — deletes nothing.** It passes `-KeepAll` on
-all three PowerShell call paths (check, download, install), keeps every installer
-it ever downloaded, and shows the package count and total size in the "installer
-cache" card with a "clear cache" button (behind one confirmation).
-
-Why two policies: the automatic rule (keep the newest N by version) is **invisible**
-to the user — when a colleague finds several GB missing from the C: drive, the UI
-says nothing about what was deleted or why. Better to let the disk grow and let a
-human decide when to clear. The unattended path has nobody watching, so it stays
-bounded.
-
-`-KeepAll` is a separate switch rather than a large `-KeepCount`: `-KeepCount` means
-"keep N", and `0` deletes everything, so no value of it can express "unlimited".
-
-"Clear cache" deletes only the Codex installers that `Get-CachedCodexPackages`
-recognises — in-flight `.partial` files, other apps' packages and anything else the
-user put in the cache directory are left alone. The cache directory is a folder the
-user chose, so this action is **not** an `rm -rf` of it. Files that cannot be
-deleted (held by antivirus or an installer) are counted and reported to the UI
-instead of aborting the batch.
-
-### How to use it
-
-- **Desktop app**: the "Version History" card lists the cached installers with a
-  `current / rollback available / newer than current` badge; the rollback-able
-  row has a "Roll back to this version" button, and the same button appears in the
-  failure warning cards when an update goes wrong. Rolling back closes the running
-  Codex, installs, and restarts it.
-- **Plugin side**: see the rollback table in "Manual Codex update control".
-
-### Three implementation points
-
-1. **Downgrade is allowed only on the rollback path.** Only `-AllowDowngrade`
-   adds `-ForceUpdateFromAnyVersion`; one-click update behaves exactly as before,
-   and the log shows which mode a run used.
-2. **The post-downgrade version check uses equality.** When Windows refuses a
-   downgrade the higher version is still installed, which makes the upgrade path's
-   `-lt` check false — reporting a downgrade that never happened as a success. The
-   equality check turns it into a visible error (`Downgrade did not take effect`).
-3. **Rollback verifies the signature first.** An old installer may have been
-   sitting on disk for weeks; the gate is no weaker than for a fresh download.
-
-### One limitation you should know about
-
-Rollback depends on an installer **this tool itself retained**, which means it only
-works for versions downloaded **after the new retention policy took effect**.
-Rolling back to the version you had before installing this feature is not possible:
-that installer was already deleted under the old rule.
-
-Measured on this machine, the packages currently in the three cache directories
-(`26.924.2738.0`, `26.917.6896.0`) are both **newer** than the installed
-`26.901.6511.0`, so neither is a rollback target, and the `26.901.6511.0`
-installer cannot be recovered. The feature first becomes usable after the **next**
-update, when `26.901` is retained. The empty state in the UI says exactly this
-rather than showing an empty box.
-
-### Verifying a real rollback by hand
-
-Whether `-ForceUpdateFromAnyVersion` is accepted for a Store-signed package can
-only be confirmed by actually downgrading once (this machine has no older package,
-so this step has not been done). Reproducible steps:
-
-1. Update normally once, so the cache holds two packages (the new one and the
-   previous one);
-2. confirm with `list-cached-codex-packages.ps1` that the previous one's relation
-   is `older`;
-3. click "Roll back to this version" (or run the `-AllowDowngrade` command above);
-4. check whether the version reported by `Get-AppxPackage` in the install log
-   really went back down after `Add-AppxPackage`.
-
-A refused downgrade does not silently succeed — it surfaces as "the downgrade did
-not take effect, still on X".
-
-## Health check & window probe (extension)
-
-Codex Desktop (Store build) has an official bug: **after an update the processes
-run but the main window never appears**. The cause is the encrypted-resource
-relocation: copying MSIX resources into the user cache with `fs.copyFileSync`
-fails (`errno=-4094`). This repo offers a read-only health check plus an optional
-launch probe:
+### Health check and window probe
 
 ```powershell
 # Read-only check: do the relocated bundle dirs exist? any .staging-* leftovers?
@@ -328,34 +210,17 @@ powershell -NoProfile -ExecutionPolicy Bypass -File plugins\codex-ms-desktop-upd
 Exit codes: `0` healthy / `1` degraded or missing component / `2` not installed /
 `3` probe timed out with no main window.
 
-- `-InstallWithRestart` also probes the window after install; if no main window
-  appears, the install log records `WINDOW_PROBE=FAILED`, a `STARTUP_DIAGNOSIS=`
-  verdict and an inventory of Codex's visible top-level windows. The verdict is
-  one of `still-preparing` (the runtime is still being materialized into the
-  user cache — just wait), `relocation-bug`, or `unknown` (the evidence does not
-  decide it).
-- The repair-script line is printed **only** for the `relocation-bug` verdict.
-  The first launch materializes several hundred MB of runtime (about 132 s in
-  practice), so a 30 s probe can legitimately time out without anything being
-  wrong; the probe therefore extends itself (up to another 150 s) when it finds
-  evidence of recent writes.
-- If the bug is confirmed, run the repair script under `docs\` to recover.
+`-InstallWithRestart` also probes the window after install; if no main window appears,
+the install log records `WINDOW_PROBE=FAILED`, a `STARTUP_DIAGNOSIS=` verdict and an
+inventory of Codex's visible top-level windows. The verdict is one of `still-preparing`
+(the runtime is still being materialized — just wait), `relocation-bug`, or `unknown`
+(the evidence does not decide it). The repair-script line is printed **only** for the
+`relocation-bug` verdict: the first launch materializes several hundred MB of runtime
+(about 132 s in practice), so a 30 s probe timing out does not mean anything is wrong,
+and the probe extends itself (up to another 150 s) when it finds evidence of recent
+writes.
 
-## Repair docs: docs/codex-desktop-encrypted-copy-fix
-
-`docs/codex-desktop-encrypted-copy-fix/` documents the full investigation and fix
-for "Codex Desktop starts with no window":
-
-- `README.md` — symptoms, root cause (encrypted MSIX resources + Node copyFile
-  failure), blast radius, Bundle ID algorithm, manual & scripted fix, verification,
-  rollback;
-- `repair-codex-desktop-bundles.ps1` — a **reusable, idempotent** repair script. It
-  computes the five bundle IDs for the currently installed version (win-cli /
-  win-rg / wsl-cli / wsl-rg / cua_node) and materializes the missing ones with
-  byte-stream copies that bypass the encrypted-copy failure, verifying every file
-  with SHA-256.
-
-To run the repair (exit Codex first):
+Run the repair script (exit Codex first):
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File docs\codex-desktop-encrypted-copy-fix\repair-codex-desktop-bundles.ps1
@@ -363,28 +228,189 @@ powershell -NoProfile -ExecutionPolicy Bypass -File docs\codex-desktop-encrypted
 
 > Safety: the script only writes under `%LOCALAPPDATA%\OpenAI\Codex` and
 > `%USERPROFILE%\.codex`; it **never** touches files / ACLs / ownership under
-> `C:\Program Files\WindowsApps`. Re-runs print `SKIP` for already-healthy caches.
-> If the issue recurs after a Store update, just re-run it (it computes IDs for the
-> currently installed version, so it works across versions).
+> `C:\Program Files\WindowsApps`. Re-runs print `SKIP` for already-healthy caches, and
+> it computes Bundle IDs for the currently installed version, so it works across
+> versions.
 
-## Version management & CI
+### Web UI
+
+Double-click `webui\start-webui.bat`. It detects Python (`py` → `python` → `python3`),
+starts `server.py` in the background, and opens the browser. Three status cards on top
+(installed version / running processes and main window / local plugin version), logs
+streaming live over SSE.
+
+| Button | Backing script |
+|--------|----------------|
+| 🔍 Check Codex update | `check-codex-update.ps1 -CheckOnly -NoProxy` |
+| ⬇️ Download, install + restart | `check-codex-update.ps1 -InstallWithRestart -NoProxy` |
+| 📦 Check plugin update | `update-installed-plugin.ps1 -CheckOnly -NoProxy` |
+| 🔄 Update plugin | `update-installed-plugin.ps1 -NoProxy` |
+| 🩺 Health check | `check-codex-desktop-health.ps1` |
+| 🚀 Health check + launch probe | `check-codex-desktop-health.ps1 -Probe` |
+
+> Security: the service binds `127.0.0.1` only, so it is unreachable from the LAN or
+> the internet. Buttons only run fixed project scripts with fixed arguments; there is
+> no arbitrary command execution surface.
+
+## FAQ
+
+**`HRESULT: 0x80073D28` — what is that?**
+A newer Codex package declares a packaged service running as `localSystem`, so Windows
+requires an administrator context for `Add-AppxPackage`. Click update in the desktop app,
+or run the manual command with `-AllowElevation`; either shows one UAC prompt.
+
+**It wants administrator rights — what happens if I click "No"?**
+Nothing is changed and Codex is not closed. A cancelled UAC only prevents the elevated
+child from starting; the worker ends with a FATAL that says so, and the UI does not get
+stuck on "installing". Without elevation, an elevation-requiring package is refused with
+`ADMIN_PRIVILEGES_REQUIRED` (not `0x80073D28`) — that is a deliberate refusal, not a
+failure.
+
+**After an update, Codex runs but no window ever appears.**
+Run the health check with `-Probe` and read the `STARTUP_DIAGNOSIS=` verdict. Only
+`relocation-bug` needs action: exit Codex and run the repair script above.
+`still-preparing` means the runtime is still being materialized — wait.
+
+**Can I choose which drive Codex installs to?**
+No. Which volume an MSIX lands on is decided by the Windows deployment service, not by
+the installer. What the desktop app does is show the **real path** reported by
+`Get-AppxPackage` and give you an "open install directory" button. To change the default
+drive, use Windows Settings → System → Storage → Advanced storage settings → "Where new
+content is saved". The only directory the tool really chooses for you is the **installer
+cache**.
+
+**Codex is installed on the D: drive — will it still be found?**
+Yes. The package is located with `Get-AppxPackage -Name OpenAI.Codex`, which enumerates
+across all volumes; install location, process ownership and `AppUserModelId` are all read
+live, and nothing builds a path from `C:\Program Files\WindowsApps`. A regression test
+scans every line of code to keep it that way.
+
+**Does it require the Store build of Codex?**
+Yes. The update chain depends on the Store entry, and a non-Store build has none — it
+will find nothing.
+
+**How do I roll back?**
+Click "Roll back to this version" in the desktop app's "Version History" card, or run
+`install-codex-msix-and-restart.ps1` with `-AllowDowngrade`. The installer has to still
+be in the cache.
+
+**Can I roll back to the version I had before installing this tool?**
+No. Rollback depends on an installer this tool itself retained, and older ones were
+already deleted under the old policy — the distribution source only serves the newest
+build, so they cannot be downloaded again. The feature first becomes usable after one
+update **with the new policy in place**. The empty state in the UI says exactly this.
+
+**The `downloads` cache keeps growing.**
+Two policies apply. The daily automation keeps the two most recent packages (~1.67 GB)
+and prunes the rest; the desktop app **deletes nothing** and leaves it to you to click
+"clear cache". "Clear cache" deletes only the Codex installers it recognises — `.partial`
+downloads, other apps' packages and anything else you put in that directory are left
+alone. See [`docs/rollback.md`](docs/rollback.md).
+
+**Double-clicking the .exe does nothing.**
+First check whether SmartScreen blocked the unsigned executable (see
+[Quick start](#quick-start)). Second, the single-instance lock: when an updater is
+already running, a second double-click only brings the existing window to the front.
+
+**The Web UI will not open.**
+Usually Python was not detected. `start-webui.bat` looks for `py` → `python` →
+`python3`; install a Python 3.
+
+**I installed the plugin but Codex does not show it.**
+Restart Codex Desktop.
+
+**How do I uninstall?**
+The installer writes exactly two places — delete
+`%USERPROFILE%\.codex\plugins\codex-ms-desktop-updater` and
+`%USERPROFILE%\.codex\automations\daily-codex-desktop-update-check`. For the desktop
+app, uninstall it from Windows Settings → Apps (or the Start menu shortcut). The
+installer cache is not removed by the uninstaller; delete it yourself if you want the
+space back.
+
+## Development
+
+### Layout
+
+```text
+plugins/codex-ms-desktop-updater/   the Codex plugin itself
+  .codex-plugin/plugin.json         plugin manifest (single source of truth for the version)
+  skills/codex-ms-desktop-updater/  plugin skill description
+  scripts/                          core PowerShell scripts
+  tests/                            PowerShell tests
+desktop/                            Electron + React desktop app
+webui/                              local web UI
+docs/                               design notes, development, rollback, bug write-up
+install/                            one-shot local install + daily automation template
+tools/Test-PluginVersionBump.ps1    CI version-bump guard
+```
+
+### Three implementation constraints
+
+1. **Scripts go through `extraResources`, never into the asar.** PowerShell cannot
+   execute a `.ps1` inside `app.asar`, and `CodexStoreUpdater.psm1` must sit next to the
+   scripts that call it. `verify:render:packaged` checks that the scripts really landed
+   outside the asar.
+2. **Only `powershell.exe` (5.1), never `pwsh`.** Under pwsh, `$PSHOME` points at the
+   PowerShell 7 directory, `Start-Process` throws, and the whole install fails silently.
+   **Corollary: the scripts themselves may only use APIs that exist in .NET Framework
+   4.8** — `[System.Security.Cryptography.SHA256]::HashData()` and
+   `[Convert]::ToHexString()` do not exist in 5.1 and are off limits.
+3. **Arguments must not be passed by array splatting.** `@argv` passes positional values
+   rather than parameter names, binding a switch as a string to the first positional
+   parameter. `electron/ps.cjs` therefore builds its own tokens.
+
+Full reasoning, the incidents behind them, and what each `verify:*` script actually
+checks: [`docs/development.md`](docs/development.md).
+
+### Build and verify
+
+```powershell
+cd desktop
+npm test                 # unit tests, no network
+npm run verify:render    # loads dist/ into Electron and runs thirteen UI scenarios
+npm run verify:simulate  # simulates the install pipeline, no download, no install
+npm run electron:dev     # development run
+npm run electron:build   # package a Windows x64 NSIS .exe
+```
+
+> Close any running Codex Updater before `verify:package` / `verify:render:packaged`:
+> the single-instance lock makes the newly spawned process exit immediately, which the
+> script reports as a failure.
+
+### Version management and CI
 
 The single source of truth for the plugin version is the `version` field in
-`plugins\codex-ms-desktop-updater\.codex-plugin\plugin.json`. Bump it (numeric
-SemVer-style text such as `0.3.0`) before pushing repository changes. GitHub CI
-runs `tools\Test-PluginVersionBump.ps1` on PRs and pushes to `main` and requires
-the head version to be greater than the baseline.
-
-## Tests
+`plugins\codex-ms-desktop-updater\.codex-plugin\plugin.json`. **Bump it before pushing
+any change** — the guard does not look at which paths changed, so documentation and CI
+edits need a bump too, or CI goes red.
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File install\Install.Tests.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File plugins\codex-ms-desktop-updater\tests\CodexStoreUpdater.Tests.ps1
 ```
 
-## Maintenance notes
+## Docs index
 
-- Root `AGENTS.md`: for Codex agents whose only job is to install the plugin into a
-  local Codex setup.
-- `.codex/AGENTS.md`: for maintaining this repository itself (version management,
-  verification flow).
+- [`docs/design-notes.md`](docs/design-notes.md) — desktop app design decisions and the
+  incidents behind them
+- [`docs/development.md`](docs/development.md) — full reasoning for the implementation
+  constraints; what each verification script checks
+- [`docs/rollback.md`](docs/rollback.md) — retention policies, usage, and the known
+  limitation of version rollback
+- [`docs/codex-desktop-encrypted-copy-fix/`](docs/codex-desktop-encrypted-copy-fix/README.md)
+  — full investigation and reusable repair script for the "starts with no window" bug
+- [`desktop/README.md`](desktop/README.md) — desktop app development, build, interface
+  behaviour and release
+- [`AGENTS.md`](AGENTS.md) — the flow for installing the plugin into a local Codex
+- [`.codex/AGENTS.md`](.codex/AGENTS.md) — maintaining this repository itself (version
+  management, verification flow)
+
+## License and disclaimer
+
+MIT — see [`LICENSE`](LICENSE).
+
+This is an **unofficial** tool, not affiliated with OpenAI. It relies on the
+third-party distribution source
+[`store.rg-adguard.net`](https://store.rg-adguard.net/) to resolve Store package links,
+the build is **not code-signed**, and it downloads and installs **system-level MSIX
+packages**. Decide for yourself whether that belongs on your machine.
