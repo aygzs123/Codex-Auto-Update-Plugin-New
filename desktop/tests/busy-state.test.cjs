@@ -79,32 +79,32 @@ test("所有会真跑命令的入口都走同一个判据", () => {
   );
 });
 
-test("菜单项：命令项跟 busy 走，打开目录的两项不跟着变灰", () => {
-  // 置灰必须按「这一项会不会真跑命令」区分。把「打开日志目录」一起禁用是帮倒忙 ——
-  // 命令跑着的时候正是用户最想点它去看日志的时候。
-  const groups = titleBar.match(/const MENU_GROUPS = \[([\s\S]*?)\] as const;/);
-  assert.ok(groups, "找不到 MENU_GROUPS");
-  const body = groups[1];
-  for (const action of ["check", "install", "launch", "health", "repair"]) {
-    assert.match(
-      body,
-      new RegExp(`action: "${action}", command: true`),
-      `菜单项 ${action} 没有标记为命令项，命令跑着时它仍然是亮的`,
-    );
+test("页面按钮：命令入口跟 busy 走，打开目录的即时入口不跟着变灰", () => {
+  // 置灰必须按「这一项会不会真跑命令」区分。把「打开日志目录」「复制诊断信息」一起
+  // 禁用是帮倒忙 —— 命令跑着的时候正是用户最想点它们去看日志、把现场发出来的时刻。
+  for (const [name, source] of [
+    ["主区 CTA", app],
+    ["诊断面板", healthPanel],
+  ]) {
+    assert.match(source, /disabled=\{busy\}/, `${name} 的按钮要真的接上共享 busy`);
   }
-  for (const action of ["open-logs", "open-cache"]) {
-    assert.match(body, new RegExp(`action: "${action}", command: false`), `目录项 ${action} 不该被当成命令项`);
-  }
-  assert.match(titleBar, /const disabled = busy && item\.command;/, "置灰要按 command 标记走");
-  assert.match(titleBar, /disabled=\{disabled\}/, "菜单按钮要真的接上 disabled");
-  // 光置灰不够：disabled 的按钮仍然会命中 :hover，不排除的话鼠标划过照样变蓝。
-  assert.match(styles, /\.menu-popover button:hover:not\(:disabled\)/);
-  assert.match(styles, /\.menu-popover button:disabled/);
+  // 版本历史里的回退按钮同样走共享判据，而不只是本地的 rollingBack。
+  const history = read("src", "components", "VersionHistory.tsx");
+  assert.match(history, /disabled=\{busy\}/, "回退按钮要接上共享 busy");
+  assert.match(history, /有命令正在执行，等它结束再操作/, "回退按钮置灰要有 title 说明");
+
+  // 即时入口（打开缓存/日志目录、复制诊断）刻意不接 busy。它们跑在 IPC 上，
+  // 瞬间返回，不占用安装链路。
+  const advanced = read("src", "components", "AdvancedSettings.tsx");
+  assert.doesNotMatch(advanced, /disabled=\{busy\}/, "打开目录与复制诊断不该被忙态禁掉");
+
+  // 光置灰不够：样式上要能看出不可点。
+  assert.match(styles, /\.btn:disabled,\s*\.button:disabled\s*\{[^}]*cursor:\s*not-allowed/);
 });
 
 test("置灰必须给出理由，否则用户看到的是「点了没反应」", () => {
   assert.match(app, /checkingUpdate \? "正在检查…" : "仅检查更新"/, "检查更新期间次按钮要显示进行中");
-  assert.match(titleBar, /有命令正在执行，等它结束再操作/, "菜单项置灰要有 title 说明");
+  assert.match(app, /有命令正在执行，等它结束再操作/, "主区按钮置灰要有 title 说明");
 });
 
 // ---------- runner ----------

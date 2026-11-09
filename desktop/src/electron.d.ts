@@ -3,6 +3,9 @@ import type { ProgressEvent } from "./types";
 export {};
 
 declare global {
+  /** 构建时由 vite.config.ts 从 package.json 注入，界面里的版本号只认这一处。 */
+  const __APP_VERSION__: string;
+
   interface Window {
     desktop?: {
       invoke<T>(command: string, args?: Record<string, unknown>): Promise<T>;

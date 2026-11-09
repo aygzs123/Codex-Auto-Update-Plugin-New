@@ -4,7 +4,7 @@
 // 自己用桩替换 IPC，所以主进程真的有没有处理 is-maximized、最大化事件有没有推给
 // 渲染进程，它一概看不见。这里用源码契约把接线钉住：
 //
-//   1. 最大化按钮要显示「还原」图标，就必��能读到当前状态（is-maximized 查询）
+//   1. 最大化按钮要显示「还原」图标，就必须能读到当前状态（is-maximized 查询）
 //      并且订阅后续变化（maximize / unmaximize → desktop:window-state）。
 //      少了任何一半，双击标题栏最大化后图标就会停在「最大化」上。
 //   2. 图标用 SVG 而不是字体符号。− □ × 的基线和对齐随字体变，而「还原」需要的
@@ -82,31 +82,31 @@ test("样式：窗口按钮仍是三个，且可点区域不小于 32×28", () =
   assert.ok(height >= 28, `窗口按钮高度过小：${height}px`);
 });
 
-test("布局：装饰圆点在内容区卡片里，顶栏不再有副标题", () => {
-  // 卡片标题栏上的 mac 圆点是装饰（原型 .window-head::before 就是纯装饰）：
-  // 卡片在滚动容器里，往下滚就跟着走了，所以它不能承担窗口操作。
-  const dot = stylesSource.match(/\.window-head::before\s*\{([^}]*)\}/);
-  assert.ok(dot, "找不到卡片上的装饰圆点规则 .window-head::before");
-  assert.match(dot[1], /border-radius:\s*50%/);
-  assert.match(dot[1], /#ff5f57/, "圆点应以 macOS 的红色为基准色");
-  assert.match(dot[1], /box-shadow:[^;]*#febc2e[^;]*#28c840/, "另外两个圆点应由 box-shadow 画出（黄、绿）");
-
-  // 装饰就是装饰：这三条规则一旦沾上 pointer / cursor:pointer，用户就会去点它。
-  assert.doesNotMatch(dot[1], /cursor:\s*pointer/, "装饰圆点不该有可点的鼠标指针");
-
-  // 真正能操作窗口的按钮必须在顶栏（固定、不随内容滚动）里。
+test("布局：窗口按钮在固定顶栏里，且就是那三颗红绿灯", () => {
+  // 重新设计之后，窗口操作全部由标题栏左侧的三颗圆点承担：红色关闭、黄色最小化、
+  // 绿色最大化/还原。它们必须待在 .topbar 里（固定、不随内容滚动），不能退回卡片装饰。
   const header = titleBarSource.match(/<header className="topbar"[\s\S]*?<\/header>/);
   assert.ok(header, "找不到 .topbar");
   assert.match(header[0], /<WindowControls \/>/, "窗口按钮必须留在顶栏里");
+
+  assert.match(stylesSource, /\.window-control\.red[^}]*#ff5f57/);
+  assert.match(stylesSource, /\.window-control\.yellow[^}]*#febc2e/);
+  assert.match(stylesSource, /\.window-control\.green[^}]*#28c840/);
+
+  // 装饰性的卡片圆点随旧布局一起删掉，否则同一个界面里会出现两套「窗口按钮」。
+  assert.doesNotMatch(stylesSource, /\.window-head::before/);
 
   assert.doesNotMatch(titleBarSource, /brand-sub/, "副标题已按需求去掉");
   assert.doesNotMatch(stylesSource, /\.brand-sub/, "副标题的样式也应一并清掉");
 });
 
-test("菜单：顶栏只留「操作」和「诊断」两组", () => {
-  // 窗口命令由右上角的按钮承担，菜单里再来一组就是重复入口，也和「只保留 2 个」不符。
-  const groups = [...titleBarSource.matchAll(/label:\s*"([^"]+)",\s*\n\s*items:/g)].map((match) => match[1]);
-  assert.deepEqual(groups, ["操作", "诊断"], `顶栏菜单分组应为 操作 / 诊断，实际 ${groups.join(" / ")}`);
+test("导航：旧顶栏菜单被侧栏取代，原生快捷键仍然保留", () => {
+  // 操作/诊断下拉菜单在改版里被左侧导航取代。四组入口由 Sidebar 提供，
+  // 顶栏不再承载菜单 —— 但主进程那条只留快捷键的原生菜单不能被一起删掉。
+  const sidebar = read("src", "components", "Sidebar.tsx");
+  const ids = [...sidebar.matchAll(/id:\s*"(overview|diagnostics|history|settings)"/g)].map((match) => match[1]);
+  assert.deepEqual(ids, ["overview", "diagnostics", "history", "settings"], `侧栏入口应为 概览/诊断/版本历史/设置，实际 ${ids.join(" / ")}`);
+  assert.doesNotMatch(titleBarSource, /MENU_GROUPS|menu-trigger|menu-popover/, "顶栏不该再留着旧菜单");
 
   // 原生菜单栏在 frame:false 下不显示，它留下来只是为了快捷键，不能被一起删掉。
   assert.match(
@@ -121,8 +121,8 @@ test("菜单：顶栏只留「操作」和「诊断」两组", () => {
 test("布局：标题栏在滚动容器之外，且内容区自己滚", () => {
   // 顶栏一旦落进滚动容器，往下滚就被内容顶走 —— 滚到底部时连关闭按钮都点不到。
   const app = read("src", "App.tsx");
-  const shell = app.match(/<div className="app-shell"[\s\S]*?<main className="window">/);
-  assert.ok(shell, "找不到 app-shell → window 的结构");
+  const shell = app.match(/<div className="app-shell"[\s\S]*?<main className="content-inner">/);
+  assert.ok(shell, "找不到 app-shell → content-inner 的结构");
   assert.match(shell[0], /<TitleBar/, "TitleBar 必须在 .app-scroll 之前、滚动容器之外");
   assert.match(shell[0], /className="app-scroll"/, "内容区缺少 .app-scroll 滚动容器");
 
@@ -131,12 +131,11 @@ test("布局：标题栏在滚动容器之外，且内容区自己滚", () => {
   assert.match(stylesSource, /body\s*\{[^}]*overflow:\s*hidden/);
 });
 
-test("布局：窄窗口下也不许藏掉顶栏菜单", () => {
+test("布局：窄窗口下也不许藏掉侧栏导航", () => {
   // 窗口是无边框的（frame: false + autoHideMenuBar），原生菜单栏根本不显示，
-  // 所以顶栏这个菜单是「检查更新 / 一键安装 / 诊断」唯一的可见入口。窄窗口下把它
-  // display:none 掉，等于用户把窗口拖小之后就再也点不到这些命令了。
-  // 先剥掉注释：说明这条规则的注释本身就写着 `.app-menu { display: none }`，
-  // 不剥的话断言会被自己的注释绊倒。
+  // 所以侧栏是「检查更新 / 一键安装 / 诊断 / 设置」唯一的可见入口。窄窗口下把它
+  // display:none 掉，等于用户把窗口拖小之后就再也点不到这些页面了。
+  // 先剥掉注释，避免断言被说明文字里引用的选择器绊倒。
   const css = stylesSource.replace(/\/\*[\s\S]*?\*\//g, "");
   const start = css.indexOf("@media (max-width: 760px)");
   assert.ok(start >= 0, "找不到窄窗口断点");
@@ -153,7 +152,67 @@ test("布局：窄窗口下也不许藏掉顶栏菜单", () => {
     }
   }
   const narrow = css.slice(start, end);
-  assert.doesNotMatch(narrow, /\.app-menu\s*\{[^}]*display:\s*none/);
+  assert.doesNotMatch(narrow, /\.sidebar\s*\{[^}]*display:\s*none/);
+});
+
+test("布局：窄窗口下顶栏三块不打架（标题 / 状态胶囊 / 上次检查）", () => {
+  // 顶栏是「红绿灯 + 居中标题 + 右侧状态」三块抢同一行宽度。默认 1120 宽够用，
+  // 但窗口能缩到 760：右侧再挂着「上次检查」就会压到居中标题上。胶囊本身也必须有
+  // 上限，否则长版本号会一路往左顶。
+  const css = stylesSource.replace(/\/\*[\s\S]*?\*\//g, "");
+  assert.match(css, /\.status-chip\s*\{[^}]*max-width:\s*360px/);
+  assert.match(css, /\.status-chip\s*\{[^}]*text-overflow:\s*ellipsis/);
+
+  const block = (width) => {
+    const start = css.indexOf(`@media (max-width: ${width}px)`);
+    assert.ok(start >= 0, `找不到 ${width}px 断点`);
+    let depth = 0;
+    for (let index = css.indexOf("{", start); index < css.length; index += 1) {
+      if (css[index] === "{") depth += 1;
+      else if (css[index] === "}") {
+        depth -= 1;
+        if (depth === 0) return css.slice(start, index);
+      }
+    }
+    throw new Error(`${width}px 断点没有闭合`);
+  };
+  // 1100px 以下先收掉次要的「上次检查」，并把胶囊压到 320；
+  // 930px 以下继续压到 290，给居中的「Codex Updater」让出位置。
+  assert.match(block(1100), /\.last-check\s*\{[^}]*display:\s*none/);
+  assert.match(block(1100), /\.status-chip\s*\{[^}]*max-width:\s*320px/);
+  assert.match(block(930), /\.status-chip\s*\{[^}]*max-width:\s*290px/);
+});
+
+// ---------- 桌面端滚动 ----------
+
+test("滚动：切页回到顶部，键盘也能滚内容区", () => {
+  // 内容区是独立的滚动容器（body 是 overflow:hidden）。不重置 scrollTop 的话，
+  // 从设置页底部切回概览会停在半截；不接管 PageUp/PageDown/Home/End 的话，
+  // 默认滚动的是文档，等于按了没反应 —— 这两条在浏览器里不会出现，是桌面端才有的。
+  const app = read("src", "App.tsx");
+  assert.match(app, /useRef<HTMLDivElement>\(null\)/, "滚动容器要有引用");
+  assert.match(app, /scrollRef\.current\?\.scrollTo\(\{ top: 0 \}\)/, "切页要回顶部");
+  assert.match(app, /ref=\{scrollRef\}/, "引用要真的挂到 .app-scroll 上");
+  assert.match(app, /"PageDown"/);
+  assert.match(app, /"PageUp"/);
+  assert.match(app, /"Home"/);
+  assert.match(app, /"End"/);
+  // 输入框里按 Home/End 是移动光标，不能被抢走；对话框打开时也不该滚背景。
+  assert.match(app, /closest\("input, textarea, select, \[contenteditable='true'\]"\)/);
+  assert.match(app, /useAppStore\.getState\(\)\.notice/);
+});
+
+test("窗口：初始矩形收进显示器工作区，不把窗口底边放到屏幕外", () => {
+  // 默认 1120×780 在 1280×800@150% 的笔记本上比工作区还高；从外接大屏切回来时
+  // 上次存的大矩形也可能超出。Windows 不会替你挪回来，底部内容就落在屏幕外了。
+  assert.match(mainSource, /screen\.getDisplayMatching\(restore\)[\s\S]{0,80}screen\.getPrimaryDisplay\(\)/);
+  assert.match(mainSource, /\.workArea/);
+  const create = mainSource.match(/async function createWindow\(\) \{[\s\S]*?const window = new BrowserWindow\(\{([\s\S]*?)\n  \}\);/);
+  assert.ok(create, "找不到 createWindow 的 BrowserWindow 配置");
+  const options = create[1];
+  assert.match(options, /width,/, "宽度必须用收进工作区后的值");
+  assert.match(options, /height,/, "高度必须用收进工作区后的值");
+  assert.doesNotMatch(options, /width:\s*restore \? restore\.width/, "不能把存的宽度原样交给 Windows");
 });
 
 // ---------- runner ----------

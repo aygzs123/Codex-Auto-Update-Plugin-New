@@ -551,10 +551,19 @@ async function createWindow() {
   const stored = storedWindowBounds();
   // 存的矩形不在任何显示器上就整块丢掉（外接显示器拔了的场景），回到默认尺寸居中。
   const restore = stored && isVisibleOnSomeDisplay(stored) ? stored : null;
+  // 初始矩形要收进工作区。默认 1120×780 比不少笔记本的工作区还高（1280×800@150%
+  // 缩放的工作区只有约 1280×752），从外接大屏切回来时上次存的大矩形也可能超出。
+  // 超出的部分 Windows 不会替你挪回来：窗口底部（含内容区最后一行）会直接落在
+  // 屏幕外，用户看到的是一扇「缺了下半截」的窗口。
+  const area = (restore ? screen.getDisplayMatching(restore) : screen.getPrimaryDisplay()).workArea;
+  const width = Math.min(restore ? restore.width : DEFAULT_WIDTH, Math.max(MIN_WIDTH, area.width));
+  const height = Math.min(restore ? restore.height : DEFAULT_HEIGHT, Math.max(MIN_HEIGHT, area.height));
+  const x = restore ? Math.min(Math.max(restore.x, area.x), area.x + area.width - width) : undefined;
+  const y = restore ? Math.min(Math.max(restore.y, area.y), area.y + area.height - height) : undefined;
   const window = new BrowserWindow({
-    width: restore ? restore.width : DEFAULT_WIDTH,
-    height: restore ? restore.height : DEFAULT_HEIGHT,
-    ...(restore ? { x: restore.x, y: restore.y } : {}),
+    width,
+    height,
+    ...(restore ? { x, y } : {}),
     minWidth: MIN_WIDTH,
     minHeight: MIN_HEIGHT,
     title: "Codex Updater",

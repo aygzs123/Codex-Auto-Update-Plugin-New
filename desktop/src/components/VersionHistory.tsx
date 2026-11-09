@@ -1,5 +1,6 @@
 import type { CachedPackage, CachedPackageList } from "../types";
 import { formatBytes } from "../lib/format";
+import { Icon } from "./Icons";
 
 const RELATION_TEXT: Record<string, string> = {
   installed: "当前已安装",
@@ -20,11 +21,8 @@ const RELATION_TEXT: Record<string, string> = {
  * —— 那一次的安装包在旧策略下已经被删掉了。所以空列表时给的是解释，不是一个空盒子。
  *
  * 刻意不做「删除此回退包」：旧版安装包删掉就再也拿不回来，一颗误点的删除按钮足以让
- * 整个功能失效。想腾空间走「安装包缓存」卡片里的「清空缓存」—— 那是一个写着明确后果、
+ * 整个功能失效。想腾空间走「安装包缓存」里的「清空缓存」—— 那是一个写着明确后果、
  * 且带原生确认框的动作，与逐行删除的手感完全不同。
- *
- * 保留策略改成「不自动清理」之后，这里如实报出缓存占了多少：卡片标题下面那句原本写着
- * 「最多保留 2 个」，现在是一句会随实际内容变化的实况，因为磁盘空间不再有人替用户兜底了。
  */
 export function VersionHistory({
   cachedPackages,
@@ -61,10 +59,9 @@ export function VersionHistory({
         "想腾空间可以在「安装包缓存」里清空。";
 
   return (
-    <section className="panel rollback-card">
-      <div className="health-head">
+    <section className="panel rollback-card card">
+      <div className="card-head">
         <div>
-          <p className="mini-label">Version History</p>
           <h3>版本历史</h3>
           <p className="tab-detail">
             更新时保留下来的安装包。新版本用起来有问题时，可以从这里退回上一版 ——
@@ -77,15 +74,21 @@ export function VersionHistory({
       </div>
 
       {packages.length === 0 ? (
-        <p className="field-help">
-          {installedVersion
-            ? "缓存里还没有可回退的旧版本安装包。回退依赖本应用自己保留下来的安装包，而保留下来的前提是" +
-              "「带着新版保留策略更新过一次」—— 之前更新时用过的安装包按旧策略已被清理，分发源也只提供最新版，" +
-              "所以它们找不回来了。下次更新之后再回到这里，就会看到上一版。"
-            : "尚未检测到已安装的 Codex Desktop。安装完成后，这里会列出保留下来的安装包。"}
-        </p>
+        <div className="empty-state">
+          <span className="empty-icon">
+            <Icon name="clock" size={22} />
+          </span>
+          <strong>还没有可回退的安装包</strong>
+          <p className="field-help">
+            {installedVersion
+              ? "缓存里还没有可回退的旧版本安装包。回退依赖本应用自己保留下来的安装包，而保留下来的前提是" +
+                "「带着新版保留策略更新过一次」—— 之前更新时用过的安装包按旧策略已被清理，分发源也只提供最新版，" +
+                "所以它们找不回来了。下次更新之后再回到这里，就会看到上一版。"
+              : "尚未检测到已安装的 Codex Desktop。安装完成后，这里会列出保留下来的安装包。"}
+          </p>
+        </div>
       ) : (
-        <div className="health-grid">
+        <div className="vh-list">
           {packages.map((pkg) => {
             const relation = pkg.relation in RELATION_TEXT ? pkg.relation : "unknown";
             // 同版本重装同样有用（当前这一版装着不对劲时），所以 installed 也给按钮。
@@ -105,6 +108,7 @@ export function VersionHistory({
                     type="button"
                     className="button rollback-action"
                     disabled={busy}
+                    title={busy ? "有命令正在执行，等它结束再操作" : undefined}
                     onClick={() => onRollback(pkg)}
                   >
                     {rollingBack ? "正在回退…" : relation === "installed" ? "重新安装" : "回退到此版本"}
@@ -117,7 +121,8 @@ export function VersionHistory({
       )}
 
       {cacheDirectory && (
-        <div className="settings-links">
+        <div className="settings-links card-foot">
+          <span className="hint">安装包只增不减，占多少由你决定</span>
           <button type="button" className="link-button" onClick={() => onOpenDirectory(cacheDirectory)}>
             打开缓存目录
           </button>

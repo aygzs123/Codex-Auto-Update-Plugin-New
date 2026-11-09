@@ -65,9 +65,12 @@ test("两个开关在类型里是可选的，默认就是关", () => {
   assert.match(types, /launchAtLogin\?: boolean;/, "类型里缺 launchAtLogin");
   assert.match(types, /lastNotifiedVersion\?: string;/, "类型里缺 lastNotifiedVersion");
   // 卡片里两个 checkbox 都按 `=== true` 判：字段缺失（老配置文件）时必须显示为未勾选，
-  // 而不是被 `undefined` 当假值时让 React 报「非受控组件」。
-  assert.match(card, /checked=\{settings\.minimizeToTray === true\}/);
-  assert.match(card, /checked=\{settings\.launchAtLogin === true\}/);
+  // 而不是被 `undefined` 当假值时让 React 报「非受控组件」。改版后两行由同一份
+  // rows 数据驱动，判据收在一处，但两个键仍然都得在。
+  assert.match(card, /key: "minimizeToTray"/);
+  assert.match(card, /key: "launchAtLogin"/);
+  assert.match(card, /const checked = settings\[row\.key\] === true;/, "复选框必须按 === true 判，缺字段时显示为未勾选");
+  assert.match(card, /checked=\{checked\}/);
 });
 
 // ---------- 通知 ----------

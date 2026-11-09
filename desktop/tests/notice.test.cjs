@@ -53,18 +53,21 @@ test("渲染进程：关闭动作接回 store 的 dismissNotice，不另造一�
   assert.match(appSource, /<NoticeDialog[^>]*onClose=\{dismissNotice\}/);
 });
 
-test("样式：对话框压得住顶栏与菜单", () => {
+test("样式：对话框压得住顶栏与侧栏", () => {
   const zIndexOf = (selector) => {
-    const rule = stylesSource.match(new RegExp(`\\${selector}\\s*\\{([^}]*)\\}`));
+    // 选择器可能出现在逗号列表里（.modal-backdrop, .modal-layer），
+    // 所以名字后面允许跟一段别的选择器再遇到 {。
+    const rule = stylesSource.match(new RegExp(`\\${selector}(?:\\s*,\\s*[^{]+)?\\s*\\{([^}]*)\\}`));
     assert.ok(rule, `找不到 ${selector} 规则`);
     return Number(rule[1].match(/z-index:\s*(\d+)/)?.[1]);
   };
   const modal = zIndexOf(".modal-backdrop");
   assert.ok(Number.isFinite(modal), "对话框遮罩必须显式给 z-index");
   assert.ok(modal > zIndexOf(".topbar"), `对话框(${modal}) 必须压过顶栏(${zIndexOf(".topbar")})`);
-  assert.ok(modal > zIndexOf(".menu-popover"), `对话框(${modal}) 必须压过菜单(${zIndexOf(".menu-popover")})`);
+  // 旧菜单已换成侧栏，但「浮层要压过整个外壳」这条不能松：给一个比顶栏高一档的下限。
+  assert.ok(modal > 30, `对话框(${modal}) 必须浮在整个应用外壳之上`);
   // 居中而不是贴边：place-items:center 是这条需求的落点。
-  assert.match(stylesSource, /\.modal-backdrop\s*\{[^}]*place-items:\s*center/);
+  assert.match(stylesSource, /\.modal-backdrop(?:,\s*[^{]+)?\s*\{[^}]*place-items:\s*center/);
 });
 
 // ---------- runner ----------

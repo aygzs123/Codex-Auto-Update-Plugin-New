@@ -5,7 +5,7 @@ type ToggleKey = "minimizeToTray" | "launchAtLogin";
 /**
  * 后台常驻相关的两个开关。
  *
- * 单独一张卡片、**默认全关**，是因为这两项都会改变本应用在用户机器上的存在方式：一个让
+ * 单独一组、**默认全关**，是因为这两项都会改变本应用在用户机器上的存在方式：一个让
  * 进程在关窗之后继续活着，一个往注册表里写开机启动项。同事没要求过的东西不该自己出现 ——
  * 一个「装完就在后台常驻、还开机自启」的小工具，第一反应是流氓软件。
  *
@@ -22,42 +22,54 @@ export function BackgroundSettings({
 }) {
   if (!settings) return null;
 
+  const rows: Array<{ key: ToggleKey; title: string; detail: string }> = [
+    {
+      key: "minimizeToTray",
+      title: "关窗后留在托盘里",
+      detail: "关掉窗口不退出，托盘图标里还能点「立即检查更新」。不想常驻就别开。",
+    },
+    {
+      key: "launchAtLogin",
+      title: "开机自动启动",
+      detail: "开机后静默起来查一次，发现新版本弹一条系统通知；不会弹窗，也不会自动安装。",
+    },
+  ];
+
   return (
-    <details className="panel settings-card">
+    <details className="panel settings-card card" open>
       <summary>后台与启动（可选）</summary>
       <div className="settings-body">
-        <label className="switch-row">
-          <input
-            type="checkbox"
-            checked={settings.minimizeToTray === true}
-            onChange={(event) => onToggle("minimizeToTray", event.target.checked)}
-          />
-          <span>
-            关窗后留在托盘里
-            <small>关掉窗口不退出，托盘图标里还能点「立即检查更新」。不想常驻就别开。</small>
-          </span>
-        </label>
+        {rows.map((row) => {
+          const checked = settings[row.key] === true;
+          return (
+            <div className="set-row" key={row.key}>
+              <div className="label">
+                <strong>{row.title}</strong>
+                <p>{row.detail}</p>
+              </div>
+              <label className="switch-control">
+                <input
+                  type="checkbox"
+                  className="sr-only"
+                  checked={checked}
+                  onChange={(event) => onToggle(row.key, event.target.checked)}
+                />
+                <span className="switch" role="switch" aria-checked={checked} />
+              </label>
+            </div>
+          );
+        })}
 
-        <label className="switch-row">
-          <input
-            type="checkbox"
-            checked={settings.launchAtLogin === true}
-            onChange={(event) => onToggle("launchAtLogin", event.target.checked)}
-          />
-          <span>
-            开机自动启动
-            <small>开机后静默起来查一次，发现新版本弹一条系统通知；不会弹窗，也不会自动安装。</small>
-          </span>
-        </label>
-
-        <p className="field-help">
-          两项都是可选的，默认关闭。打开之后也<strong>不会自动安装任何东西</strong>：需要管理员
-          授权的安装永远由你自己点。发现新版本只提醒一次（同一个版本不会反复提醒）。
-        </p>
-        <p className="field-help">
-          提示：系统通知需要应用装了带 AppUserModelID 的快捷方式才会显示，所以用安装包装出来的
-          版本才能看到通知；直接跑源码（开发模式）时不一定弹得出来。
-        </p>
+        <div className="set-block">
+          <p className="field-help">
+            两项都是可选的，默认关闭。打开之后也<strong>不会自动安装任何东西</strong>：需要管理员
+            授权的安装永远由你自己点。发现新版本只提醒一次（同一个版本不会反复提醒）。
+          </p>
+          <p className="field-help">
+            提示：系统通知需要应用装了带 AppUserModelID 的快捷方式才会显示，所以用安装包装出来的
+            版本才能看到通知；直接跑源码（开发模式）时不一定弹得出来。
+          </p>
+        </div>
       </div>
     </details>
   );

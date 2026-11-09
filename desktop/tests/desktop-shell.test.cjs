@@ -247,6 +247,21 @@ test("预加载桥把后台复查与真正退出都暴露出去", () => {
   assert.match(main, /if \(action === "quit"\) app\.quit\(\);/, "主进程没实现 quit 动作");
 });
 
+// ---------- 版本号 ----------
+
+test("界面版本号来自 package.json，不再手写", () => {
+  // 手写的版本号在升级时必然漂：Release 叫 0.2.0、界面还写着 0.1.0。
+  // 用户按界面判断自己装的是哪一版，这比不显示版本更糟。
+  const vite = read("vite.config.ts");
+  const app = read("src", "App.tsx");
+  const sidebar = read("src", "components", "Sidebar.tsx");
+  assert.match(vite, /__APP_VERSION__:\s*JSON\.stringify\(pkg\.version\)/, "构建时要把 package.json 的版本注入界面");
+  assert.match(app, /v\{__APP_VERSION__\}/);
+  assert.match(sidebar, /v\{__APP_VERSION__\}/);
+  assert.doesNotMatch(app, /v0\.\d+\.\d+/);
+  assert.doesNotMatch(sidebar, /v0\.\d+\.\d+/);
+});
+
 // ---------- runner ----------
 
 let failed = 0;

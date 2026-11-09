@@ -13,7 +13,7 @@
 //   npm run verify:render           校验 dist/ 构建产物
 //   npm run verify:render:packaged  校验 electron-builder 打包后的 app.asar 内产物
 
-const { app, BrowserWindow, clipboard, ipcMain } = require("electron");
+const { app, BrowserWindow, clipboard, ipcMain, nativeTheme } = require("electron");
 const { existsSync, mkdirSync, writeFileSync } = require("node:fs");
 const { join } = require("node:path");
 
@@ -35,6 +35,10 @@ const targetLabel = packaged ? "打包产物 (app.asar)" : "构建产物 (dist/)
 // --width=<px>：窗口宽度。主窗口 minWidth 是 760，窄宽度下才能复现布局挤压。
 const widthArg = process.argv.find((argument) => argument.startsWith("--width"));
 const windowWidth = widthArg && widthArg.includes("=") ? Number(widthArg.split("=")[1]) : 1120;
+
+// --dark：强制深色再截图。桌面端跟随系统主题，深色下对比度出问题不会在浅色
+// 截图里露出来，所以给一个能单独截深色的开关（只影响截图，不改断言）。
+const darkMode = process.argv.includes("--dark");
 
 // 打包态还必须确认脚本落在 asar 之外。PowerShell 无法执行 app.asar 内的 .ps1，
 // 而 extraResources 配错时这件事不会报错，只会等到用户点「一键安装」才失败。
@@ -430,7 +434,19 @@ function recordConsoleMessage(...args) {
 }
 
 async function inspect(window) {
-  return window.webContents.executeJavaScript(`(() => {
+  const run = (script) => window.webContents.executeJavaScript(script);
+  // 界面改成了「概览 / 诊断 / 版本历史 / 设置」四页，DOM 里同时只存在当前这一页。
+  // 每次 inspect 都先回概览，再逐页导航采集 —— 顺序固定，测量结果才可重复。
+  const go = async (view) => {
+    await run(
+      `(() => { const item = document.querySelector('.nav-item[data-nav="${view}"]'); if (item) item.click(); return !!item; })()`,
+    );
+    // 页面入场动画 0.24s；等它落定再量，否则位置都在动画起始帧上。
+    await new Promise((resolve) => setTimeout(resolve, 300));
+  };
+
+  await go("overview");
+  const overview = await run(`(() => {
     const text = (selector) => {
       const element = document.querySelector(selector);
       return element ? element.textContent.trim() : "";
@@ -489,7 +505,7 @@ async function inspect(window) {
             const rect = button.getBoundingClientRect();
             const range = document.createRange();
             range.selectNodeContents(button);
-            const lineBoxes = range.getClientRects().length;
+            const lineBoxes = new Set([...range.getClientRects()].map((entry) => Math.round(entry.top))).size;
             return {
               rowIndex,
               label: button.textContent.trim(),
@@ -519,26 +535,6 @@ async function inspect(window) {
           left: Math.round(rect.left),
         };
       }),
-      // 卡片标题栏上的装饰圆点（原型 .window-head::before）：红黄绿三个，
-      // 用 box-shadow 画出另外两个。它是装饰，不该有点击目标。
-      cardDots: (() => {
-        const head = document.querySelector(".window-head");
-        if (!head) return null;
-        const dot = getComputedStyle(head, "::before");
-        return {
-          content: dot.content,
-          color: dot.backgroundColor,
-          radius: dot.borderTopLeftRadius,
-          shadow: dot.boxShadow,
-          width: Math.round(parseFloat(dot.width) || 0),
-          pointerEvents: dot.pointerEvents,
-        };
-      })(),
-      // 卡片标题栏的左内边距：给圆点留的空位（原型是 94px）。
-      cardHeadPadding: (() => {
-        const head = document.querySelector(".window-head");
-        return head ? Math.round(parseFloat(getComputedStyle(head).paddingLeft) || 0) : null;
-      })(),
       // 只认硬错误：.error-text.soft 是软告警（安装包删不掉、窗口探测失败这类
       // 已知且已有补救入口的情况），不是失败。
       errorText: text(".error-text:not(.soft)"),
@@ -628,7 +624,7 @@ async function inspect(window) {
           if (button) {
             const range = document.createRange();
             range.selectNodeContents(button);
-            lineBoxes = range.getClientRects().length;
+            lineBoxes = new Set([...range.getClientRects()].map((entry) => Math.round(entry.top))).size;
           }
           return {
             version: row.querySelector(".health-labels strong")?.textContent.trim() ?? "",
@@ -733,6 +729,152 @@ async function inspect(window) {
       })(),
     };
   })()`);
+
+  // 诊断页：健康结论、组件行、窗口探测原始输出都在那一页。
+  await go("diagnostics");
+  const diagnostics = await run(`(() => {
+    const text = (selector) => {
+      const element = document.querySelector(selector);
+      return element ? element.textContent.trim() : "";
+    };
+    return {
+      verdict: text(".verdict"),
+      fieldHelp: Array.from(document.querySelectorAll(".field-help")).map((node) => node.textContent.trim()).join(" | "),
+      healthRows: document.querySelectorAll(".health-row").length,
+      rawOutputs: [...document.querySelectorAll(".raw-output")].map((node) => node.textContent.trim()),
+    };
+  })()`);
+
+  // 设置页：路径行、安装位置、缓存卡片。所有 .settings-card 默认展开。
+  await go("settings");
+  const settings = await run(`(() => {
+    const pathRowButtons = (() => {
+      const rows = [...document.querySelectorAll(".path-row")];
+      if (rows.length === 0) return null;
+      return rows.flatMap((row, rowIndex) => {
+        const rowRect = row.getBoundingClientRect();
+        return [...row.querySelectorAll("button")].map((button) => {
+          const rect = button.getBoundingClientRect();
+          // 只量文字节点的行盒：按钮是 inline-flex，图标和文字各占一个盒子，
+          // 把图标算进去会把「同一行」误判成两行。
+          const walker = document.createTreeWalker(button, NodeFilter.SHOW_TEXT);
+          const nodes = [];
+          while (walker.nextNode()) {
+            if (walker.currentNode.textContent.trim()) nodes.push(walker.currentNode);
+          }
+          let lineBoxes = 0;
+          if (nodes.length) {
+            const range = document.createRange();
+            range.setStart(nodes[0], 0);
+            range.setEnd(nodes[nodes.length - 1], nodes[nodes.length - 1].textContent.length);
+            lineBoxes = new Set([...range.getClientRects()].map((entry) => Math.round(entry.top))).size;
+          }
+          return {
+            rowIndex,
+            label: button.textContent.trim(),
+            width: Math.round(rect.width),
+            height: Math.round(rect.height),
+            lineBoxes,
+            clipped: button.scrollWidth > button.clientWidth + 1 || lineBoxes > 1,
+            overflowsRow: Math.round(rect.right) > Math.round(rowRect.right) + 1,
+          };
+        });
+      });
+    })();
+
+    const installLocationField = (() => {
+      const field = document.querySelector("#install-location");
+      return field ? field.value : null;
+    })();
+
+    const cache = (() => {
+      const card = [...document.querySelectorAll(".settings-card")].find((node) =>
+        node.querySelector("summary")?.textContent.includes("安装包缓存"),
+      );
+      if (!card) return null;
+      const summary = card.querySelector("summary")?.textContent.trim() ?? "";
+      const clearButton = [...card.querySelectorAll("button")].find((button) =>
+        button.textContent.includes("清空缓存"),
+      );
+      const toggle = card.querySelector('input[type="checkbox"]');
+      return {
+        summary,
+        hasBrowse: [...card.querySelectorAll("button")].some((b) => b.textContent.includes("浏览")),
+        clearLabel: clearButton ? clearButton.textContent.trim() : "",
+        clearDisabled: clearButton ? clearButton.disabled : null,
+        clearIsDanger: clearButton ? clearButton.classList.contains("danger") : null,
+        historyToggleChecked: toggle ? toggle.checked : null,
+        help: [...card.querySelectorAll(".field-help")].map((node) => node.textContent.trim()),
+      };
+    })();
+
+    return { pathRowButtons, installLocationField, cache };
+  })()`);
+
+  // 版本历史页：逐行量回退按钮。ctaLabel 在概览页的主按钮上，这里量不到，
+  // 合并时从 overview 补上（回退途中文案断言用的就是它）。
+  await go("history");
+  const history = await run(`(() => {
+    const text = (selector) => {
+      const element = document.querySelector(selector);
+      return element ? element.textContent.trim() : "";
+    };
+    const card = document.querySelector(".rollback-card");
+    if (!card) return { rollback: null };
+    const rows = [...card.querySelectorAll(".rollback-row")];
+    const help = [...card.querySelectorAll(".field-help")].map((node) => node.textContent.trim());
+    const scroller = document.querySelector(".app-scroll");
+    const savedScrollTop = scroller ? scroller.scrollTop : 0;
+    const modalOpen = !!document.querySelector(".modal-backdrop");
+    const measured = rows.map((row) => {
+      const button = row.querySelector(".rollback-action");
+      if (button) button.scrollIntoView({ block: "center" });
+      const rect = button ? button.getBoundingClientRect() : null;
+      const hit =
+        rect && !modalOpen
+          ? document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2)
+          : null;
+      let lineBoxes = 0;
+      if (button) {
+        const range = document.createRange();
+        range.selectNodeContents(button);
+        lineBoxes = new Set([...range.getClientRects()].map((entry) => Math.round(entry.top))).size;
+      }
+      return {
+        version: row.querySelector(".health-labels strong")?.textContent.trim() ?? "",
+        state: row.querySelector(".health-state")?.textContent.trim() ?? "",
+        className: row.className,
+        buttonLabel: button ? button.textContent.trim() : "",
+        buttonDisabled: button ? button.disabled : null,
+        buttonWidth: rect ? Math.round(rect.width) : 0,
+        buttonHeight: rect ? Math.round(rect.height) : 0,
+        buttonLineBoxes: lineBoxes,
+        buttonCovered: rect && !modalOpen ? !(hit && (hit === button || button.contains(hit))) : false,
+        overflowsRow: rect ? Math.round(rect.right) > Math.round(row.getBoundingClientRect().right) + 1 : false,
+      };
+    });
+    if (scroller) scroller.scrollTop = savedScrollTop;
+
+    return {
+      rollback: {
+        heading: text(".rollback-card h3"),
+        rowCount: rows.length,
+        emptyHelp: rows.length === 0 ? help.join(" | ") : "",
+        deleteButtonCount: [...card.querySelectorAll("button")].filter((button) =>
+          button.textContent.includes("删除"),
+        ).length,
+        rows: measured,
+      },
+    };
+  })()`);
+
+  await go("overview");
+  return {
+    ...overview,
+    ...diagnostics,
+    ...settings,
+    rollback: history.rollback ? { ...history.rollback, ctaLabel: overview.ctaLabel } : null,
+  };
 }
 
 /**
@@ -742,53 +884,38 @@ async function inspect(window) {
  * 来的 —— 主按钮置灰而菜单不置灰，等于闸门只关了一半。
  */
 async function readBusyState(window) {
-  const readButtons = () =>
-    window.webContents.executeJavaScript(`(() => {
-      const collect = (selector) =>
-        [...document.querySelectorAll(selector)].map((button) => ({
-          label: button.textContent.trim(),
-          disabled: button.disabled,
-          title: button.title || "",
-        }));
-      return {
-        cta: collect(".cta-row button"),
-        health: collect(".dash-actions button"),
-      };
-    })()`);
-
-  // 菜单项只在展开时才存在，所以逐组展开、采集，再收起。点两次同一个触发器就是关闭。
-  const readMenuGroup = async (index, count) => {
-    const open = async () => {
-      await window.webContents.executeJavaScript(
-        `(() => { const t = document.querySelectorAll(".menu-trigger")[${index}]; if (t) t.click(); return !!t; })()`,
-      );
-      await new Promise((resolve) => setTimeout(resolve, 120));
-      const items = await window.webContents.executeJavaScript(`(() => {
-        const popover = document.querySelector(".menu-popover");
-        if (!popover) return null;
-        return [...popover.querySelectorAll("button")].map((button) => ({
-          label: button.textContent.trim(),
-          disabled: button.disabled,
-          title: button.title || "",
-        }));
-      })()`);
-      await window.webContents.executeJavaScript(
-        `(() => { const t = document.querySelectorAll(".menu-trigger")[${index}]; if (t) t.click(); return true; })()`,
-      );
-      await new Promise((resolve) => setTimeout(resolve, 80));
-      return items;
-    };
-    const items = await open();
-    // 展不开就再试一次：菜单靠 React 状态渲染，极慢的机器上第一次可能还没提交。
-    return items && items.length === count ? items : await open();
+  const run = (script) => window.webContents.executeJavaScript(script);
+  const go = async (view) => {
+    await run(
+      `(() => { const item = document.querySelector('.nav-item[data-nav="${view}"]'); if (item) item.click(); return !!item; })()`,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 260));
   };
+  const collect = (selector) => `(() => {
+    return [...document.querySelectorAll(${JSON.stringify(selector)})].map((button) => ({
+      label: button.textContent.trim(),
+      disabled: button.disabled,
+      title: button.title || "",
+    }));
+  })()`;
 
-  const buttons = await readButtons();
-  const menu = [
-    ...((await readMenuGroup(0, 3)) ?? []),
-    ...((await readMenuGroup(1, 4)) ?? []),
-  ];
-  return { ...buttons, menu };
+  // 命令入口现在分散在三页：概览的主/次按钮、诊断的自检按钮、设置里的回退与清空。
+  // 每页单独导航采集，最后回到概览 —— 场景后续的断言与截图都基于概览。
+  await go("overview");
+  const cta = await run(collect(".cta-row button"));
+  await go("diagnostics");
+  const health = await run(collect(".dash-actions button, .page-head .button"));
+  await go("settings");
+  // 即时入口：打开缓存/日志目录、复制诊断。它们不跑命令，忙时也必须可点。
+  const instant = await run(collect(".settings-links button"));
+  const cacheClear = await run(`(() => {
+    const button = [...document.querySelectorAll("button")].find((b) => b.textContent.includes("清空缓存"));
+    return button
+      ? { label: button.textContent.trim(), disabled: button.disabled, title: button.title || "" }
+      : null;
+  })()`);
+  await go("overview");
+  return { cta, health, instant, cacheClear };
 }
 
 async function main() {
@@ -801,6 +928,7 @@ async function main() {
   }
 
   registerStubHandlers();
+  if (darkMode) nativeTheme.themeSource = "dark";
 
   const window = new BrowserWindow({
     // 截图需要真实合成，隐藏窗口抓图不可靠。
@@ -931,17 +1059,22 @@ async function main() {
   // 那是另一件事（而且必然是错的）。
   const startupReport = report;
 
-  // 展开**所有**设置卡片，让路径行（输入框 + 浏览按钮）真的进入布局再测量。
-  // 折叠状态下 <details> 内容不参与布局，量不到裁切。必须在状态数据到位之后做：
-  // settings 未就绪时这些卡片渲染 null，那时还拿不到元素。
-  //
-  // 必须是 querySelectorAll —— 设置区不止一张卡片（安装包缓存 / 高级设置 / 后台与启动），
-  // 只开第一张的话，后面的卡片整片不参与布局：里面的路径行量不到、#install-location
-  // 也读成 null。全开才是「把该量的都量了」。
-  const openedSettingsCount = await window.webContents.executeJavaScript(
-    `(() => { const cards = [...document.querySelectorAll(".settings-card")]; cards.forEach((card) => { card.open = true; }); return cards.length; })()`,
-  );
+  // 设置页现在是独立视图，卡片只在导航过去之后才存在。点进去、把所有 <details>
+  // 展开并计数 —— 必须在状态数据到位之后做：settings 未就绪时这些卡片渲染 null。
+  // 计数为 0 时下面那些路径行/安装位置的测量全是空值，会一路「通过」，那种绿是假的。
+  const openedSettingsCount = await window.webContents.executeJavaScript(`(async () => {
+    const nav = document.querySelector('.nav-item[data-nav="settings"]');
+    if (nav) nav.click();
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    const cards = [...document.querySelectorAll(".settings-card")];
+    cards.forEach((card) => { card.open = true; });
+    return cards.length;
+  })()`);
   await new Promise((resolve) => setTimeout(resolve, 250));
+  await window.webContents.executeJavaScript(
+    `(() => { const nav = document.querySelector('.nav-item[data-nav="overview"]'); if (nav) nav.click(); return true; })()`,
+  );
+  await new Promise((resolve) => setTimeout(resolve, 300));
 
   // 进度流场景：先推下载阶段（验证不确定进度条），再推安装阶段（验证百分比推进）。
   let downloadReport = null;
@@ -1086,13 +1219,15 @@ async function main() {
   let rollbackBusy = null;
   let rollbackAfter = null;
   if (rollbackScenario) {
-    const clicked = await window.webContents.executeJavaScript(
-      `(() => {
-        const button = document.querySelector(".rollback-row.older .rollback-action");
-        if (button) button.click();
-        return !!button;
-      })()`,
-    );
+    // 版本历史是独立视图：先导航过去，再点那一行的回退按钮。
+    const clicked = await window.webContents.executeJavaScript(`(async () => {
+      const nav = document.querySelector('.nav-item[data-nav="history"]');
+      if (nav) nav.click();
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      const button = document.querySelector(".rollback-row.older .rollback-action");
+      if (button) button.click();
+      return !!button;
+    })()`);
     if (!clicked) problems.push("版本历史里找不到可回退那一行的按钮，回退流程无从触发");
     await new Promise((resolve) => setTimeout(resolve, 400));
     rollbackBusy = await inspect(window);
@@ -1122,78 +1257,101 @@ async function main() {
     return measured;
   })()`);
 
-  // 顶栏下拉菜单：打开后逐个菜单项做命中测试。用 elementFromPoint 而不是看
-  // getBoundingClientRect —— 菜单的坐标可以完全正确，同时被上面那层内容盖住，
-  // 这种「量得到、点不到」只有命中测试能发现。
-  let menuReport = null;
+  // 侧栏导航：逐页点进去，确认每一页真的渲染出来，同时量导航项本身有没有
+  // 被裁切或被内容盖住。用 elementFromPoint 而不是只看 getBoundingClientRect ——
+  // 坐标可以完全正确，同时被上面一层盖住，「量得到、点不到」只有命中测试能发现。
+  let navReport = null;
   if (menuOpen) {
-    menuReport = await window.webContents.executeJavaScript(`(() => {
-      const trigger = document.querySelector(".menu-trigger");
-      if (!trigger) return { missing: true };
-      const triggerRect = trigger.getBoundingClientRect();
-      // 尺寸为 0 说明触发器压根没参与布局（display:none / 被隐藏），
-      // 此时菜单不是「被盖住」而是「不存在」，报错文案要能区分这两件事。
-      if (triggerRect.width === 0 || triggerRect.height === 0) return { hidden: true };
-      trigger.click();
-      return null;
+    const run = (script) => window.webContents.executeJavaScript(script);
+    const navIds = ["overview", "diagnostics", "history", "settings"];
+    const pages = [];
+    for (const id of navIds) {
+      await run(
+        `(() => { const item = document.querySelector('.nav-item[data-nav="${id}"]'); if (item) item.click(); return !!item; })()`,
+      );
+      await new Promise((resolve) => setTimeout(resolve, 320));
+      pages.push(
+        await run(`(() => {
+          const page = document.querySelector(".page");
+          const heading =
+            document.querySelector(".page-head h1")?.textContent.trim() ??
+            document.querySelector(".hero-card h1")?.textContent.trim() ??
+            "";
+          return { id: ${JSON.stringify(id)}, heading, hasPage: !!page };
+        })()`),
+      );
+    }
+    // 桌面端滚动：切页要回顶部；PageUp/PageDown/Home/End 要能滚内容区。
+    // 在「设置」页上量 —— 它是四页里唯一一页高度超过窗口的，滚动才有意义。
+    const clickNav = (id) =>
+      run(`(() => { const item = document.querySelector('.nav-item[data-nav="${id}"]'); if (item) item.click(); return !!item; })()`);
+    await clickNav("settings");
+    await new Promise((resolve) => setTimeout(resolve, 320));
+    const scrolledTo = await run(`(() => {
+      const scroll = document.querySelector(".app-scroll");
+      scroll.scrollTop = scroll.scrollHeight;
+      return { top: Math.round(scroll.scrollTop), max: Math.round(scroll.scrollHeight - scroll.clientHeight) };
+    })()`);
+    await clickNav("overview");
+    await new Promise((resolve) => setTimeout(resolve, 320));
+    const resetTop = await run(`(() => Math.round(document.querySelector(".app-scroll").scrollTop))()`);
+    await clickNav("settings");
+    await new Promise((resolve) => setTimeout(resolve, 320));
+    const keyboardScroll = await run(`(() => {
+      const scroll = document.querySelector(".app-scroll");
+      scroll.scrollTop = 0;
+      const press = (key) => window.dispatchEvent(new KeyboardEvent("keydown", { key }));
+      press("PageDown");
+      const afterPageDown = Math.round(scroll.scrollTop);
+      press("End");
+      const afterEnd = Math.round(scroll.scrollTop);
+      press("Home");
+      const afterHome = Math.round(scroll.scrollTop);
+      return { afterPageDown, afterEnd, afterHome, max: Math.round(scroll.scrollHeight - scroll.clientHeight) };
     })()`);
 
-    if (!menuReport) {
-      await new Promise((resolve) => setTimeout(resolve, 250));
-      menuReport = await window.webContents.executeJavaScript(`(() => {
-        const popover = document.querySelector(".menu-popover");
-        const controls = document.querySelector(".window-controls");
-        const menu = document.querySelector(".app-menu");
-        const bar = document.querySelector(".topbar");
-        if (!popover) return { noPopover: true };
-        const items = [...popover.querySelectorAll("button")];
-        const probe = (element) => {
-          const rect = element.getBoundingClientRect();
+    navReport = {
+      pages,
+      scroll: { scrolledTo, resetTop, keyboardScroll },
+      items: await run(`(() => {
+        return [...document.querySelectorAll(".nav-item")].map((item) => {
+          const rect = item.getBoundingClientRect();
           const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
           return {
-            label: element.textContent.trim(),
+            id: item.dataset.nav || "",
+            label: item.querySelector("span:not(.nav-badge)")?.textContent.trim() ?? item.textContent.trim(),
             top: Math.round(rect.top),
+            width: Math.round(rect.width),
+            height: Math.round(rect.height),
             zeroSize: rect.width === 0 || rect.height === 0,
-            covered: !(hit && (hit === element || element.contains(hit))),
+            covered: !(hit && (hit === item || item.contains(hit))),
             hitTag: hit ? (hit.className || hit.tagName) : "(空)",
           };
-        };
-        const barRect = bar ? bar.getBoundingClientRect() : null;
-        const menuRect = menu ? menu.getBoundingClientRect() : null;
-        const controlsRect = controls ? controls.getBoundingClientRect() : null;
-        return {
-          items: items.map(probe),
-          self: probe(popover),
-          // 窗口按钮在右上角，窄窗口下菜单会和它们争右边界，量一下有没有撞上。
-          gapToControls: menuRect && controlsRect
-            ? Math.round(controlsRect.left - menuRect.right)
-            : null,
-          // 菜单本身也不能被顶出顶栏右边界。
-          roomRight: barRect && menuRect ? Math.round(barRect.right - menuRect.right) : null,
-        };
-      })()`);
-    }
+        });
+      })()`),
+    };
+    await run(
+      `(() => { const item = document.querySelector('.nav-item[data-nav="overview"]'); if (item) item.click(); return true; })()`,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 300));
   }
 
-  // 「诊断 → 复制诊断信息」走一遍完整链路，再从主进程读回剪贴板。
+  // 「设置 → 目录与诊断 → 复制诊断信息」走一遍完整链路，再从主进程读回剪贴板。
   //
-  // 这条链路横跨渲染进程与主进程（菜单 → runAction → store 拼文本 → IPC → 剪贴板），
+  // 这条链路横跨渲染进程与主进程（按钮 → store 拼文本 → IPC → 剪贴板），
   // 只看源码文本证明不了它真的通 —— 少接一根线的话，界面会弹一句「已复制」而剪贴板
   // 里什么都没有，正是那种「看起来成功了」的坏法。
   let diagnosticsCopied = "";
   if (menuOpen) {
     clipboard.writeText("");
+    await window.webContents.executeJavaScript(
+      `(() => { const item = document.querySelector('.nav-item[data-nav="settings"]'); if (item) item.click(); return !!item; })()`,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 300));
     await window.webContents.executeJavaScript(`(() => {
-      const trigger = document.querySelectorAll(".menu-trigger")[1];
-      if (trigger) trigger.click();
-      return true;
-    })()`);
-    await new Promise((resolve) => setTimeout(resolve, 200));
-    await window.webContents.executeJavaScript(`(() => {
-      const popover = document.querySelector(".menu-popover");
-      const item = popover
-        ? [...popover.querySelectorAll("button")].find((button) => button.textContent.includes("复制诊断信息"))
-        : null;
+      const item = [...document.querySelectorAll(".settings-links button")].find((button) =>
+        button.textContent.includes("复制诊断信息"),
+      );
       if (item) item.click();
       return !!item;
     })()`);
@@ -1207,6 +1365,10 @@ async function main() {
       return !!button;
     })()`);
     await new Promise((resolve) => setTimeout(resolve, 200));
+    await window.webContents.executeJavaScript(
+      `(() => { const item = document.querySelector('.nav-item[data-nav="overview"]'); if (item) item.click(); return true; })()`,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 300));
   }
 
   const problems = [];
@@ -1277,22 +1439,6 @@ async function main() {
     }
   }
 
-  // 卡片标题栏上的 mac 装饰圆点：要有红黄绿三个、要够圆，且不能变成可点元素 ——
-  // 它在滚动容器里，往下滚就跟着走，让它承担窗口操作会得到「滚到底关不掉窗口」。
-  const dots = report.cardDots;
-  if (!dots || dots.content === "none") {
-    problems.push("卡片标题栏上没有渲染出 mac 装饰圆点（.window-head::before 缺失）");
-  } else {
-    if (dots.color !== "rgb(255, 95, 87)") problems.push(`装饰圆点基准色应为口红灯 #ff5f57，实际 ${dots.color}`);
-    if (dots.radius !== "50%") problems.push(`装饰圆点不是圆形：border-radius=${dots.radius}`);
-    for (const [name, color] of [["黄", "254, 188, 46"], ["绿", "40, 200, 64"]]) {
-      if (!dots.shadow.includes(color)) problems.push(`装饰圆点缺少${name}灯（box-shadow=${dots.shadow}）`);
-    }
-    if (report.cardHeadPadding !== null && report.cardHeadPadding < dots.width * 3) {
-      problems.push(`卡片标题栏左内边距 ${report.cardHeadPadding}px 放不下三个圆点，标题会压在圆点上`);
-    }
-  }
-
   // 顶栏固定性：内容区滚到底后，窗口按钮仍必须留在视口内。
   if (!stickyTitleBar) {
     problems.push("找不到 .app-scroll 或 .window-controls，无法校验顶栏固定性");
@@ -1302,25 +1448,53 @@ async function main() {
     );
   }
 
-  // 顶栏下拉菜单必须真的能看到、点到：菜单是「检查更新 / 一键安装 / 诊断」这些命令
-  // 唯一的可见入口（窗口无边框，原生菜单栏不显示），窗口缩小时把它隐藏掉等于
-  // 让用户彻底用不了这些命令。
+  // 侧栏导航必须真的能看到、点到，且每一页都渲染得出来：窗口无边框，原生菜单栏
+  // 不显示，侧栏是四个页面唯一的可见入口；窄窗口下把它藏起来，等于用户拖小窗口之后
+  // 再也去不了诊断与设置。
   if (menuOpen) {
-    if (menuReport?.missing) problems.push("顶栏里没有菜单触发器 .menu-trigger");
-    else if (menuReport?.hidden) problems.push("菜单触发器在窗口缩小时被隐藏了（display:none），命令失去入口");
-    else if (menuReport?.noPopover) problems.push("点击菜单触发器后没有弹出 .menu-popover");
-    else if (!menuReport) problems.push("菜单探测没有返回结果");
-    else {
-      for (const item of [menuReport.self, ...menuReport.items]) {
-        if (item.zeroSize) problems.push(`菜单项没有参与布局（尺寸为 0）：${item.label || "菜单面板"}`);
-        else if (item.covered) problems.push(`菜单被内容盖住（点不到）：${item.label || "菜单面板"}，命中到 ${item.hitTag}`);
+    if (!navReport) {
+      problems.push("导航探测没有返回结果");
+    } else {
+      const expectedNav = [
+        ["overview", "概览"],
+        ["diagnostics", "诊断"],
+        ["history", "版本历史"],
+        ["settings", "设置"],
+      ];
+      if (navReport.items.length !== expectedNav.length) {
+        problems.push(`侧栏应有 ${expectedNav.length} 个入口，实际 ${navReport.items.length} 个`);
       }
-      // 窄窗口下菜单可能被顶出顶栏右边界（后面的菜单组也就点不到了）。
-      if (menuReport.roomRight !== null && menuReport.roomRight < 0) {
-        problems.push(`菜单被挤出顶栏 ${-menuReport.roomRight}px（窗口太窄时后面的菜单组点不到）`);
+      for (const [id, label] of expectedNav) {
+        const item = navReport.items.find((entry) => entry.id === id);
+        if (!item) {
+          problems.push(`侧栏缺少「${label}」入口`);
+          continue;
+        }
+        if (!item.label.includes(label)) problems.push(`侧栏「${label}」入口文案不正确：${item.label}`);
+        if (item.zeroSize) problems.push(`侧栏入口没有参与布局（尺寸为 0）：${item.label}`);
+        else if (item.covered) problems.push(`侧栏入口被盖住（点不到）：${item.label}，命中到 ${item.hitTag}`);
+
+        const page = navReport.pages.find((entry) => entry.id === id);
+        if (!page?.hasPage) problems.push(`导航到「${label}」后没有渲染出页面`);
+        else if (!page.heading) problems.push(`「${label}」页没有渲染出标题`);
       }
-      if (menuReport.gapToControls !== null && menuReport.gapToControls < 0) {
-        problems.push(`菜单与窗口按钮重叠了 ${-menuReport.gapToControls}px（窗口太窄时挤在一起）`);
+
+      // 桌面端滚动契约。设置页必须真的能滚，否则后两条是恒真的空断言。
+      const scroll = navReport.scroll;
+      if (scroll.scrolledTo.max <= 0 || scroll.scrolledTo.top <= 0) {
+        problems.push("设置页没有可滚动的内容，切页回顶与键盘滚动都无法验证");
+      }
+      if (scroll.resetTop !== 0) {
+        problems.push(`切回概览后内容区没有回到顶部（scrollTop=${scroll.resetTop}）`);
+      }
+      if (scroll.keyboardScroll.afterPageDown <= 0) {
+        problems.push("PageDown 没有滚动内容区");
+      }
+      if (scroll.keyboardScroll.afterEnd < scroll.keyboardScroll.max - 2) {
+        problems.push(`End 没有滚到底（${scroll.keyboardScroll.afterEnd}/${scroll.keyboardScroll.max}）`);
+      }
+      if (scroll.keyboardScroll.afterHome !== 0) {
+        problems.push(`Home 没有回到顶部（scrollTop=${scroll.keyboardScroll.afterHome}）`);
       }
     }
 
@@ -1748,22 +1922,16 @@ async function main() {
         if (!button.disabled) problems.push(`命令执行中诊断按钮仍可点击：${button.label}`);
       }
 
-      const commandItems = ["检查更新", "一键安装 / 更新", "打开 Codex", "健康自检（含窗口探测）", "修复资源副本"];
       // 「复制诊断信息」归在这一档：它不跑命令、瞬间返回，而且最需要它的时刻恰恰是
       // 安装刚失败、界面还忙着的那个时候 —— 忙时把它一起禁掉就是帮倒忙。
       const instantItems = ["复制诊断信息", "打开日志目录", "打开缓存目录"];
-      const byLabel = new Map((busyReport.menu ?? []).map((item) => [item.label, item]));
-      if (byLabel.size === 0) problems.push("命令执行中没有采集到任何菜单项");
-      for (const label of commandItems) {
-        const item = byLabel.get(label);
-        if (!item) problems.push(`菜单里找不到命令项：${label}`);
-        else if (!item.disabled) problems.push(`命令执行中菜单项仍可点击：${label}`);
-      }
-      // 打开目录是每条命令链路之外的动作，秒回，而且跑着的时候正是用户最想点它。
+      const byLabel = new Map((busyReport.instant ?? []).map((item) => [item.label, item]));
+      if (byLabel.size === 0) problems.push("命令执行中没有采集到设置页的即时入口");
+      // 打开目录/复制诊断是每条命令链路之外的动作，秒回，而且跑着的时候正是用户最想点它。
       for (const label of instantItems) {
         const item = byLabel.get(label);
-        if (!item) problems.push(`菜单里找不到目录项：${label}`);
-        else if (item.disabled) problems.push(`命令执行中不该禁用目录项：${label}`);
+        if (!item) problems.push(`设置页里找不到即时入口：${label}`);
+        else if (item.disabled) problems.push(`命令执行中不该禁用即时入口：${label}`);
       }
 
       // 连点不叠加：上面又发了 4 次「检查更新」（此前还发过 3 次），真跑到的只该是
@@ -1792,8 +1960,9 @@ async function main() {
         for (const button of idleReport.health ?? []) {
           if (button.disabled) problems.push(`命令结束后诊断按钮没有恢复可点：${button.label}`);
         }
-        const item = (idleReport.menu ?? []).find((entry) => entry.label === "检查更新");
-        if (item?.disabled) problems.push("命令结束后菜单项没有恢复可点：检查更新");
+        for (const button of idleReport.instant ?? []) {
+          if (button.disabled) problems.push(`命令结束后即时入口没有恢复可点：${button.label}`);
+        }
       }
     }
   }
@@ -1820,29 +1989,48 @@ async function main() {
                   : "ready";
     // 内容高度从 .app-scroll 量，不是 documentElement：整窗只有内容区滚动，
     // 文档本身不滚，量文档只会得到视口高度，截出来永远是半张图。
-    const fullHeight = await window.webContents.executeJavaScript(
-      `(() => {
-        const scroll = document.querySelector(".app-scroll");
-        const bar = document.querySelector(".topbar");
-        const barHeight = bar ? bar.getBoundingClientRect().height : 0;
-        const content = scroll ? scroll.scrollHeight : document.documentElement.scrollHeight;
-        return Math.min(Math.round(barHeight + content + 20), 2400);
-      })()`,
-    );
-    // 只调高度、保持被测宽度：宽度一变布局会切到另一个断点，截出来的就不是
-    // 刚刚断言过的那套布局了（曾经因此让「浏览按钮折行」在截图里可见、断言却放过）。
-    window.setContentSize(windowWidth, Math.max(780, Math.round(fullHeight)));
-    await new Promise((resolve) => setTimeout(resolve, 400));
-    // resize 之后合成器偶尔还没出帧，capturePage 会回一张空图。空 PNG 看起来
-    // 跟「截图失败」一模一样，会让人误判成界面白屏，所以这里重试到拿到内容为止。
-    let image = await window.webContents.capturePage();
-    for (let attempt = 0; attempt < 3 && image.isEmpty(); attempt += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 300));
-      image = await window.webContents.capturePage();
+    const capture = async (file) => {
+      const fullHeight = await window.webContents.executeJavaScript(
+        `(() => {
+          const scroll = document.querySelector(".app-scroll");
+          const bar = document.querySelector(".topbar");
+          const barHeight = bar ? bar.getBoundingClientRect().height : 0;
+          const content = scroll ? scroll.scrollHeight : document.documentElement.scrollHeight;
+          return Math.min(Math.round(barHeight + content + 20), 2400);
+        })()`,
+      );
+      // 只调高度、保持被测宽度：宽度一变布局会切到另一个断点，截出来的就不是
+      // 刚刚断言过的那套布局了（曾经因此让「浏览按钮折行」在截图里可见、断言却放过）。
+      window.setContentSize(windowWidth, Math.max(780, Math.round(fullHeight)));
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      // resize 之后合成器偶尔还没出帧，capturePage 会回一张空图。空 PNG 看起来
+      // 跟「截图失败」一模一样，会让人误判成界面白屏，所以这里重试到拿到内容为止。
+      let image = await window.webContents.capturePage();
+      for (let attempt = 0; attempt < 3 && image.isEmpty(); attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        image = await window.webContents.capturePage();
+      }
+      writeFileSync(file, image.toPNG());
+      console.log(`\n  截图：${file}${image.isEmpty() ? "（空图，抓帧失败）" : ""}`);
+    };
+
+    // 主场景把四页都截下来：界面是「概览 / 诊断 / 版本历史 / 设置」四页结构，
+    // 只看概览等于只验收了四分之一 —— 窄窗口和深色下的问题恰好多出在另外三页。
+    // 其他场景有自己的焦点状态（对话框、进度、回退），只截该场景本身。
+    const views = name === "ready" ? ["overview", "diagnostics", "history", "settings"] : [null];
+    for (const view of views) {
+      if (view) {
+        await window.webContents.executeJavaScript(
+          `(() => { const item = document.querySelector('.nav-item[data-nav="${view}"]'); if (item) item.click(); return !!item; })()`,
+        );
+        // 页面入场动画 0.24s，等它落定再截。
+        await new Promise((resolve) => setTimeout(resolve, 320));
+        await window.webContents.executeJavaScript(
+          `(() => { const scroll = document.querySelector(".app-scroll"); if (scroll) scroll.scrollTo({ top: 0 }); return true; })()`,
+        );
+      }
+      await capture(join(screenshotDir, view ? `${name}-${view}.png` : `${name}.png`));
     }
-    const file = join(screenshotDir, `${name}.png`);
-    writeFileSync(file, image.toPNG());
-    console.log(`\n  截图：${file}${image.isEmpty() ? "（空图，抓帧失败）" : ""}`);
   }
 
   if (problems.length > 0) {
@@ -1859,7 +2047,7 @@ async function main() {
     }
     if (busyReport) {
       const describe = (state) =>
-        [...(state.cta ?? []), ...(state.health ?? []), ...(state.menu ?? [])]
+        [...(state.cta ?? []), ...(state.health ?? []), ...(state.instant ?? [])]
           .map((button) => `${button.label}${button.disabled ? "（灰）" : "（可点）"}`)
           .join(" | ");
       console.log(`  实测运行中：${describe(busyReport)}；check_update 发出 ${busyReport.checkUpdateCalls} 次`);
@@ -1911,9 +2099,6 @@ async function main() {
   console.log(`  路径行按钮：[${(report.pathRowButtons ?? []).map((b) => `${b.label} ${b.width}×${b.height} ${b.lineBoxes}行`).join(" | ")}]`);
   console.log(`  Codex 安装位置（高级设置里显示的）：${report.installLocationField ?? "（未渲染）"}`);
   console.log(`  窗口控制：[${report.windowControls.map((c) => `${c.label} ${c.width}×${c.height}`).join(" | ")}]`);
-  if (report.cardDots && report.cardDots.content !== "none") {
-    console.log(`  卡片装饰圆点：基准色 ${report.cardDots.color}，直径 ${report.cardDots.width}px（另有黄、绿由 box-shadow 画出）`);
-  }
   console.log(`  顶栏固定：滚到底后窗口按钮仍在视口内（滚动位置 ${stickyTitleBar?.scrolled ?? "?"}px）`);
   if (report.notice?.present) {
     const dialog = report.notice;
@@ -1923,10 +2108,16 @@ async function main() {
         `${noticeAfterClose ? `，点击后${noticeAfterClose.notice?.present ? "仍在（未关闭!）" : "已关闭"}` : ""}`,
     );
   }
-  if (menuReport && !menuReport.missing && !menuReport.hidden && !menuReport.noPopover) {
+  if (navReport) {
     console.log(
-      `  下拉菜单：[${menuReport.items.map((i) => `${i.label}@${i.top}px${i.covered ? " 被盖住!" : ""}`).join(" | ")}]` +
-        `（距窗口按钮 ${menuReport.gapToControls}px，距顶栏右边界 ${menuReport.roomRight}px）`,
+      `  侧栏导航：[${navReport.items.map((i) => `${i.id}/${i.label}@${i.top}px${i.covered ? " 被盖住!" : ""}`).join(" | ")}]`,
+    );
+    console.log(`  逐页导航：[${navReport.pages.map((page) => `${page.id} → ${page.heading || "(无标题)"}`).join(" | ")}]`);
+    const scroll = navReport.scroll;
+    console.log(
+      `  滚动：设置页滚到底 ${scroll.scrolledTo.top}/${scroll.scrolledTo.max}；` +
+        `切回概览顶部 ${scroll.resetTop}；` +
+        `PageDown=${scroll.keyboardScroll.afterPageDown}，End=${scroll.keyboardScroll.afterEnd}/${scroll.keyboardScroll.max}，Home=${scroll.keyboardScroll.afterHome}`,
     );
   }
 
@@ -1937,7 +2128,7 @@ async function main() {
         .join(" | ");
     console.log(`  命令执行中：${describe(busyReport)}`);
     console.log(
-      `  菜单项：${(busyReport.menu ?? []).map((i) => `${i.label}${i.disabled ? "（灰）" : ""}`).join(" | ")}`,
+      `  即时入口：${(busyReport.instant ?? []).map((i) => `${i.label}${i.disabled ? "（灰）" : ""}`).join(" | ")}`,
     );
     console.log(`  连点 4 次「检查更新」，实际发出 ${busyReport.checkUpdateCalls} 次 IPC`);
     if (idleReport) console.log(`  命令结束后：${describe(idleReport)}（应全部恢复可点）`);

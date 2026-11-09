@@ -1,5 +1,6 @@
 import type { CachedPackageList, Settings } from "../types";
 import { formatBytes } from "../lib/format";
+import { Icon } from "./Icons";
 
 /**
  * 安装包缓存：目录、当前占用、清空，以及「版本历史」卡片的显示开关。
@@ -16,7 +17,6 @@ import { formatBytes } from "../lib/format";
  *
  * 缓存目录放在这张卡片而不是「高级设置」里：它是这张卡片的前提（占用算的就是这个目录），
  * 而且「装的东西占了我多少地方、能不能换到别的盘」比「Codex 本体装哪儿」更常被问到。
- * 高级设置保留安装位置那一项，以及日志目录、复制诊断信息。
  *
  * 版本历史的显示开关也在这里：它和缓存是同一件事的两面（那张卡片展示的就是缓存里的包），
  * 放在一起用户才知道「关掉的是显示，不是清理」。
@@ -68,41 +68,53 @@ export function CacheSettings({
   const showVersionHistory = settings.showVersionHistory !== false;
 
   return (
-    <details className="panel settings-card">
+    <details className="panel settings-card card" open>
       <summary>安装包缓存 · {usageText}</summary>
       <div className="settings-body">
-        <label className="field-label" htmlFor="download-directory">
-          缓存目录
-        </label>
-        <div className="path-row">
-          <input
-            id="download-directory"
-            className="field-input"
-            readOnly
-            value={custom || settings.defaultDownloadDirectory}
-            title={custom || settings.defaultDownloadDirectory}
-          />
-          <button type="button" className="button" onClick={onPick}>
-            浏览…
-          </button>
-          {custom && (
-            <button type="button" className="button" onClick={onResetDirectory}>
-              恢复默认
+        <div className="set-block">
+          <div className="line">
+            <strong>缓存目录</strong>
+            <span className="aside">{usageText}</span>
+          </div>
+          <p>下载的安装包放在这里，可以换到别的盘。这是本应用唯一能替你选的目录。</p>
+          <div className="path-row">
+            <input
+              id="download-directory"
+              className="field-input input"
+              readOnly
+              value={custom || settings.defaultDownloadDirectory}
+              title={custom || settings.defaultDownloadDirectory}
+            />
+            <button type="button" className="button" onClick={onPick}>
+              浏览…
             </button>
-          )}
+            {custom && (
+              <button type="button" className="button" onClick={onResetDirectory}>
+                恢复默认
+              </button>
+            )}
+          </div>
+          <p className="field-help">
+            默认在当前用户的 AppData 下（也就是 C 盘），装过几次更新之后会占掉几个 GB。
+          </p>
+          <div className="settings-links">
+            <button type="button" className="link-button" onClick={() => onOpen(cacheDirectory)}>
+              <Icon name="folder" size={13} />
+              打开缓存目录
+            </button>
+          </div>
         </div>
-        <p className="field-help">
-          下载的安装包放在这里，可以换到别的盘 —— 默认在当前用户的 AppData 下（也就是 C 盘），
-          装过几次更新之后会占掉几个 GB。这是本应用唯一能替你选的目录。
-        </p>
 
-        <div className="settings-links">
-          <button type="button" className="link-button" onClick={() => onOpen(cacheDirectory)}>
-            打开缓存目录
-          </button>
-          {/* 清空是**删除**，不可撤销，所以措辞写清后果、并且不置灰到看不见 ——
-              它必须一直在，用户才敢放心地让缓存涨上去。忙的时候置灰：正跑着的下载或安装
-              就站在这个目录里。 */}
+        <div className="set-row">
+          <div className="label">
+            <strong>清空缓存</strong>
+            <p className="field-help">
+              删掉缓存里的全部 Codex 安装包。<strong>已安装的 Codex 不受影响</strong>，但删掉之后
+              无法再回退到旧版本，需要时得重新下载（每个约 800 MB）。
+            </p>
+          </div>
+          {/* 清空是不可撤销的，所以措辞写清后果、并且不置灰到看不见 —— 它必须一直在，
+              用户才敢放心地让缓存涨上去。忙的时候置灰：正跑着的下载或安装就站在这个目录里。 */}
           <button
             type="button"
             className="link-button danger"
@@ -112,26 +124,25 @@ export function CacheSettings({
             {clearingCache ? "正在清空…" : `清空缓存（${usageText}）`}
           </button>
         </div>
-        <p className="field-help">
-          安装包不再自动清理，占多少由你决定。清空会删掉缓存里的全部 Codex 安装包：
-          <strong>已安装的 Codex 不受影响</strong>，但删掉之后无法再回退到旧版本，
-          需要时得重新下载（每个约 800 MB）。
-        </p>
 
-        <label className="switch-row">
-          <input
-            type="checkbox"
-            checked={showVersionHistory}
-            onChange={(event) => onToggleVersionHistory(event.target.checked)}
-          />
-          <span>
-            显示「版本历史」卡片
-            <small>
+        <div className="set-row">
+          <div className="label">
+            <strong>显示「版本历史」卡片</strong>
+            <p>
               只是一个显示开关：关掉之后缓存里的安装包照旧留着，更新失败时告警里的回退入口
               也照旧在。要真的腾空间请用上面的「清空缓存」。
-            </small>
-          </span>
-        </label>
+            </p>
+          </div>
+          <label className="switch-control">
+            <input
+              type="checkbox"
+              className="sr-only"
+              checked={showVersionHistory}
+              onChange={(event) => onToggleVersionHistory(event.target.checked)}
+            />
+            <span className="switch" role="switch" aria-checked={showVersionHistory} />
+          </label>
+        </div>
       </div>
     </details>
   );
