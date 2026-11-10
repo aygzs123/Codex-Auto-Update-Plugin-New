@@ -95,11 +95,15 @@ powershell -NoProfile -ExecutionPolicy Bypass -File install\install.ps1
 - **需要时提权**：新版清单声明了以 `localSystem` 运行的打包服务，Windows 因此要求管理员
   上下文（否则报 `0x80073D28`）。脚本会先读安装包清单判断，只在真的需要时弹**一次** UAC；
   默认**关闭**，没有 `-AllowElevation` 就如实拒绝（见[常见问题](#常见问题)）。
-- **保缓存 + 版本回退**：缓存保留最近 2 个 Codex 安装包（约 1.67 GB）供回退，
-  桌面应用则一个都不删、由用户决定何时清空（见 [`docs/rollback.md`](docs/rollback.md)）。
+- **保缓存 + 版本回退**：缓存保留最近 2 个 Codex 安装包（约 1.67 GB）供回退；桌面应用默认
+  一个都不删、由用户决定保留几份或何时清空，版本历史里还能逐个固定、校验签名、删除
+  （见 [`docs/rollback.md`](docs/rollback.md)）。
 - **插件自更新**：对比本机与远端 `plugin.json` 版本，自动从 GitHub 更新插件。
 - **更新器自身更新（桌面应用）**：「设置 → 关于」直接检查本仓库的 `desktop-v*` Release，
-  发现新版本后在应用内下载、按 GitHub 给出的 SHA-256 校验再静默安装，装完自动重启。
+  发现新版本后在应用内下载（失败自动重试、断点续传，界面显示大小 / 速度 / 剩余时间）、
+  按 GitHub 给出的 SHA-256 校验再静默安装，装完自动重启。
+- **桌面端设置**：更新与通知（自动检查 / 自动下载 / 通知 / 复查间隔）、主题颜色
+  （跟随系统 / 浅色 / 深色）、网络诊断（三条路径的连通性与代理规则）、缓存保留份数。
 - **更新公告**：以 [`desktop/CHANGELOG.md`](desktop/CHANGELOG.md) 为唯一来源 —— 发版 CI
   用对应小节当 Release 正文，应用内铃铛按时间线展示历次发布说明；见
   [`desktop/README.md`](desktop/README.md#应用自身更新与公告)。

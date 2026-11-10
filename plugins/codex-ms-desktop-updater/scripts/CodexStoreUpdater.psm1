@@ -241,9 +241,28 @@ function Get-InstalledCodexPackageInfo {
 # Bundle id algorithm (shared with docs/codex-desktop-encrypted-copy-fix):
 # SHA256( concat over descriptors of (relPath + NUL + sha256hex + NUL) ),
 # then take the first 16 hex chars. Works on Windows PowerShell 5.1 too.
+#
+# 刻意不用 Get-FileHash：它是 Microsoft.PowerShell.Utility 里的**自动加载**命令。
+# 本应用从 PowerShell 7 的终端启动时，继承到的 PSModulePath 指向 PS7 的模块目录，
+# 5.1 会找不到自己的模块，Get-FileHash 就报「无法将 ... 项识别为 cmdlet」。
+# （2026-11-10 修复资源副本正是挂在这上面；ps.cjs 现在会补回 5.1 的模块路径，
+#  这里再用 .NET API 兜一层，两边都不依赖命令自动加载。）
+# FileShare.Read 与 Get-FileHash 一致：别的进程只读打开文件时也照样能算。
 function Get-Sha256Hex([string]$Path) {
-    $hash = Get-FileHash -LiteralPath $Path -Algorithm SHA256
-    return $hash.Hash.ToLowerInvariant()
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $stream = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::Read)
+        try {
+            $bytes = $sha.ComputeHash($stream)
+        }
+        finally {
+            $stream.Dispose()
+        }
+    }
+    finally {
+        $sha.Dispose()
+    }
+    return [System.BitConverter]::ToString($bytes).Replace('-', '').ToLowerInvariant()
 }
 
 function Get-BundleIdText([string]$Root, [string[]]$RelativePaths) {
@@ -1026,8 +1045,30 @@ function Remove-SupersededCodexPackageFiles {
             Sort-Object -Property @{ Expression = { $_.Version }; Descending = $true }
     )
 
+    # 用户在界面上固定过的包不管保留额度是多少都不删。固定的语义是「这一版我要留着」，
+    # 让它被一次自动剪枝删掉，等于这个开关没做。
+    #
+    # 标记文件由桌面应用维护（main.cjs 的 pin_cached_package），内容是文件名数组。
+    # 读不出来就当没有固定项：配置坏了不该导致剪枝整体失败。
+    $pinnedNames = @()
+    $pinsPath = Join-Path $DownloadDirectory ".codex-pins.json"
+    if (Test-Path -LiteralPath $pinsPath) {
+        try {
+            $parsedPins = Get-Content -LiteralPath $pinsPath -Raw -ErrorAction Stop | ConvertFrom-Json
+            $pinnedNames = @($parsedPins | Where-Object { $_ -is [string] })
+        }
+        catch {
+            $pinnedNames = @()
+        }
+    }
+
     $removedPaths = @()
     foreach ($candidate in ($candidates | Select-Object -Skip $KeepCount)) {
+        $candidateFileName = Split-Path -Leaf $candidate.FullName
+        if ($pinnedNames -contains $candidateFileName) {
+            continue
+        }
+
         Remove-Item -LiteralPath $candidate.FullName -Force
         $removedPaths += $candidate.FullName
     }

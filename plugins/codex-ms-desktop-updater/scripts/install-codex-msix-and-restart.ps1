@@ -53,6 +53,10 @@ param(
     # 缓存照旧被剪掉，用户看到的是「明明改成了不限制，装完一次还是只剩 2 个」。
     [switch]$KeepAll,
 
+    # 自动剪枝保留几个（-KeepAll 关着时才生效）。桌面应用把这个值做成设置项；
+    # 与 -KeepAll 一样必须由父进程转交给 worker，worker 是另一个进程。
+    [int]$KeepCount = 2,
+
     [switch]$Worker,
 
     # 提权子进程模式：由 worker 用 -Verb RunAs 拉起的短命进程，只做「关 Codex + 装包」
@@ -320,6 +324,9 @@ if (-not $Worker -and -not $ElevatedWorker) {
     if ($KeepAll) {
         $arguments += "-KeepAll"
     }
+    else {
+        $arguments += @("-KeepCount", [string]$KeepCount)
+    }
 
     if (-not [string]::IsNullOrWhiteSpace($DownloadDirectory)) {
         $arguments += @("-DownloadDirectory", $DownloadDirectory)
@@ -465,6 +472,7 @@ try {
         -DownloadDirectory $cacheDirectory `
         -InstalledVersion $installedVersion `
         -PackageName $PackageName `
+        -KeepCount $KeepCount `
         -KeepAll:$KeepAll)
 
     if ($removedPaths.Count -eq 0) {

@@ -24,10 +24,8 @@ export function compareVersions(left: string | null | undefined, right: string |
 }
 
 export interface UpdatePolicyInput {
-  installedVersion: string | null;
   storeVersion: string | null;
   storeUpdateAvailable: boolean | null;
-  cachedVersions: string[];
 }
 
 /**
@@ -43,19 +41,14 @@ export interface UpdatePolicy {
   updateAvailable: boolean;
   /** 要安装的版本；null 表示没有可安装的新版本。 */
   targetVersion: string | null;
-  /** 当前版本的安装包不在缓存里 —— 更新之后退不回这一版。 */
-  rollbackRisk: boolean;
 }
 
 export function resolveUpdatePolicy(input: UpdatePolicyInput): UpdatePolicy {
   const resolved = input.storeUpdateAvailable !== null;
   const updateAvailable = input.storeUpdateAvailable === true && Boolean(input.storeVersion);
-  const hasCached = (version: string) =>
-    input.cachedVersions.some((cached) => compareVersions(cached, version) === 0);
   return {
     resolved,
     updateAvailable,
     targetVersion: updateAvailable ? input.storeVersion : null,
-    rollbackRisk: Boolean(updateAvailable && input.installedVersion && !hasCached(input.installedVersion)),
   };
 }

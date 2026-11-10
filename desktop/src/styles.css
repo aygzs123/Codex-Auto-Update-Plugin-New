@@ -1019,6 +1019,76 @@ h1, h2, h3, p { margin: 0; }
   outline: none;
 }
 .input:focus, .field-input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+/* 设置行右侧的下拉框（复查间隔、自动保留份数）。和输入框同一套外观，
+   但不用等宽字体 —— 里面放的是「每 6 小时」这类短语，不是路径。 */
+.field-select {
+  flex: 0 0 auto;
+  height: 30px;
+  padding: 0 26px 0 10px;
+  border: 1px solid var(--btn-border);
+  border-radius: 7px;
+  background: var(--btn-bg);
+  color: var(--text-2);
+  font-size: 11.5px;
+  font-family: inherit;
+  outline: none;
+  cursor: pointer;
+  appearance: none;
+  background-image: linear-gradient(45deg, transparent 50%, var(--text-3) 50%),
+    linear-gradient(135deg, var(--text-3) 50%, transparent 50%);
+  background-position: calc(100% - 13px) 13px, calc(100% - 9px) 13px;
+  background-size: 4px 4px, 4px 4px;
+  background-repeat: no-repeat;
+}
+.field-select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.field-select:disabled { opacity: .5; cursor: not-allowed; }
+
+/* ---------- 外观：主题选择 ---------- */
+/* 三张并排的卡，不是单选圆点：主题需要「看得见长什么样」，色块比文字快。 */
+.theme-options { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-top: 12px; }
+.theme-option {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  padding: 10px 11px 11px;
+  border: 1px solid var(--hairline);
+  border-radius: 10px;
+  background: var(--btn-bg);
+  color: var(--text-2);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color .14s ease, background .14s ease;
+}
+.theme-option:hover { border-color: var(--btn-border); }
+.theme-option[data-active="true"] { border-color: var(--accent); background: var(--accent-soft); }
+.theme-option[data-active="true"] strong { color: var(--text); }
+.theme-option strong { font-size: 12.5px; font-weight: 600; }
+.theme-option small { font-size: 10.5px; line-height: 1.5; color: var(--text-3); }
+.theme-swatch { width: 100%; height: 26px; margin-bottom: 6px; border: 1px solid var(--hairline-soft); border-radius: 6px; }
+.theme-swatch[data-theme="light"] { background: linear-gradient(135deg, #f6f7f9 0 50%, #e4e6ea 50% 100%); }
+.theme-swatch[data-theme="dark"] { background: linear-gradient(135deg, #1b1e23 0 50%, #2b3038 50% 100%); }
+.theme-swatch[data-theme="system"] { background: linear-gradient(135deg, #f6f7f9 0 50%, #1b1e23 50% 100%); }
+
+/* ---------- 网络诊断 ---------- */
+.net-list { margin-top: 12px; overflow: hidden; border: 1px solid var(--hairline-soft); border-radius: 9px; }
+.net-row { display: flex; align-items: center; gap: 11px; padding: 10px 12px; border-top: 1px solid var(--hairline-soft); }
+.net-row:first-child { border-top: 0; }
+.net-dot { flex: 0 0 auto; width: 8px; height: 8px; border-radius: 50%; background: var(--green); }
+.net-row[data-ok="false"] .net-dot { background: var(--orange); }
+.net-label { flex: 1; min-width: 0; }
+.net-label strong { display: block; font-size: 12px; font-weight: 500; }
+.net-label small { display: block; margin-top: 2px; overflow: hidden; color: var(--text-3); font: 10px/1.5 var(--mono); text-overflow: ellipsis; white-space: nowrap; }
+.net-state { flex: 0 0 auto; font-size: 10.5px; color: var(--green); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.net-row[data-ok="false"] .net-state { color: var(--orange); }
+.net-error { flex: 1 1 100%; margin-top: 2px; color: var(--orange); font-size: 10.5px; line-height: 1.5; overflow-wrap: anywhere; }
+
+/* ---------- 版本历史：逐行动作 ---------- */
+.vh-version { display: inline-flex; align-items: center; gap: 6px; }
+.vh-actions { display: flex; align-items: center; gap: 12px; flex: 0 0 auto; }
+.vh-actions .link-button { font-size: 11.5px; }
+.vh-signature.verified { color: var(--green); }
+.vh-signature.warning, .vh-signature.error { color: var(--orange); }
 .links-row, .settings-links { display: flex; flex-wrap: wrap; gap: 16px; margin-top: 11px; }
 /* 嵌在 .set-row 右侧的那组链接：外面已经有一圈内边距，再加一段上边距就会掉到行中间。 */
 .settings-links.inline { margin-top: 0; justify-content: flex-end; gap: 14px; }
@@ -1109,6 +1179,9 @@ h1, h2, h3, p { margin: 0; }
   .set-row { flex-wrap: wrap; gap: 10px; }
   .rollback-row { align-items: flex-start; flex-wrap: wrap; }
   .rollback-action { width: 100%; margin-left: 0; }
+  .vh-actions { flex-wrap: wrap; }
+  .theme-options { grid-template-columns: 1fr; }
+  .net-error { flex-basis: 100%; }
   .rules { grid-template-columns: 1fr; }
   .rule + .rule { border-left: 0; border-top: 1px solid var(--hairline-soft); border-radius: 0; }
   .page-head { flex-direction: column; align-items: flex-start; }

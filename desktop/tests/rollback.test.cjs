@@ -122,36 +122,49 @@ test("模块：-KeepAll 在删任何东西之前就返回，且默认不开", ()
   );
 });
 
-test("三条桌面路径全都带上 -KeepAll，一环漏掉就有一处会偷偷删包", () => {
+test("三条桌面路径全都把保留份数翻成脚本参数，一环漏掉就有一处会偷偷删包", () => {
   assert.match(codexSource, /const KEEP_ALL_CACHE = "-KeepAll";/, "开关名要有一处唯一定义");
+  // 保留份数从设置一路传到脚本：0 / 缺省 = -KeepAll，N>0 = -KeepCount N。
+  // 翻译只发生在 cacheRetentionFlags 一处，三条路径共用 —— 否则总会有一条漏带。
+  assert.match(codexSource, /function cacheRetentionFlags\(keepCount\)/, "找不到保留份数的翻译函数");
+  assert.match(
+    codexSource,
+    /if \(!Number\.isFinite\(count\) \|\| count <= 0\) return \[KEEP_ALL_CACHE\];/,
+    "0 / 非法值必须落回 -KeepAll（不自动清理），不能落成「保留 0 个」那个意思",
+  );
+  assert.match(codexSource, /return \["-KeepCount", String\(Math\.min\(10, Math\.round\(count\)\)\)\];/, "-KeepCount 要有上限");
   // 1) checkUpdate：check-codex-update.ps1 在**写模式判断之前**就剪了一次枝，
   //    所以「只是想查一下版本」也会删掉旧包 —— 这条最容易漏。
   assert.match(
     codexSource,
-    /flags: \["-CheckOnly", "-NoProxy", KEEP_ALL_CACHE\]/,
-    "checkUpdate 不带 -KeepAll 的话，查一次版本就会清掉回退用的包",
+    /flags: \["-CheckOnly", "-NoProxy", \.\.\.cacheRetentionFlags\(cacheKeepCount\)\]/,
+    "checkUpdate 不带保留参数的话，查一次版本就会清掉回退用的包",
   );
   // 2) downloadCodex：同上，-DownloadOnly 也会先剪枝。
   assert.match(
     codexSource,
-    /flags: \["-DownloadOnly", "-NoProxy", KEEP_ALL_CACHE\]/,
-    "downloadCodex 不带 -KeepAll 的话，下载一次就清掉旧包",
+    /flags: \["-DownloadOnly", "-NoProxy", \.\.\.cacheRetentionFlags\(cacheKeepCount\)\]/,
+    "downloadCodex 不带保留参数的话，下载一次就清掉旧包",
   );
-  // 3) installCodex：剪枝发生在分离的 worker 里，上面那条 flags 断言已经钉住两个分支。
-  assert.match(codexSource, /KEEP_ALL_CACHE\]/);
+  // 3) installCodex：降级与非降级两个分支都要带，剪枝发生在分离的 worker 里。
+  assert.match(
+    codexSource,
+    /flags: allowDowngrade\s*\?\s*\["-AllowElevation", "-AllowDowngrade", \.\.\.cacheRetentionFlags\(cacheKeepCount\)\]\s*:\s*\["-AllowElevation", \.\.\.cacheRetentionFlags\(cacheKeepCount\)\]/,
+    "installCodex 两个分支都要带上保留参数",
+  );
 
   // PowerShell 侧：check-codex-update.ps1 有**两个**剪枝点（CheckOnly 之前那次、装完之后
   // 那次），只给一个传开关等于另一个照旧删。
-  const forwarded = checkScript.match(/-KeepAll:\$KeepAll/g) ?? [];
-  assert.equal(forwarded.length, 2, `check-codex-update.ps1 的两处剪枝都要传 -KeepAll，实际 ${forwarded.length} 处`);
+  const forwarded = checkScript.match(/@\{ KeepCount = \$KeepCount; KeepAll = \$KeepAll \}|-KeepCount \$KeepCount/g) ?? [];
+  assert.ok(forwarded.length >= 2, `check-codex-update.ps1 的两处剪枝都要传保留参数，实际 ${forwarded.length} 处`);
 
   // worker：自己的剪枝点要带，而且必须**转发**给分离的子进程 —— 父进程的命令行参数不会
-  // 自动继承，少了这一行，桌面应用传进来的 -KeepAll 在 worker 那侧就是失效的。
-  assert.match(worker, /-KeepAll:\$KeepAll\)/, "worker 自己的剪枝点要带 -KeepAll");
+  // 自动继承，少了这一行，桌面应用传进来的设置就在 worker 那侧失效了。
+  assert.match(worker, /KeepCount \$KeepCount/, "worker 自己的剪枝点要带 -KeepCount");
   assert.match(
     worker,
-    /if \(\$KeepAll\) \{\s*\$arguments \+= "-KeepAll"\s*\}/,
-    "worker 启动分离进程时必须把 -KeepAll 转发过去（与 -AllowDowngrade 同样的写法）",
+    /if \(\$KeepAll\) \{\s*\$arguments \+= "-KeepAll"\s*\}\s*else \{\s*\$arguments \+= @\("-KeepCount", \[string\]\$KeepCount\)\s*\}/,
+    "worker 启动分离进程时必须把保留策略转发过去（与 -AllowDowngrade 同样的写法）",
   );
 });
 
@@ -284,7 +297,15 @@ test("主进程：list_cached_packages 在命令白名单里且有实现的 case
   assert.match(mainSource, /case "list_cached_packages":/, "switch 里要有对应的 case");
   // 白名单和 switch 缺一不可：只加白名单会落到 default 抛「不支持的命令」，
   // 只加 case 会被白名单挡在门外。
-  assert.match(mainSource, /return codex\.listCachedPackages\(args\);/, "case 要真的去读缓存清单");
+  assert.match(
+    mainSource,
+    /const list = await codex\.listCachedPackages\(args\);/,
+    "case 要真的去读缓存清单",
+  );
+  // 固定状态不来自脚本，而是主进程按缓存目录里的 .codex-pins.json 合进去 ——
+  // 脚本是只读的，它不该知道也不该写这个文件。
+  assert.match(mainSource, /const pins = new Set\(readCachePins\(directory\)\);/, "固定状态要由主进程合进清单");
+  assert.match(mainSource, /pinned: pins\.has\(basename\(pkg\.path\)\)/, "每一行要带 pinned");
 });
 
 test("主进程：install_codex 把参数（含 allowDowngrade）原样交给 codex.cjs", () => {
@@ -296,8 +317,8 @@ test("主进程：install_codex 把参数（含 allowDowngrade）原样交给 co
   // 不带它连正常更新都装不上，所以两条路都要有。
   assert.match(
     codexSource,
-    /flags: allowDowngrade\s*\?\s*\["-AllowElevation", "-AllowDowngrade", KEEP_ALL_CACHE\]\s*:\s*\["-AllowElevation", KEEP_ALL_CACHE\]/,
-    "codex.cjs 要把 allowDowngrade 翻成 -AllowDowngrade 开关，并且无条件带上 -AllowElevation 与 KEEP_ALL_CACHE",
+    /flags: allowDowngrade\s*\?\s*\["-AllowElevation", "-AllowDowngrade", \.\.\.cacheRetentionFlags\(cacheKeepCount\)\]\s*:\s*\["-AllowElevation", \.\.\.cacheRetentionFlags\(cacheKeepCount\)\]/,
+    "codex.cjs 要把 allowDowngrade 翻成 -AllowDowngrade 开关，并且无条件带上 -AllowElevation 与保留策略",
   );
   assert.match(
     codexSource,
@@ -436,17 +457,37 @@ test("主按钮在回退途中说「正在回退…」，不是「正在安装�
   );
 });
 
-test("版本历史卡片：有回退按钮，但没有删除按钮", () => {
+test("版本历史卡片：每行都有回退/校验/固定/删除，删除走确认", () => {
   assert.match(versionHistory, /回退到此版本/, "可回退的那一行要有回退按钮");
   assert.match(versionHistory, /重新安装/, "当前这一版要给「重新安装」（同版本重装同样有用）");
-  // 旧版安装包删掉就再也拿不回来，一颗误点的删除按钮足以让整个功能失效。
-  // 这条要看剥掉注释的代码：卡片里没有任何删除控件，也接不到任何删除回调。
-  const code = stripComments(versionHistory);
-  assert.doesNotMatch(code, /删除|Remove|delete/i, "版本历史里不许出现删除控件");
-  assert.doesNotMatch(app, /onDelete/, "App 不许给版本历史传删除回调");
+  // 逐包管理（这批改动新增）：每一行都能单独校验签名、固定、删除。
+  assert.match(versionHistory, /verify_download_signature/, "每行要能单独校验签名");
+  assert.match(versionHistory, /onPin\(pkg, !pkg\.pinned\)/, "每行要能固定 / 取消固定");
+  assert.match(versionHistory, /onDelete\(pkg\)/, "每行要有删除入口");
+  // 删除不可撤销，所以文案必须当场说清楚它不可撤销、并且会先弹确认。
+  assert.match(versionHistory, /删除不可撤销，会先弹确认/, "删除按钮旁边要写明后果");
+  // 固定不是备份：它只影响自动剪枝，不该被写成「备份了这个包」。
+  assert.match(versionHistory, /固定的包不会被自动清理/, "要写明固定的确切含义");
+  assert.match(versionHistory, /className="link-button danger"/, "删除用危险色，和校验/固定区分开");
+  assert.match(app, /onDelete=\{\(pkg\) => void deleteCachedPackage\(pkg\.path\)\}/, "App 要把删除接到 store");
   // 置灰要跟共享判据走，不只是本地的 rollingBack —— 安装跑着的时候回退同样不能点。
   assert.match(versionHistory, /disabled=\{busy\}/, "回退按钮要接上共享的 busy");
   assert.match(app, /<VersionHistory/, "App 要渲染版本历史卡片");
+});
+
+test("逐包删除有两道防线：原生确认 + 只认缓存目录里的 Codex 包", () => {
+  // 这是「以前刻意不给删除」的正面回答：不是不做，而是把它做得误点不掉。
+  const remove = mainSource.match(/async function deleteCachedPackage\(args\) \{([\s\S]*?)\r?\n\}/);
+  assert.ok(remove, "找不到 deleteCachedPackage");
+  assert.match(remove[1], /resolveCachedPackage\(/, "删除前必须用共享判据确认它就在缓存目录里");
+  assert.match(remove[1], /showMessageBox\(/, "删除前要弹原生确认框");
+  assert.match(remove[1], /defaultId: 0/, "默认按钮必须是「取消」");
+  assert.match(remove[1], /cancelled: true/, "取消要返回 cancelled，而不是报错");
+  // resolveCachedPackage 本身：路径包含 + 文件名形状 + 存在性。
+  const resolve = mainSource.match(/function resolveCachedPackage\(directory, value\) \{([\s\S]*?)\r?\n\}/);
+  assert.ok(resolve, "找不到 resolveCachedPackage");
+  assert.match(resolve[1], /basename\(target\)/, "必须把路径收敛成缓存目录下的文件名");
+  assert.match(resolve[1], /OpenAI\\\.Codex_/, "只认 Codex 安装包的文件名形状");
 });
 
 test("回退入口在失败告警里也有一份", () => {

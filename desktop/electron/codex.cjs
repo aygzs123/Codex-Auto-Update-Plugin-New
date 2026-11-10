@@ -89,6 +89,18 @@ function resolveDownloadDirectory(configured) {
  */
 const KEEP_ALL_CACHE = "-KeepAll";
 
+/**
+ * 把设置里的「自动清理保留份数」翻成脚本参数。
+ *
+ * 0 / 未设置 = 不自动清理（-KeepAll），这是桌面端的默认；N>0 = 保留最近 N 个。
+ * 只在调用边界翻译一次，三个调用路径共用同一份判断，避免某一条漏带、悄悄删包。
+ */
+function cacheRetentionFlags(keepCount) {
+  const count = Number(keepCount);
+  if (!Number.isFinite(count) || count <= 0) return [KEEP_ALL_CACHE];
+  return ["-KeepCount", String(Math.min(10, Math.round(count)))];
+}
+
 // ---------- 状态与更新检查 ----------
 
 /** 读取当前 Codex 安装状态与健康明细。退出码是状态而不是错误，见 parse.cjs。 */
@@ -108,10 +120,10 @@ async function getStatus({ probe = false } = {}) {
 }
 
 /** 只查询版本信息，不下载。CheckOnly 模式不会写下载缓存。 */
-async function checkUpdate({ downloadDirectory } = {}) {
+async function checkUpdate({ downloadDirectory, cacheKeepCount } = {}) {
   const directory = resolveDownloadDirectory(downloadDirectory);
   const { code, stdout, stderr } = await ps.captureScript(bundledScript("check-codex-update.ps1"), {
-    flags: ["-CheckOnly", "-NoProxy", KEEP_ALL_CACHE],
+    flags: ["-CheckOnly", "-NoProxy", ...cacheRetentionFlags(cacheKeepCount)],
     values: { "-DownloadDirectory": directory },
   });
   if (code !== 0) throw new Error(ps.describeFailure({ code, stdout, stderr }));
@@ -150,7 +162,7 @@ function watchDownload(directory, fileName, emit) {
  *   { status: "latest" }                                已是最新，未下载
  *   { status: "downloaded", path, version, fileName }    已下载
  */
-async function downloadCodex({ downloadDirectory } = {}, emit = () => {}) {
+async function downloadCodex({ downloadDirectory, cacheKeepCount } = {}, emit = () => {}) {
   const directory = resolveDownloadDirectory(downloadDirectory);
   mkdirSync(directory, { recursive: true });
 
@@ -163,7 +175,7 @@ async function downloadCodex({ downloadDirectory } = {}, emit = () => {}) {
   const { done } = ps.streamScript(
     bundledScript("check-codex-update.ps1"),
     {
-      flags: ["-DownloadOnly", "-NoProxy", KEEP_ALL_CACHE],
+      flags: ["-DownloadOnly", "-NoProxy", ...cacheRetentionFlags(cacheKeepCount)],
       values: { "-DownloadDirectory": directory },
       onStdoutLine: (line) => {
         stdout += `${line}\n`;
@@ -326,7 +338,7 @@ const WORKER_START_TIMEOUT_MS = 60 * 1000;
  * 「还在把运行时物化到用户缓存」时再延长最多 150 秒（生成脚本的 -ProbeExtensionSeconds）
  * —— 首次启动物化几百 MB 实测要 130 秒上下，只等 30 秒必然误判。
  */
-async function installCodex({ path, allowDowngrade, downloadDirectory }, emit = () => {}) {
+async function installCodex({ path, allowDowngrade, downloadDirectory, cacheKeepCount }, emit = () => {}) {
   const target = String(path || "");
   if (!existsSync(target)) throw new Error(`安装包不存在：${target}`);
 
@@ -345,8 +357,8 @@ async function installCodex({ path, allowDowngrade, downloadDirectory }, emit = 
     // 上下文才能装，不带这个开关就会回 0x80073D28。仍然是一键，只是不再静默 ——
     // 需要时会弹一次 UAC。不加界面开关：用户无从判断哪个版本带服务，让他选只会选错。
     flags: allowDowngrade
-      ? ["-AllowElevation", "-AllowDowngrade", KEEP_ALL_CACHE]
-      : ["-AllowElevation", KEEP_ALL_CACHE],
+      ? ["-AllowElevation", "-AllowDowngrade", ...cacheRetentionFlags(cacheKeepCount)]
+      : ["-AllowElevation", ...cacheRetentionFlags(cacheKeepCount)],
     values: {
       "-PackagePath": target,
       "-LogPath": logPath,
@@ -717,6 +729,7 @@ module.exports = {
   downloadsRoot,
   logsRoot,
   resolveDownloadDirectory,
+  cacheRetentionFlags,
   getStatus,
   checkUpdate,
   downloadCodex,

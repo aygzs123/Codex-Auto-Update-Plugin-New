@@ -1,8 +1,24 @@
 // 主进程：窗口、菜单、IPC 接线。业务逻辑在 codex.cjs，PowerShell 在 ps.cjs。
 
-const { app, BrowserWindow, Menu, Notification, Tray, clipboard, dialog, ipcMain, nativeTheme, net, screen, shell } = require("electron");
+const {
+  app,
+  BrowserWindow,
+  Menu,
+  Notification,
+  Tray,
+  clipboard,
+  dialog,
+  ipcMain,
+  nativeImage,
+  nativeTheme,
+  net,
+  screen,
+  session,
+  shell,
+} = require("electron");
 const { createHash } = require("node:crypto");
 const {
+  createReadStream,
   createWriteStream,
   existsSync,
   mkdirSync,
@@ -48,6 +64,10 @@ const allowedCommands = new Set([
   "install_codex",
   "list_cached_packages",
   "clear_cached_packages",
+  // 逐个安装包的固定与删除。删除是不可撤销的，所以它和「清空缓存」一样先在主进程弹确认框；
+  // 固定则写进缓存目录里的 .codex-pins.json，自动剪枝会跳过这些文件。
+  "pin_cached_package",
+  "delete_cached_package",
   "launch_codex",
   "check_health",
   "repair_bundles",
@@ -70,6 +90,11 @@ const allowedCommands = new Set([
   // 打开 Release 页面。只接受本仓库的 releases 前缀，不接受任意 URL —— 否则这就是一个
   // 「让用户的浏览器打开任意地址」的接口。
   "open_release",
+  // 网络诊断：只探测三个写死的地址（GitHub API / Release 下载页 / 分发源），
+  // 不接受渲染进程传 URL —— 否则就变成一个任意探测接口。
+  "check_network",
+  // 托盘与任务栏的更新状态。只收版本号与一个布尔值，不落盘。
+  "set_tray_status",
 ]);
 
 // 更新器自身版本与更新公告的唯一来源。仓库写死，不让渲染进程传 —— 那等于允许界面把
@@ -138,6 +163,123 @@ function writeSettings(patch) {
   mkdirSync(app.getPath("userData"), { recursive: true });
   writeFileSync(settingsPath(), `${JSON.stringify(merged, null, 2)}\n`, "utf8");
   return merged;
+}
+
+// ---------- 主题 ----------
+
+const THEME_VALUES = new Set(["system", "light", "dark"]);
+const CHECK_INTERVAL_HOURS = [1, 3, 6, 12, 24];
+const DEFAULT_CHECK_INTERVAL_HOURS = 6;
+
+function normalizeTheme(value) {
+  return THEME_VALUES.has(value) ? value : "system";
+}
+
+/**
+ * 主题是全局开关，不是每个窗口各存一份。
+ *
+ * 设 `nativeTheme.themeSource` 之后，Chromium 的 `prefers-color-scheme` 会跟着它走，
+ * 所以 CSS 那边一行都不用改 —— 界面里所有 `@media (prefers-color-scheme: dark)` 自动生效。
+ * 窗口底色也由同一个值推导（见 windowBackgroundColor），不会出现「界面深色、打开时闪白光」。
+ */
+function applyTheme(theme) {
+  nativeTheme.themeSource = normalizeTheme(theme);
+}
+
+function normalizeCheckInterval(value) {
+  const hours = Number(value);
+  return CHECK_INTERVAL_HOURS.includes(hours) ? hours : DEFAULT_CHECK_INTERVAL_HOURS;
+}
+
+// ---------- 缓存目录里的固定标记 ----------
+
+const CACHE_PINS_FILE = ".codex-pins.json";
+
+function currentCacheDirectory() {
+  return codex.resolveDownloadDirectory(readSettings().downloadDirectory);
+}
+
+function cachePinsPath(directory) {
+  return join(directory, CACHE_PINS_FILE);
+}
+
+function readCachePins(directory) {
+  try {
+    const parsed = JSON.parse(readFileSync(cachePinsPath(directory), "utf8"));
+    return Array.isArray(parsed) ? parsed.map(String).filter(Boolean) : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeCachePins(directory, pins) {
+  mkdirSync(directory, { recursive: true });
+  writeFileSync(cachePinsPath(directory), `${JSON.stringify([...new Set(pins)], null, 2)}\n`, "utf8");
+}
+
+/**
+ * 把界面传来的路径钉在「当前缓存目录里的一个 Codex 安装包」这一条上。
+ *
+ * 删除与固定都只接受这种路径。不能直接信 args.path：那会让这两条 IPC 变成「删任意文件」
+ * 与「标记任意文件」的接口。文件名规则与 PowerShell 的 Get-CachedCodexPackages 一致。
+ */
+function resolveCachedPackage(directory, value) {
+  const target = resolve(String(value || ""));
+  if (target !== join(directory, basename(target))) throw new Error("安装包不在当前缓存目录里");
+  if (!/^OpenAI\.Codex_.+\.(msix|msixbundle)$/i.test(basename(target))) throw new Error("不是 Codex 安装包");
+  if (!existsSync(target)) throw new Error("安装包不存在");
+  return target;
+}
+
+// ---------- 托盘与任务栏状态 ----------
+
+let trayStatus = { version: null, downloading: false };
+
+/**
+ * 托盘角标：16×16 的实心圆点，用 BGRA 原位图直接生成。
+ *
+ * 不用图片文件：这是唯一一个运行期要用的 overlay 图标，为它多带一个资源文件、再处理
+ * 打包路径，不值得。任务栏 overlay 只在有更新或在下载时出现，其余时候清掉。
+ */
+function trayOverlayIcon() {
+  const size = 16;
+  const buffer = Buffer.alloc(size * size * 4);
+  for (let y = 0; y < size; y += 1) {
+    for (let x = 0; x < size; x += 1) {
+      const dx = x - 7.5;
+      const dy = y - 7.5;
+      if (dx * dx + dy * dy > 34) continue;
+      const offset = (y * size + x) * 4;
+      buffer[offset] = 40; // B
+      buffer[offset + 1] = 60; // G
+      buffer[offset + 2] = 235; // R
+      buffer[offset + 3] = 255; // A
+    }
+  }
+  return nativeImage.createFromBitmap(buffer, { width: size, height: size });
+}
+
+function trayTooltip() {
+  if (trayStatus.downloading) return "Codex Updater · 正在下载更新包";
+  if (trayStatus.version) return `Codex Updater · 可更新到 ${trayStatus.version}`;
+  return "Codex Updater";
+}
+
+function applyTrayStatus() {
+  if (tray) tray.setToolTip(trayTooltip());
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (trayStatus.version) {
+    mainWindow.setOverlayIcon(trayOverlayIcon(), trayTooltip());
+  } else {
+    mainWindow.setOverlayIcon(null, "");
+  }
+}
+
+function setTrayStatus(args) {
+  const version = String(args?.version || "").slice(0, 40) || null;
+  trayStatus = { version, downloading: Boolean(args?.downloading) };
+  applyTrayStatus();
+  return { ok: true };
 }
 
 // ---------- GitHub Release（固定版本 / 更新公告） ----------
@@ -276,15 +418,49 @@ async function resolveAppUpdateAsset(url) {
   return { ...asset, sha256: digest.slice("sha256:".length).toLowerCase() };
 }
 
-/** 流式下载到 .part，边下边算 SHA-256，并把进度推给渲染进程。 */
-function downloadAppUpdateFile(asset, partialPath, emit) {
+function fileSize(path) {
+  try {
+    return statSync(path).size;
+  } catch {
+    return 0;
+  }
+}
+
+/** 把一个已存在的 .part 先读进哈希状态，后面的分片接着往里追加。 */
+function hashExistingFile(path) {
+  return new Promise((resolveHash, rejectHash) => {
+    const hash = createHash("sha256");
+    const stream = createReadStream(path);
+    stream.on("error", rejectHash);
+    stream.on("data", (chunk) => hash.update(chunk));
+    stream.on("end", () => resolveHash(hash));
+  });
+}
+
+const wait = (ms) => new Promise((resolveWait) => setTimeout(resolveWait, ms));
+
+/** 一次下载尝试：支持从 startOffset 断点续传，边下边算 SHA-256。 */
+async function downloadAppUpdateFile(asset, partialPath, emit, startOffset = 0) {
+  let baseHash = null;
+  if (startOffset > 0) {
+    try {
+      baseHash = await hashExistingFile(partialPath);
+    } catch {
+      // 临时文件读不了就当没有断点，从头下。
+      startOffset = 0;
+    }
+  }
+
   return new Promise((resolveDownload, rejectDownload) => {
     const request = net.request({ method: "GET", url: asset.url });
     request.setHeader("Accept", "application/octet-stream");
     request.setHeader("User-Agent", "Codex-Updater");
+    // 只有真的存在一段可复用的前缀时才发 Range。服务器不支持断点续传时会回 200
+    // 并从头给全文，下面按「覆盖写」处理，不会把两份内容接在一起。
+    if (startOffset > 0) request.setHeader("Range", `bytes=${startOffset}-`);
 
-    const hash = createHash("sha256");
-    let received = 0;
+    let hash = baseHash ?? createHash("sha256");
+    let received = startOffset;
     let total = asset.size > 0 ? asset.size : 0;
     let lastEmit = 0;
     let settled = false;
@@ -308,12 +484,32 @@ function downloadAppUpdateFile(asset, partialPath, emit) {
     }
 
     request.on("response", (response) => {
+      if (response.statusCode === 416) {
+        // Range 起点越过了文件末尾：说明这个 .part 已经没有继续用的价值了。
+        // 删掉它，下一次尝试会从 0 开始。
+        try {
+          unlinkSync(partialPath);
+        } catch {
+          // 删不掉也无妨，调用方会把它当成一次失败。
+        }
+        fail(new Error("断点位置无效，已重新开始下载"));
+        return;
+      }
       if (response.statusCode < 200 || response.statusCode >= 300) {
         fail(new Error(`更新包下载失败：HTTP ${response.statusCode}`));
         return;
       }
+
+      let append = startOffset > 0;
+      if (response.statusCode === 200 && startOffset > 0) {
+        // 服务器忽略了 Range：这份响应是完整文件，必须覆盖写，并且重新开始算摘要。
+        append = false;
+        received = 0;
+        hash = createHash("sha256");
+      }
       const length = Number(response.headers["content-length"]);
-      if (Number.isFinite(length) && length > 0) total = length;
+      if (Number.isFinite(length) && length > 0) total = append ? startOffset + length : length;
+      if (startOffset > 0 && append) emit({ kind: "progress", received, total });
 
       const meter = new Transform({
         transform(chunk, _encoding, callback) {
@@ -328,18 +524,25 @@ function downloadAppUpdateFile(asset, partialPath, emit) {
         },
       });
 
-      pipeline(response, meter, createWriteStream(partialPath)).then(done).catch(fail);
+      pipeline(response, meter, createWriteStream(partialPath, { flags: append ? "a" : "w" })).then(done).catch(fail);
     });
     request.on("error", fail);
     request.end();
   });
 }
 
+const APP_UPDATE_ATTEMPTS = 3;
+
 /**
  * 下载更新器自己的安装包。
  *
  * 只接受本仓库 Release 资产、只认 .exe、必须带 GitHub 计算的摘要；下载到专用 updates
- * 目录，校验通过后才原子改名成正式文件。失败时删掉 .part，不留半截文件。
+ * 目录，校验通过后才原子改名成正式文件。
+ *
+ * 失败重试 3 次，并且**尽量接着上一段的 .part 继续下**：几百 MB 的包在坏网络下断一次就
+ * 从头来，用户看到的是进度条反复归零。网络错误保留 .part 供下一轮 Range 续传；摘要/大小
+ * 对不上则说明这段内容本身有问题，删掉重下，不能把损坏的前缀接在下一份后面。
+ * 三次都失败才清掉临时文件。
  */
 async function downloadAppUpdate(args, emit) {
   if (appUpdateDownloading) throw new Error("已经有一个更新包在下载");
@@ -363,20 +566,57 @@ async function downloadAppUpdate(args, emit) {
       }
     }
 
-    const sha256 = await downloadAppUpdateFile(asset, partial, emit);
-    if (sha256 !== asset.sha256) throw new Error("更新包 SHA-256 校验失败，已丢弃");
-    const size = statSync(partial).size;
-    if (asset.size > 0 && size !== asset.size) throw new Error(`更新包大小不符（${size} / ${asset.size}）`);
-    renameSync(partial, target);
-    emit({ kind: "progress", received: size, total: size });
-    return { path: target, size, sha256 };
-  } catch (error) {
+    let lastError = null;
+    for (let attempt = 1; attempt <= APP_UPDATE_ATTEMPTS; attempt += 1) {
+      const offset = fileSize(partial);
+      try {
+        if (offset > 0) {
+          emit({ kind: "progress", received: offset, total: asset.size, attempt, resuming: true });
+        }
+        const sha256 = await downloadAppUpdateFile(asset, partial, emit, offset);
+        const size = fileSize(partial);
+        if (sha256 !== asset.sha256) {
+          // 内容已经不对了，续传没有意义：删掉，下一轮从 0 开始。
+          try {
+            unlinkSync(partial);
+          } catch {
+            // 见上。
+          }
+          throw new Error("更新包 SHA-256 校验失败，已丢弃");
+        }
+        if (asset.size > 0 && size !== asset.size) {
+          try {
+            unlinkSync(partial);
+          } catch {
+            // 见上。
+          }
+          throw new Error(`更新包大小不符（${size} / ${asset.size}）`);
+        }
+        renameSync(partial, target);
+        emit({ kind: "progress", received: size, total: size });
+        return { path: target, size, sha256, attempts: attempt };
+      } catch (error) {
+        lastError = error;
+        if (attempt < APP_UPDATE_ATTEMPTS) {
+          emit({
+            kind: "progress",
+            received: fileSize(partial),
+            total: asset.size,
+            attempt,
+            retrying: true,
+            message: String(error?.message || error),
+          });
+          await wait(1000 * attempt);
+        }
+      }
+    }
+
     try {
       unlinkSync(partial);
     } catch {
-      // 同上：清理失败不应该盖掉真正的错误。
+      // 清理失败不应该盖掉真正的错误。
     }
-    throw error;
+    throw lastError ?? new Error("更新包下载失败");
   } finally {
     appUpdateDownloading = false;
   }
@@ -499,7 +739,7 @@ function ensureTray() {
     return null;
   }
   tray = new Tray(icon);
-  tray.setToolTip("Codex Updater");
+  tray.setToolTip(trayTooltip());
   tray.setContextMenu(
     Menu.buildFromTemplate([
       { label: "显示主界面", click: () => showMainWindow() },
@@ -509,6 +749,25 @@ function ensureTray() {
         click: () => {
           showMainWindow();
           sendMenuAction("check");
+        },
+      },
+      {
+        label: "查看更新公告",
+        click: () => {
+          showMainWindow();
+          sendMenuAction("announce");
+        },
+      },
+      {
+        label: "打开缓存目录",
+        click: () => {
+          const directory = currentCacheDirectory();
+          try {
+            mkdirSync(directory, { recursive: true });
+          } catch {
+            // 目录建不出来时 openPath 会把系统错误原样返回，交给下面的 catch。
+          }
+          void shell.openPath(directory).catch((error) => console.error("打开缓存目录失败：", error));
         },
       },
       { type: "separator" },
@@ -522,6 +781,7 @@ function ensureTray() {
     ]),
   );
   tray.on("double-click", () => showMainWindow());
+  applyTrayStatus();
   return tray;
 }
 
@@ -555,17 +815,24 @@ function windowBackgroundColor() {
 /**
  * 后台模式下「自己再查一遍」的间隔。
  *
- * 6 小时是权衡的结果：开机的那个进程会常驻好几天，只在启动那一下查一次是不够的；但查一次
- * 是一次真实的网络往返（脚本侧还有三层兜底重试），按小时算的间隔既够用又不至于变成定时骚扰。
+ * 默认 6 小时：开机的那个进程会常驻好几天，只在启动那一下查一次是不够的；但查一次是一次
+ * 真实的网络往返（脚本侧还有三层兜底重试），按小时算的间隔既够用又不至于变成定时骚扰。
+ * 用户可以在设置里从 1 / 3 / 6 / 12 / 24 小时里选。
  */
-const BACKGROUND_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 let backgroundTimer = null;
+
+function backgroundCheckIntervalMs(settings = readSettings()) {
+  return normalizeCheckInterval(settings.checkIntervalHours) * 60 * 60 * 1000;
+}
 
 /**
  * 按设置值决定要不要后台复查。
  *
- * 「后台模式开着」= 用户开了托盘常驻或开机自启 —— 只有这两种情况下进程才会活很久，
- * 也才谈得上「过几小时再查一遍」。两个开关都关着时进程随窗口一起退出，定时器纯属多余。
+ * 三个条件同时成立才会有定时器：
+ *   1. 用户没有关掉「自动检查更新」（autoCheck 默认开）；
+ *   2. 后台模式开着 —— 托盘常驻或开机自启。只有这两种情况下进程才会活很久；
+ *   3. 间隔是设置里那个值。
+ * 任一条件不成立，进程随窗口一起退出（或用户明确不要自动检查），定时器纯属多余。
  */
 function applyBackgroundTimer() {
   if (backgroundTimer) {
@@ -573,13 +840,14 @@ function applyBackgroundTimer() {
     backgroundTimer = null;
   }
   const settings = readSettings();
+  if (settings.autoCheck === false) return;
   if (!settings.minimizeToTray && !settings.launchAtLogin) return;
 
   backgroundTimer = setInterval(() => {
     for (const window of BrowserWindow.getAllWindows()) {
       if (!window.isDestroyed()) window.webContents.send("desktop:background-check");
     }
-  }, BACKGROUND_CHECK_INTERVAL_MS);
+  }, backgroundCheckIntervalMs(settings));
 }
 
 /**
@@ -593,26 +861,166 @@ function applyBackgroundTimer() {
  *
  * 通知只说「可更新到 X」，**不带任何安装按钮**：需要提权的安装永远由人点（见 AGENTS.md）。
  */
+// 「自动下载完成」是同一版本的第二次提醒，不该被 lastNotifiedVersion 挡掉。
+// 它只在本进程里有效：下载状态本身也没落盘，重启后重新检查即可。
+let lastDownloadedNotified = null;
+
 function notifyUpdate(args) {
   const version = String(args.version || "");
   if (!version) return { shown: false, reason: "no-version" };
+  // 用户可以在设置里整个关掉通知。默认开 —— 关掉之后自动检查仍然照常跑，只是不出声。
+  if (readSettings().notifyUpdates === false) return { shown: false, reason: "disabled" };
 
+  const downloaded = args.downloaded === true;
   if (mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible() && mainWindow.isFocused()) {
     return { shown: false, reason: "focused" };
   }
-  if (readSettings().lastNotifiedVersion === version) return { shown: false, reason: "already-notified" };
+  if (downloaded ? lastDownloadedNotified === version : readSettings().lastNotifiedVersion === version) {
+    return { shown: false, reason: "already-notified" };
+  }
   if (!Notification.isSupported()) return { shown: false, reason: "unsupported" };
 
   const notification = new Notification({
     title: "Codex 有新版本",
-    body: `可更新到 ${version}，点这里打开更新器查看。`,
+    body: downloaded
+      ? `已自动下载 ${version} 的安装包，打开更新器即可安装。`
+      : `可更新到 ${version}，点这里打开更新器查看。`,
   });
   notification.on("click", () => showMainWindow());
   notification.show();
   // 通知成功弹出去之后才记下来。先记再弹的话，弹失败（比如被系统静音）也会被当成
   // 「已经提醒过」，这个版本就再也不会提醒了。
-  writeSettings({ lastNotifiedVersion: version });
+  if (downloaded) lastDownloadedNotified = version;
+  else writeSettings({ lastNotifiedVersion: version });
   return { shown: true };
+}
+
+// ---------- 网络诊断 ----------
+
+// 只探这三个写死的地址，渲染进程传不进来 URL。它们正好覆盖应用要走的几条网络路径：
+// 读公告/版本（GitHub API）、下更新器安装包（Release 下载）、查 Codex 新版本（分发源）。
+const NETWORK_TARGETS = [
+  { id: "github-api", label: "GitHub API（版本与公告）", url: `https://api.github.com/repos/${GITHUB_REPO}` },
+  { id: "github-release", label: "GitHub Release 下载", url: `https://github.com/${GITHUB_REPO}/releases/latest` },
+  { id: "store-index", label: "Microsoft 分发源索引", url: "https://store.rg-adguard.net/" },
+];
+
+/** 只等响应头：能拿到状态码就说明这一跳通了，不需要把页面正文下回来。 */
+function probeUrl(url, timeoutMs = 8000) {
+  return new Promise((resolveProbe, rejectProbe) => {
+    const started = Date.now();
+    const request = net.request({ method: "GET", url });
+    request.setHeader("User-Agent", "Codex-Updater");
+    let settled = false;
+    const finish = (callback, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      callback(value);
+    };
+    const timer = setTimeout(() => {
+      request.abort();
+      finish(rejectProbe, new Error("连接超时"));
+    }, timeoutMs);
+
+    request.on("response", (response) => {
+      const latencyMs = Date.now() - started;
+      response.on("error", () => {});
+      try {
+        response.destroy();
+      } catch {
+        // 只要头，正文不读了。
+      }
+      finish(resolveProbe, { status: response.statusCode, latencyMs });
+    });
+    request.on("error", (error) => finish(rejectProbe, error));
+    request.end();
+  });
+}
+
+/**
+ * 网络与代理诊断。
+ *
+ * 返回值里的 proxy 是 Chromium 实际采用的代理规则（DIRECT / PROXY ...）。应用用
+ * Electron 的 net 发请求，走的就是它 —— 用户在浏览器里正常、应用里连不上时，这一行往往是
+ * 唯一能解释差别的证据。命令只读，不写任何设置。
+ */
+async function checkNetwork() {
+  let proxy = "";
+  try {
+    proxy = await session.defaultSession.resolveProxy("https://api.github.com/");
+  } catch {
+    proxy = "";
+  }
+  const results = await Promise.all(
+    NETWORK_TARGETS.map(async (target) => {
+      try {
+        const { status, latencyMs } = await probeUrl(target.url);
+        return {
+          ...target,
+          ok: status >= 200 && status < 400,
+          status,
+          latencyMs,
+          error: null,
+        };
+      } catch (error) {
+        return { ...target, ok: false, status: null, latencyMs: null, error: String(error?.message || error) };
+      }
+    }),
+  );
+  return { checkedAt: Date.now(), proxy, results };
+}
+
+// ---------- 缓存：逐个固定与删除 ----------
+
+/**
+ * 删除一个缓存里的安装包。
+ *
+ * 和「清空缓存」一样先弹原生确认框（默认「取消」）：这是不可撤销的删除，误点的代价是
+ * 再也回不到那个版本。路径只接受当前缓存目录里的 Codex 安装包（resolveCachedPackage）。
+ */
+async function deleteCachedPackage(args) {
+  const directory = currentCacheDirectory();
+  const target = resolveCachedPackage(directory, args?.path);
+  const options = {
+    type: "warning",
+    title: "删除安装包",
+    message: `要删除 ${basename(target)} 吗？`,
+    detail: "已安装的 Codex 不受影响。但删除后无法再用它回退或重装，需要时得重新下载。",
+    buttons: ["取消", "删除"],
+    defaultId: 0,
+    cancelId: 0,
+    noLink: true,
+  };
+  const parent = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null;
+  const { response } = parent
+    ? await dialog.showMessageBox(parent, options)
+    : await dialog.showMessageBox(options);
+  if (response !== 1) return { cancelled: true };
+
+  unlinkSync(target);
+  // 文件没了，固定标记也不该留着：下次下载同名包时不该继承一个「已固定」的状态。
+  try {
+    writeCachePins(
+      directory,
+      readCachePins(directory).filter((name) => name !== basename(target)),
+    );
+  } catch {
+    // 标记写不进去不影响删除结果。
+  }
+  return { deleted: true, path: target };
+}
+
+/** 固定 / 取消固定一个安装包。固定之后自动剪枝会跳过它（见 CodexStoreUpdater.psm1）。 */
+function pinCachedPackage(args) {
+  const directory = currentCacheDirectory();
+  const target = resolveCachedPackage(directory, args?.path);
+  const name = basename(target);
+  const pins = new Set(readCachePins(directory));
+  if (args?.pinned === false) pins.delete(name);
+  else pins.add(name);
+  writeCachePins(directory, [...pins]);
+  return { pinned: pins.has(name), pinnedPaths: [...pins] };
 }
 
 // ---------- 命令 ----------
@@ -647,9 +1055,11 @@ async function executeCommand(event, command, args = {}) {
       return status;
     }
     case "check_update":
-      return codex.checkUpdate(args);
+      // 保留份数由设置决定：0 = 桌面端默认的「不自动清理」（-KeepAll），N>0 = 保留最近 N 个。
+      // 和下面 install_codex 一样放在 args 之后，渲染进程传什么都不许覆盖这个策略。
+      return codex.checkUpdate({ ...args, cacheKeepCount: readSettings().cacheKeepCount });
     case "download_codex":
-      return codex.downloadCodex(args, emit);
+      return codex.downloadCodex({ ...args, cacheKeepCount: readSettings().cacheKeepCount }, emit);
     case "verify_download_signature":
       return codex.verifySignature(args);
     case "install_codex":
@@ -657,12 +1067,28 @@ async function executeCommand(event, command, args = {}) {
       // 而 worker 必须在**缓存目录**里剪枝，不能从安装包路径反推 —— 路径是界面给的，
       // 反推出来的目录未必是缓存，剪错目录会把不相干的安装包删掉。
       return codex.installCodex(
-        { ...args, downloadDirectory: codex.resolveDownloadDirectory(readSettings().downloadDirectory) },
+        {
+          ...args,
+          downloadDirectory: codex.resolveDownloadDirectory(readSettings().downloadDirectory),
+          cacheKeepCount: readSettings().cacheKeepCount,
+        },
         emit,
       );
-    case "list_cached_packages":
-      // 「版本历史 / 回退」要用的缓存清单。只读，不写任何东西。
-      return codex.listCachedPackages(args);
+    case "list_cached_packages": {
+      // 「版本历史 / 回退」要用的缓存清单。只读，不写任何东西；固定状态来自缓存目录里的
+      // .codex-pins.json，由下面的 pin_cached_package 维护。
+      const list = await codex.listCachedPackages(args);
+      const directory = codex.resolveDownloadDirectory(args.downloadDirectory ?? readSettings().downloadDirectory);
+      const pins = new Set(readCachePins(directory));
+      return {
+        ...list,
+        packages: list.packages.map((pkg) => ({ ...pkg, pinned: pins.has(basename(pkg.path)) })),
+      };
+    }
+    case "pin_cached_package":
+      return pinCachedPackage(args);
+    case "delete_cached_package":
+      return deleteCachedPackage(args);
     case "clear_cached_packages": {
       // 桌面端不再自动剪枝（见 codex.cjs 的 KEEP_ALL_CACHE），所以这是用户回收磁盘空间的
       // 唯一手段，也是唯一一个会真的删掉用户数据的命令 —— 先确认再动手。
@@ -698,10 +1124,30 @@ async function executeCommand(event, command, args = {}) {
       if ("dismissedTips" in args) {
         patch.dismissedTips = Array.isArray(args.dismissedTips) ? args.dismissedTips.map(String).slice(-20) : [];
       }
+      // 外观与更新策略。值在主进程归一化：界面传 "auto"、99 小时这种值进来也不会落盘。
+      if ("theme" in args) patch.theme = normalizeTheme(args.theme);
+      if ("autoCheck" in args) patch.autoCheck = Boolean(args.autoCheck);
+      if ("autoDownload" in args) patch.autoDownload = Boolean(args.autoDownload);
+      if ("notifyUpdates" in args) patch.notifyUpdates = Boolean(args.notifyUpdates);
+      if ("checkIntervalHours" in args) patch.checkIntervalHours = normalizeCheckInterval(args.checkIntervalHours);
+      if ("cacheKeepCount" in args) {
+        const count = Number(args.cacheKeepCount);
+        // 0 = 不自动清理；上限 10，避免界面被填进一个离谱的数字后把缓存全删了。
+        patch.cacheKeepCount = Number.isFinite(count) && count >= 0 ? Math.min(Math.round(count), 10) : 0;
+      }
       const saved = writeSettings(patch);
-      // 这两个开关不只是落盘，还要真的动系统与本进程：自启要写注册表，后台复查要起/停定时器。
+      // 这些开关不只是落盘，还要真的动系统与本进程：自启要写注册表，后台复查要起/停定时器，
+      // 主题要改 nativeTheme（CSS 的 prefers-color-scheme 会自动跟上）。
       if ("launchAtLogin" in patch) applyLoginItem(saved.launchAtLogin);
-      if ("minimizeToTray" in patch || "launchAtLogin" in patch) applyBackgroundTimer();
+      if (
+        "minimizeToTray" in patch ||
+        "launchAtLogin" in patch ||
+        "autoCheck" in patch ||
+        "checkIntervalHours" in patch
+      ) {
+        applyBackgroundTimer();
+      }
+      if ("theme" in patch) applyTheme(saved.theme);
       return saved;
     }
     case "notify_update":
@@ -780,6 +1226,10 @@ async function executeCommand(event, command, args = {}) {
     }
     case "install_app_update":
       return installAppUpdate(args);
+    case "check_network":
+      return checkNetwork();
+    case "set_tray_status":
+      return setTrayStatus(args);
     case "open_release": {
       const url = String(args.url || "");
       const allowedPrefix = `https://github.com/${GITHUB_REPO}/releases/`;
@@ -906,6 +1356,8 @@ async function createWindow() {
   });
 
   mainWindow = window;
+  // 新窗口先接上当前的托盘/任务栏状态（有更新时右上角那颗 overlay 角标）。
+  applyTrayStatus();
   // 双保险：应用级菜单已清空，这里再把窗口自己的菜单摘掉。
   window.removeMenu();
   attachKeyboardShortcuts(window);
@@ -1135,6 +1587,10 @@ app.whenReady()
 
     // 注册表里的自启项可能被别的东西清掉（清理软件、重装），所以每次启动都按落盘值重新写一次。
     applyLoginItem(readSettings().launchAtLogin);
+
+    // 主题要在建窗口之前定下来：backgroundColor 和 Chromium 的 prefers-color-scheme
+    // 都读它，晚一步就会出现「深色界面配浅色窗口底」的那一下白闪。
+    applyTheme(readSettings().theme);
 
     // 启动时确认内置脚本到位：缺失时给出明确原因，而不是等到用户点按钮才报错。
     //

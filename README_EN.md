@@ -109,13 +109,18 @@ Copy the plugin directory to
   prompt only when it is genuinely needed. Elevation is **off by default**: without
   `-AllowElevation` the run refuses honestly (see [FAQ](#faq)).
 - **Cache retention + rollback**: the cache keeps the two most recent Codex installers
-  (~1.67 GB) as rollback targets; the desktop app deletes nothing and lets you clear it
-  by hand (see [`docs/rollback.md`](docs/rollback.md)).
+  (~1.67 GB) as rollback targets; the desktop app keeps everything by default and lets
+  you choose how many to keep, clear the cache, and pin / verify / delete individual
+  packages from the version history (see [`docs/rollback.md`](docs/rollback.md)).
 - **Plugin self-update**: compares local and remote `plugin.json` versions and updates
   the plugin from GitHub when the remote is newer.
 - **Updater self-update (desktop app)**: "Settings → About" checks this repository's
-  `desktop-v*` Releases, downloads a newer build in-app, verifies it against the
+  `desktop-v*` Releases and downloads a newer build in-app (automatic retry and resume,
+  with size / speed / ETA shown in the UI), verifies it against the
   SHA-256 published by GitHub, installs it silently and restarts.
+- **Desktop settings**: updates and notifications (auto-check / auto-download / notify /
+  interval), theme (system / light / dark), network diagnostics (three endpoints plus
+  the proxy rule), and cache retention.
 - **Release announcements**: [`desktop/CHANGELOG.md`](desktop/CHANGELOG.md) is the single
   source — the release workflow uses the matching section as the Release body and the
   in-app bell shows the timeline of past releases (see

@@ -138,12 +138,12 @@ const rollbackScenario = process.argv.includes("--rollback");
 
 // --app-update：「设置 → 关于 → 检查更新」这条自更新链路。
 //
-// 桩里放一个比当前版本新的 `desktop-v0.4.0`（带 .exe 资产与 sha256 摘要），于是
-// 「检查更新」之后必须出现「发现新版本 v0.4.0」与「下载并安装」；点下载（走 IPC 桩，
+// 桩里放一个比当前版本新的 `desktop-v0.5.0`（带 .exe 资产与 sha256 摘要），于是
+// 「检查更新」之后必须出现「发现新版本 v0.5.0」与「下载并安装」；点下载（走 IPC 桩，
 // 不跑真实安装器）之后必须变成「已下载…可以安装」。
 //
 // 这条场景同时验证公告的两个来源：CHANGELOG 历史（0.1.0 / 0.2.0）来自打包进应用的
-// JSON，0.4.0 来自远端 —— 合并后按时间倒序、同 tag 不重复。
+// JSON，0.5.0 来自远端 —— 合并后按时间倒序、同 tag 不重复。
 const appUpdateScenario = process.argv.includes("--app-update");
 
 // 进度序列取自 scripts/simulate-install.cjs 跑出来的真实事件流（含静默期爬升 20%→53%）。
@@ -248,23 +248,23 @@ const STUB_UPDATE_LATEST = {
   updateAvailable: false,
 };
 
-// 自更新场景用的 GitHub Release：比当前打包版本（0.3.0）新一版，资产带 GitHub
+// 自更新场景用的 GitHub Release：比当前打包版本（0.4.0）新一版，资产带 GitHub
 // 计算好的 sha256 摘要。下载命令只认这个摘要，所以桩里必须给得像真的。
 //
 // 正文带 Markdown 标记（标题、列表、反引号），用来验证公告摘要会把它剥成纯文本；
 // 直接铺原文的话，界面上会出现一排 `##` 和 `-`。
 const STUB_UPDATER = {
-  version: "0.4.0",
-  tag: "desktop-v0.4.0",
-  name: "Codex Updater 0.4.0",
+  version: "0.5.0",
+  tag: "desktop-v0.5.0",
+  name: "Codex Updater 0.5.0",
   body: "## 本次更新\n\n- 设置 → 关于可以直接检查更新\n- 公告按 `CHANGELOG` 维护\n\n升级后请重启一次应用。",
-  url: "https://github.com/aygzs123/Codex-Auto-Update-Plugin-New/releases/tag/desktop-v0.4.0",
+  url: "https://github.com/aygzs123/Codex-Auto-Update-Plugin-New/releases/tag/desktop-v0.5.0",
   publishedAt: "2026-11-20T00:00:00Z",
   assets: [
     {
-      name: "Codex Updater Setup 0.4.0.exe",
+      name: "Codex Updater Setup 0.5.0.exe",
       size: 88_000_000,
-      url: "https://github.com/aygzs123/Codex-Auto-Update-Plugin-New/releases/download/desktop-v0.4.0/CodexUpdater.exe",
+      url: "https://github.com/aygzs123/Codex-Auto-Update-Plugin-New/releases/download/desktop-v0.5.0/CodexUpdater.exe",
       digest: `sha256:${"a".repeat(64)}`,
     },
   ],
@@ -336,6 +336,15 @@ function registerStubHandlers() {
           defaultDownloadDirectory: "C:\\Users\\me\\AppData\\Roaming\\Codex Updater\\downloads",
           logsDirectory: "C:\\Users\\me\\AppData\\Roaming\\Codex Updater\\logs",
           dismissedTips: [],
+          // 新增设置的默认档：主题跟随系统、自动检查开、自动下载关、通知开、每 6 小时复查、
+          // 不自动清理缓存。显式写出来而不是靠缺省值，界面断言才不是「字段全空也恰好成立」。
+          theme: "system",
+          autoCheck: true,
+          autoDownload: false,
+          notifyUpdates: true,
+          checkIntervalHours: 6,
+          cacheKeepCount: 0,
+          showVersionHistory: true,
         };
       case "get_status":
       case "check_health":
@@ -438,8 +447,8 @@ function registerStubHandlers() {
         // 不桩的话会落到默认分支回一个 {}：渲染进程读到 undefined 字段，公告与更新结论
         // 都变成空的 —— 而界面上看起来一切正常。
         //
-        // 公告只放远端的 0.4.0；0.1.0 / 0.2.0 / 0.3.0 来自打包进应用的 CHANGELOG，
-        // 两条来源合并后必须是 0.4.0 在最前、且没有重复的 tag。
+        // 公告只放远端的 0.5.0；0.1.0 ~ 0.4.0 来自打包进应用的 CHANGELOG，
+        // 两条来源合并后必须是 0.5.0 在最前、且没有重复的 tag。
         return appUpdateScenario
           ? {
               updater: { ...STUB_UPDATER },
@@ -452,7 +461,7 @@ function registerStubHandlers() {
         // 自更新场景：不真的下载一百多兆，也不跑真实安装器。这里只验证
         // 「界面 → IPC → 回到界面」这条链路，以及下载完成后界面切到可安装态。
         return {
-          path: "C:\\Users\\me\\AppData\\Roaming\\Codex Updater\\updates\\Codex Updater Setup 0.4.0.exe",
+          path: "C:\\Users\\me\\AppData\\Roaming\\Codex Updater\\updates\\Codex Updater Setup 0.5.0.exe",
           size: STUB_UPDATER.assets[0].size,
           sha256: "a".repeat(64),
         };
@@ -538,19 +547,6 @@ async function inspect(window) {
             pending: !!node.querySelector(".skeleton"),
           })),
           foot: text(".inst-foot"),
-        };
-      })(),
-      // 策略告警（UpdateTip）。公告已经搬进顶栏铃铛，这里只剩三条不可关闭的告警；
-      // 这份桩数据里固定版本正常、可回退包也在，所以必须是 0 条。
-      tip: (() => {
-        const stack = document.querySelector(".tip-stack");
-        if (!stack) return null;
-        return {
-          count: stack.querySelectorAll(".tip").length,
-          titles: [...stack.querySelectorAll(".tip-body strong")].map((node) => node.textContent.trim()),
-          text: stack.textContent.replace(/\s+/g, " ").trim(),
-          closeCount: stack.querySelectorAll(".tip-close").length,
-          actionCount: stack.querySelectorAll(".tip-action").length,
         };
       })(),
       // 「上次检查 14:32」。顶栏删掉之后它落到主区底部的 .hero-meta 里 ——
@@ -920,7 +916,32 @@ async function inspect(window) {
       };
     })();
 
-    return { pathRowButtons, installLocationField, cache, appUpdate };
+    // 新增的设置卡片：主题、更新与通知、网络诊断、自动保留份数。它们必须在设置页
+    // 真的渲染出来 —— 只在 store 里加字段、界面上没有入口，等于功能不存在。
+    const extras = (() => {
+      const cards = [...document.querySelectorAll(".settings-card")];
+      const bySummary = (needle) =>
+        cards.find((card) => card.querySelector("summary")?.textContent.includes(needle)) ?? null;
+      const themeCard = bySummary("外观");
+      const updateCard = bySummary("更新与通知");
+      const networkCard = bySummary("网络诊断");
+      const cacheCard = bySummary("安装包缓存");
+      return {
+        hasThemeCard: !!themeCard,
+        themeActive: themeCard?.querySelector(".theme-option[data-active='true'] strong")?.textContent.trim() ?? "",
+        themeOptionCount: themeCard ? themeCard.querySelectorAll(".theme-option").length : 0,
+        hasUpdateCard: !!updateCard,
+        updateSwitchCount: updateCard ? updateCard.querySelectorAll(".switch").length : 0,
+        intervalValue: updateCard?.querySelector(".field-select")?.value ?? null,
+        hasNetworkCard: !!networkCard,
+        hasNetworkButton: !!(
+          networkCard && [...networkCard.querySelectorAll("button")].some((b) => b.textContent.includes("诊断"))
+        ),
+        keepCountValue: cacheCard?.querySelector(".field-select")?.value ?? null,
+      };
+    })();
+
+    return { pathRowButtons, installLocationField, cache, appUpdate, extras };
   })()`);
 
   // 版本历史页：逐行量回退按钮。ctaLabel 在概览页的主按钮上，这里量不到，
@@ -956,6 +977,12 @@ async function inspect(window) {
         version: row.querySelector(".health-labels strong")?.textContent.trim() ?? "",
         state: row.querySelector(".health-state")?.textContent.trim() ?? "",
         className: row.className,
+        // 逐行的小动作（校验签名 / 固定 / 删除）。它们不占 .rollback-action 那颗主按钮，
+        // 单独收一遍：少任何一颗都意味着「逐包管理」只做了一半。
+        actions: [...row.querySelectorAll(".vh-actions .link-button")].map((node) =>
+          node.textContent.trim(),
+        ),
+        pinned: !!row.querySelector(".vh-version .pill"),
         buttonLabel: button ? button.textContent.trim() : "",
         buttonDisabled: button ? button.disabled : null,
         buttonWidth: rect ? Math.round(rect.width) : 0,
@@ -1242,7 +1269,7 @@ async function main() {
     await new Promise((resolve) => setTimeout(resolve, 500));
     const downloaded = await readAbout();
 
-    // 公告铃铛：点开量时间线。0.4.0 来自远端桩，0.1.0 / 0.2.0 / 0.3.0 来自 CHANGELOG。
+    // 公告铃铛：点开量时间线。0.5.0 来自远端桩，0.1.0 ~ 0.4.0 来自 CHANGELOG。
     const bell = await window.webContents.executeJavaScript(`(async () => {
       const button = document.querySelector(".bell-button");
       if (button) button.click();
@@ -1610,11 +1637,11 @@ async function main() {
           problems.push(`还没检查时徽章应是「尚未检查」，实际是「${initial.badge || "(空)"}」`);
         }
 
-        // 点完检查：桩里的 desktop-v0.4.0 必须被认出来，按钮换成「下载并安装」。
-        if (!checked?.status.includes("发现新版本 v0.4.0")) {
+        // 点完检查：桩里的 desktop-v0.5.0 必须被认出来，按钮换成「下载并安装」。
+        if (!checked?.status.includes("发现新版本 v0.5.0")) {
           problems.push(`点「检查更新」后没有显示新版本：${checked?.status || "(空)"}`);
         }
-        if (!checked?.badge.includes("v0.4.0")) {
+        if (!checked?.badge.includes("v0.5.0")) {
           problems.push(`发现新版本后徽章没有跟上版本号：${checked?.badge || "(空)"}`);
         }
         if (!checked?.buttons.some((button) => button.label.includes("下载并安装"))) {
@@ -1631,35 +1658,32 @@ async function main() {
         if (downloaded?.badge !== "待安装") {
           problems.push(`下载完成后徽章应是「待安装」，实际是「${downloaded?.badge || "(空)"}」`);
         }
-        if (downloaded?.status.includes("v0.4.0") === false) {
+        if (downloaded?.status.includes("v0.5.0") === false) {
           problems.push(`下载完成后的状态没带上版本号：${downloaded?.status || "(空)"}`);
         }
       }
     }
 
-    // 公告两个来源合并：远端 0.4.0 在前，CHANGELOG 历史（0.2.0 / 0.1.0）在后，
-    // 且 0.3.0 只出现一次（本地与远端同 tag 时以本地为准）。
+    // 公告两个来源合并：远端 0.5.0 在前，CHANGELOG 历史在后，
+    // 且每个版本只出现一次（本地与远端同 tag 时以本地为准）。
     if (!bellReport) {
       problems.push("顶栏公告铃铛点开后没有面板");
     } else if (bellReport.empty) {
       problems.push("公告时间线是空的：CHANGELOG 历史没有进来");
     } else {
       const titles = bellReport.entries.map((entry) => entry.title);
-      for (const version of ["v0.4.0", "v0.3.0", "v0.2.0", "v0.1.0"]) {
+      for (const version of ["v0.5.0", "v0.4.0", "v0.3.0", "v0.2.0", "v0.1.0"]) {
         if (!titles.includes(version)) problems.push(`公告里缺少 ${version}：${titles.join(" / ")}`);
       }
       const duplicates = titles.filter((title, index) => titles.indexOf(title) !== index);
       if (duplicates.length > 0) problems.push(`公告里有重复条目：${duplicates.join(", ")}`);
-      if (titles[0] !== "v0.4.0") {
+      if (titles[0] !== "v0.5.0") {
         problems.push(`公告应按发布时间倒序，第一条却是：${titles[0]}`);
       }
       // 正文必须是剥好的纯文本：Markdown 标记铺到界面上就是一排 `##` 和 `-`。
       const dirty = bellReport.entries.filter((entry) => /(^|\s)#{1,6}\s|`/.test(entry.body));
       if (dirty.length > 0) problems.push(`公告正文没有剥掉 Markdown 标记：${dirty[0].body}`);
     }
-  } else if (report.tip) {
-    // 默认场景没有 updater Release、也没有回滚风险：出现提示条只可能是判据出了岔子。
-    problems.push(`默认场景不该出现策略提示：${report.tip.text}`);
   }
   // --checking 场景的主按钮本来就该是灰的（命令正在跑），这里按「就绪即可点」断言会误报。
   if (!checkingHold && report.ctaDisabled !== false) problems.push("主操作按钮在就绪状态下应当可点击");
@@ -2045,6 +2069,28 @@ async function main() {
     }
   }
 
+  // 主题、更新与通知、网络诊断、自动保留份数：新增的设置入口必须真的渲染出来。
+  const extras = report.extras;
+  if (!extras) {
+    problems.push("设置页没有采集到新增设置卡片");
+  } else {
+    if (!extras.hasThemeCard) problems.push("设置页没有「外观」卡片：主题切换必须在设置里");
+    if (extras.themeActive !== "跟随系统") {
+      problems.push(`默认主题应为「跟随系统」，实际选中：${extras.themeActive || "(没有选中项)"}`);
+    }
+    if (extras.themeOptionCount !== 3) problems.push(`主题选项应有 3 档，实际 ${extras.themeOptionCount} 档`);
+    if (!extras.hasUpdateCard) problems.push("设置页没有「更新与通知」卡片");
+    if (!extras.hasNetworkCard || !extras.hasNetworkButton) {
+      problems.push("设置页没有「网络诊断」卡片或它的诊断按钮");
+    }
+    if (extras.intervalValue !== "6") {
+      problems.push(`后台复查间隔的默认值应为 6 小时，实际 ${extras.intervalValue}`);
+    }
+    if (extras.keepCountValue !== "0") {
+      problems.push(`自动保留份数的默认值应为 0（不自动清理），实际 ${extras.keepCountValue}`);
+    }
+  }
+
   // 版本历史 / 回退。卡片在每个场景都在页面上，所以这组断言不绑 --rollback：
   // 布局被挤坏、徽章写错、有人加回一颗删除按钮，这些在默认场景就该被发现。
   const rollbackCard = report.rollback;
@@ -2052,8 +2098,23 @@ async function main() {
     problems.push("页面上没有渲染出「版本历史」卡片（.rollback-card）");
   } else {
     if (rollbackCard.heading !== "版本历史") problems.push(`版本历史卡片标题不正确：${rollbackCard.heading}`);
-    if (rollbackCard.deleteButtonCount > 0) {
-      problems.push("版本历史里出现了删除按钮：旧安装包删掉就再也退不回去，不能给误点的机会");
+    // 逐包管理是这批改动的一部分：每一行都该有「校验签名 / 固定 / 删除」三颗小动作。
+    // 删除现在有了第二道防线（主进程原生确认框 + 只认缓存目录里的 Codex 包），
+    // 所以这里数的不是「有没有删除」，而是「每行是不是都齐了」。
+    if (rollbackCard.deleteButtonCount !== rollbackCard.rowCount) {
+      problems.push(
+        `版本历史每行应有一颗删除按钮：${rollbackCard.rowCount} 行、${rollbackCard.deleteButtonCount} 颗`,
+      );
+    }
+    for (const row of rollbackCard.rows ?? []) {
+      for (const label of ["校验签名", "删除"]) {
+        if (!(row.actions ?? []).some((action) => action.includes(label))) {
+          problems.push(`版本历史 ${row.version} 这一行缺少「${label}」动作`);
+        }
+      }
+      if (!(row.actions ?? []).some((action) => action.includes("固定"))) {
+        problems.push(`版本历史 ${row.version} 这一行缺少「固定」动作`);
+      }
     }
     if (notInstalled) {
       if (rollbackCard.rowCount !== 0) {

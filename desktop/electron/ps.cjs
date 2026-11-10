@@ -28,6 +28,7 @@
 //    （脚本里对 $LASTEXITCODE 的赋值不会回泄到父作用域，所以不存在污染）。
 
 const { spawn } = require("node:child_process");
+const { join } = require("node:path");
 
 const POWERSHELL = process.platform === "win32" ? "powershell.exe" : "pwsh";
 
@@ -85,13 +86,37 @@ function buildInvocation(scriptPath, { flags = [], values = {} } = {}) {
   return tokens.join(" ");
 }
 
+/**
+ * Windows PowerShell 5.1 自己的模块目录。
+ *
+ * 5.1 **不会**覆盖继承来的 PSModulePath。如果本应用是从 PowerShell 7 的终端里启动的
+ * （npm run dev、pwsh 里跑 exe 都会这样），继承到的路径指向 PS7 的模块目录，5.1 于是
+ * 找不到自己的模块 —— Get-FileHash、Get-AuthenticodeSignature 这些「Windows 自带」的
+ * 命令会报「无法将 ... 项识别为 cmdlet」。2026-11-10 实测：修复资源副本正因此挂在
+ * Get-FileHash 上；签名校验用的 Get-AuthenticodeSignature 也在同一批里缺失。
+ */
+function windowsPowerShellModulePath() {
+  // 不写死盘符：SystemDrive 是 Windows 自己导出的系统盘（几乎总是 C:，但没有理由
+  // 假设）。盘符只在 Windows 上才存在，所以这条路径只会在 win32 分支里被调用。
+  const root = process.env.SystemRoot || process.env.windir || join(process.env.SystemDrive || "", "Windows");
+  return join(root, "System32", "WindowsPowerShell", "v1.0", "Modules");
+}
+
 function scriptEnvironment(env) {
-  return {
+  const merged = {
     ...process.env,
     // 让脚本拉起的子进程（curl 等）也按 UTF-8 处理文本。
     PYTHONIOENCODING: "utf-8",
     ...env,
   };
+  // 把自己那一份补到最前面，而不是替换继承值：用户自己的模块（例如公司签发的
+  // 证书校验模块）仍然可用，5.1 的内置命令也一定找得到。
+  if (process.platform === "win32") {
+    merged.PSModulePath = [windowsPowerShellModulePath(), merged.PSModulePath]
+      .filter(Boolean)
+      .join(";");
+  }
+  return merged;
 }
 
 /**
@@ -199,4 +224,16 @@ function describeFailure({ code, stdout, stderr }) {
   return detail.slice(-4).join(" / ");
 }
 
-module.exports = { buildInvocation, wrapCommand, quoteValue, runScript, captureScript, runCode, streamScript, describeFailure, POWERSHELL };
+module.exports = {
+  buildInvocation,
+  wrapCommand,
+  quoteValue,
+  runScript,
+  captureScript,
+  runCode,
+  streamScript,
+  describeFailure,
+  scriptEnvironment,
+  windowsPowerShellModulePath,
+  POWERSHELL,
+};

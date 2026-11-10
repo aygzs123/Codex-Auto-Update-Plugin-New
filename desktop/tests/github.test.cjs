@@ -19,7 +19,6 @@ const app = read("src", "state", "app.ts");
 const appView = read("src", "App.tsx");
 const types = read("src", "types.ts");
 const announcements = read("src", "lib", "announcements.ts");
-const tip = read("src", "components", "UpdateTip.tsx");
 const bell = read("src", "components", "AnnouncementBell.tsx");
 
 const tests = [];
@@ -219,16 +218,19 @@ test("设置里只落盘公告忽略列表，pinToGithubRelease 已彻底移除"
 test("界面只从 currentUpdatePolicy 取结论", () => {
   assert.match(appView, /const policy = currentUpdatePolicy\(\);/, "App 没有读统一策略");
   assert.doesNotMatch(appView, /update\?\.updateAvailable/, "App 还在直接读 update.updateAvailable");
-  assert.match(appView, /<UpdateTip/, "没有渲染策略告警");
   assert.match(appView, /<AnnouncementBell/, "顶栏没有渲染更新公告入口");
 });
 
-test("策略只剩两条：回滚风险与结论本身", () => {
-  // 两条 pin 告警随版本固定一起删了。留下的是「本次更新后退不回去」——
-  // 它描述的是问题仍在，点掉不等于问题消失，所以没有关闭入口。
-  assert.match(tip, /policy\.rollbackRisk/, "回滚风险告警丢了");
-  assert.doesNotMatch(tip, /pin-error|pin-unavailable|pinToGithubRelease/, "UpdateTip 里还留着 pin 告警");
-  assert.doesNotMatch(tip, /dismissible|不再显示/, "策略告警不该有「关掉」入口");
+test("「本次更新后无法退回当前版本」的常驻告警已移除", () => {
+  // 用户明确要求去掉这条：缓存可以按份数保留、也能逐个固定，这条告警读起来像
+  // 「更新一定会毁掉退路」，而实际策略已经由「安装包缓存」那组设置承担。
+  assert.doesNotMatch(appView, /UpdateTip/, "App 还在渲染策略告警");
+  assert.doesNotMatch(appView, /无法退回当前版本/, "概览页还留着回滚风险告警文案");
+  assert.doesNotMatch(
+    read("src", "lib", "policy.ts"),
+    /rollbackRisk/,
+    "策略里还留着不再展示的 rollbackRisk 字段",
+  );
 });
 
 test("公告在顶栏铃铛里可单独忽略，红点只跟「有新版」走", () => {

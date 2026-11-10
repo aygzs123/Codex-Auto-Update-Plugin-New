@@ -36,12 +36,19 @@ export function AnnouncementBell({
   announcements,
   hasUpdate,
   dismissedTips,
+  openRequest = 0,
   onDismiss,
   onOpenRelease,
 }: {
   announcements: GithubReleaseInfo[];
   hasUpdate: boolean;
   dismissedTips: string[];
+  /**
+   * 递增计数：托盘菜单「查看更新公告」会把它 +1，铃铛据此展开一次。
+   *
+   * 用计数而不是布尔：菜单可以连点，布尔值第二次点击不会变化，面板就没反应。
+   */
+  openRequest?: number;
   onDismiss: (id: string) => void;
   onOpenRelease: (url: string) => void;
 }) {
@@ -50,6 +57,11 @@ export function AnnouncementBell({
   const visible = announcements.filter((entry) => !dismissedTips.includes(entry.tag));
   // 红点只表示「有更新器新版本」。历史公告是时间线，不构成「有更新」。
   const showDot = hasUpdate && visible.length > 0;
+
+  // 托盘菜单或快捷键要求展开公告。挂载时 openRequest 是 0，不会自己弹出来。
+  useEffect(() => {
+    if (openRequest > 0) setOpen(true);
+  }, [openRequest]);
 
   useEffect(() => {
     if (!open) return undefined;

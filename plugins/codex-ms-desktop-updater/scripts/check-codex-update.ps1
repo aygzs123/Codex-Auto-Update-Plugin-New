@@ -16,6 +16,10 @@ param(
     # 它只影响「装完之后清理旧安装包」这一步，不影响检查、下载、安装任何一环；
     # 每日自动化不带，仍然按默认的 KeepCount 保留最近 2 个。
     [switch]$KeepAll,
+
+    # 自动剪枝时按版本倒序保留几个。桌面应用把这个值做成设置项（0 表示不自动清理，
+    # 那时传的是 -KeepAll）；每日自动化不传，走这里默认的 2。
+    [int]$KeepCount = 2,
     [string]$StoreUrl = "https://apps.microsoft.com/detail/9plm9xgg6vks?hl=en-GB&gl=HK",
     [string]$Ring = "Retail",
     [string]$Architecture = "x64",
@@ -71,6 +75,7 @@ $removedPackagePaths = Remove-SupersededCodexPackageFiles `
     -DownloadDirectory $DownloadDirectory `
     -InstalledVersion $installedVersion `
     -PackageName $PackageName `
+    -KeepCount $KeepCount `
     -KeepAll:$KeepAll
 if ($removedPackagePaths.Count -gt 0) {
     Write-Host ("Removed {0} superseded package file(s) from download cache:" -f $removedPackagePaths.Count)
@@ -102,6 +107,7 @@ if ($Install) {
         -DownloadDirectory $DownloadDirectory `
         -InstalledVersion $installedVersionAfterInstall `
         -PackageName $PackageName `
+        -KeepCount $KeepCount `
         -KeepAll:$KeepAll
     if ($removedAfterInstall.Count -gt 0) {
         Write-Host ("Removed {0} superseded package file(s) after install:" -f $removedAfterInstall.Count)

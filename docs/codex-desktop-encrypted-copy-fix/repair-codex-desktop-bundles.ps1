@@ -1,4 +1,4 @@
-<#
+﻿<#
 ================================================================================
 repair-codex-desktop-bundles.ps1
 ================================================================================
@@ -61,8 +61,24 @@ function Get-CodexPackage {
     return $p
 }
 
+# 刻意不用 Get-FileHash：它是自动加载的模块命令，而 Windows PowerShell 5.1 从
+# PowerShell 7 的终端启动时会继承指向 PS7 模块目录的 PSModulePath，从而找不到自己的
+# 模块（实测报「无法将 Get-FileHash 项识别为 cmdlet」）。.NET API 没有这个依赖。
 function Get-Sha256Lower([string]$Path) {
-    return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $stream = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::Read)
+        try {
+            $bytes = $sha.ComputeHash($stream)
+        }
+        finally {
+            $stream.Dispose()
+        }
+    }
+    finally {
+        $sha.Dispose()
+    }
+    return [System.BitConverter]::ToString($bytes).Replace('-', '').ToLowerInvariant()
 }
 
 function Test-Encrypted([string]$Path) {

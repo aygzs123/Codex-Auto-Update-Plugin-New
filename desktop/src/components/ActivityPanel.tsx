@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import type { Activity } from "../types";
-import { formatBytes, formatDuration } from "../lib/format";
+import { formatBytes, formatDuration, formatSpeed } from "../lib/format";
 
 /**
  * 长任务的进度与真实日志。
@@ -33,6 +33,12 @@ export function ActivityPanel({ activity }: { activity: Activity }) {
       {activity.id === "download" && typeof activity.bytes === "number" && activity.bytes > 0 && (
         <div className="subline">
           <span>已下载 {formatBytes(activity.bytes)}</span>
+          {(() => {
+            // 平均速度（累计字节 / 累计用时）。脚本推的是累计值，这样算不会在日志稀疏时
+            // 抖成 0；刚刚起步、用时还不够时不显示，而不是编一个数字。
+            const speed = formatSpeed(activity.bytes, activity.elapsedMs ?? 0);
+            return speed ? <span>速度 {speed}</span> : null;
+          })()}
           {typeof activity.elapsedMs === "number" && <span>用时 {formatDuration(activity.elapsedMs)}</span>}
         </div>
       )}

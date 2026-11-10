@@ -31,6 +31,7 @@ export function CacheSettings({
   onResetDirectory,
   onOpen,
   onToggleVersionHistory,
+  onKeepCountChange,
   onClearCache,
 }: {
   settings: Settings | null;
@@ -50,12 +51,19 @@ export function CacheSettings({
   onResetDirectory: () => void;
   onOpen: (path: string) => void;
   onToggleVersionHistory: (next: boolean) => void;
+  onKeepCountChange: (count: number) => void;
   onClearCache: () => void;
 }) {
   if (!settings) return null;
   const custom = (settings.downloadDirectory ?? "").trim();
   const packages = cachedPackages?.packages ?? [];
   const totalBytes = packages.reduce((sum, pkg) => sum + (pkg.sizeBytes || 0), 0);
+  // 0 是「不自动清理」（桌面端的默认），缺失字段也按 0 处理。
+  const keepCount = Number(settings.cacheKeepCount) > 0 ? Math.min(10, Math.round(Number(settings.cacheKeepCount))) : 0;
+  const pinnedCount = packages.filter((pkg) => pkg.pinned).length;
+  const keepChoices = [0, 2, 3, 5, 10].includes(keepCount)
+    ? [0, 2, 3, 5, 10]
+    : [0, 2, 3, 5, 10, keepCount].sort((left, right) => left - right);
 
   // 清单读不到（枚举脚本失败、或刚启动还没拉回来）时不能报「0 个 · 0 MB」——
   // 那句话的意思是「缓存是空的」，而事实只是「这次没读到」。用户会照着它判断
@@ -123,6 +131,32 @@ export function CacheSettings({
           >
             {clearingCache ? "正在清空…" : `清空缓存（${usageText}）`}
           </button>
+        </div>
+
+        <div className="set-row">
+          <div className="label">
+            <strong>自动保留份数</strong>
+            <p>
+              装完更新后按版本倒序保留最近的几个安装包。选「不自动清理」就一个都不删，
+              磁盘占用完全由你自己回收。
+              {pinnedCount > 0
+                ? `已固定 ${pinnedCount} 个：固定的包不计数，也不会被自动删掉。`
+                : "在「版本历史」里可以固定某个包，固定后不会被自动清理。"}
+            </p>
+          </div>
+          <select
+            className="field-select"
+            value={keepCount}
+            disabled={busy}
+            onChange={(event) => onKeepCountChange(Number(event.target.value))}
+            aria-label="自动保留份数"
+          >
+            {keepChoices.map((count) => (
+              <option key={count} value={count}>
+                {count === 0 ? "不自动清理" : `保留 ${count} 个`}
+              </option>
+            ))}
+          </select>
         </div>
 
         <div className="set-row">

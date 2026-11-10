@@ -1,4 +1,6 @@
-import type { CachedPackage, CachedPackageList } from "../types";
+import { useState } from "react";
+import type { CachedPackage, CachedPackageList, SignatureReport } from "../types";
+import { invokeCommand } from "../lib/bridge";
 import { formatBytes } from "../lib/format";
 import { Icon } from "./Icons";
 
@@ -9,6 +11,10 @@ const RELATION_TEXT: Record<string, string> = {
   unknown: "无法判定",
 };
 
+type Verification =
+  | { status: "checking" }
+  | { status: SignatureReport["status"]; publisher: string; message: string };
+
 /**
  * 版本历史 / 回退。
  *
@@ -16,20 +22,24 @@ const RELATION_TEXT: Record<string, string> = {
  * 没有任何退路（分发源只发最新版，删掉的安装包再也下不回来）。这里把保留下来的旧
  * 安装包列出来，给一个回退入口。
  *
- * 一个必须如实说出来的限制：回退只能依赖**本应用自己留下来的**安装包，而且必须是
- * 「已经带着保留策略更新过一次」之后。装上这个功能就想退到升级前那一版是做不到的
- * —— 那一次的安装包在旧策略下已经被删掉了。所以空列表时给的是解释，不是一个空盒子。
+ * 每一行现在有四个动作，各自的边界写清楚：
+ *   - **回退 / 重装**：走安装链路，先校验签名再装；
+ *   - **校验签名**：只读不写，结果就地显示，不跳页；
+ *   - **固定**：写进缓存目录的 .codex-pins.json，自动剪枝会跳过它（固定不等于备份）；
+ *   - **删除**：不可撤销，所以主进程会先弹原生确认框，默认按钮是「取消」。
  *
- * 刻意不做「删除此回退包」：旧版安装包删掉就再也拿不回来，一颗误点的删除按钮足以让
- * 整个功能失效。想腾空间走「安装包缓存」里的「清空缓存」—— 那是一个写着明确后果、
- * 且带原生确认框的动作，与逐行删除的手感完全不同。
+ * 删除能做到逐行，是因为它有了两道防线（确认框 + 只接受当前缓存目录里的 Codex 包），
+ * 不再是「一颗误点的按钮让整个回退功能失效」。
  */
 export function VersionHistory({
   cachedPackages,
   cacheDirectory,
+  keepCount,
   busy,
   rollingBack,
   onRollback,
+  onDelete,
+  onPin,
   onOpenDirectory,
 }: {
   cachedPackages: CachedPackageList | null;
@@ -41,22 +51,58 @@ export function VersionHistory({
    * （cachedPackages 为 null）整颗按钮就消失，连「去哪个目录看看」都做不到。
    */
   cacheDirectory: string;
-  /** 「有命令在跑」。回退按钮置灰用共享判据，不只是本地的 rollingBack。 */
+  /** 自动剪枝保留份数（0 = 不自动清理）。只用于把实况写清楚，不影响这里的动作。 */
+  keepCount: number;
+  /** 「有命令在跑」。回退 / 删除 / 固定按钮置灰用共享判据，不只是本地的 rollingBack。 */
   busy: boolean;
   rollingBack: boolean;
   onRollback: (pkg: CachedPackage) => void;
+  onDelete: (pkg: CachedPackage) => void;
+  onPin: (pkg: CachedPackage, pinned: boolean) => void;
   onOpenDirectory: (path: string) => void;
 }) {
   const packages = cachedPackages?.packages ?? [];
   const installedVersion = cachedPackages?.installedVersion ?? null;
   const totalBytes = packages.reduce((sum, pkg) => sum + (pkg.sizeBytes || 0), 0);
-  // 保留策略改成「不自动清理」之后，卡片上必须有一句会随实际内容变化的实况：以前那句
-  // 「最多保留 2 个」是个静态承诺，磁盘空间有人替用户兜底；现在没有，用户得看得见涨。
+  const pinnedCount = packages.filter((pkg) => pkg.pinned).length;
+
+  // 校验结果按路径存：一个包一个结果，互不覆盖，也不进全局 signature 状态
+  // （那是安装/回退链路的结论，显示在概览页，跟这里点一下「校验签名」不是一回事）。
+  const [verifications, setVerifications] = useState<Record<string, Verification>>({});
+
+  const verify = async (pkg: CachedPackage) => {
+    setVerifications((previous) => ({ ...previous, [pkg.path]: { status: "checking" } }));
+    try {
+      const report = await invokeCommand<SignatureReport>("verify_download_signature", { path: pkg.path });
+      setVerifications((previous) => ({
+        ...previous,
+        [pkg.path]: { status: report.status, publisher: report.publisher, message: report.message },
+      }));
+    } catch (error) {
+      setVerifications((previous) => ({
+        ...previous,
+        [pkg.path]: {
+          status: "warning",
+          publisher: "",
+          message: error instanceof Error ? error.message : String(error),
+        },
+      }));
+    }
+  };
+
+  // 保留策略的实况要跟着设置走：以前那句「最多保留 2 个」是静态承诺，现在用户可以在
+  // 「安装包缓存」里自己选，卡片上就必须写当前生效的那一档。
   const footprint =
     packages.length === 0
-      ? "安装包不再自动清理。"
-      : `安装包不再自动清理：当前 ${packages.length} 个，共 ${formatBytes(totalBytes)}，` +
-        "想腾空间可以在「安装包缓存」里清空。";
+      ? keepCount > 0
+        ? `装完更新后自动保留最近 ${keepCount} 个安装包。`
+        : "安装包不会自动清理。"
+      : keepCount > 0
+        ? `自动保留最近 ${keepCount} 个（已固定 ${pinnedCount} 个，不计数也不会被删）：` +
+          `当前 ${packages.length} 个，共 ${formatBytes(totalBytes)}。`
+        : `安装包不再自动清理${pinnedCount > 0 ? `（已固定 ${pinnedCount} 个）` : ""}：` +
+          `当前 ${packages.length} 个，共 ${formatBytes(totalBytes)}，` +
+          "想腾空间可以在这里删除或去「安装包缓存」里清空。";
 
   return (
     <section className="panel rollback-card card">
@@ -93,27 +139,75 @@ export function VersionHistory({
             const relation = pkg.relation in RELATION_TEXT ? pkg.relation : "unknown";
             // 同版本重装同样有用（当前这一版装着不对劲时），所以 installed 也给按钮。
             const canInstall = relation === "installed" || relation === "older";
+            const verification = verifications[pkg.path];
             return (
               <div className={`rollback-row ${relation}`} key={pkg.path}>
                 <span className="health-dot" />
                 <div className="health-labels">
-                  <strong>{pkg.version}</strong>
+                  <strong className="vh-version">
+                    {pkg.version}
+                    {pkg.pinned && (
+                      <span className="pill compact" data-tone="accent">
+                        已固定
+                      </span>
+                    )}
+                  </strong>
                   <small title={pkg.path}>
                     {formatBytes(pkg.sizeBytes)} · {formatDate(pkg.modifiedAt)} · {pkg.architecture}
                   </small>
+                  {verification && (
+                    <small
+                      className={`vh-signature ${verification.status === "checking" ? "" : verification.status}`}
+                      title={verification.status === "checking" ? undefined : verification.message}
+                    >
+                      {verification.status === "checking"
+                        ? "正在校验签名…"
+                        : verification.status === "verified"
+                          ? `签名通过 · ${verification.publisher}`
+                          : `签名校验未通过 · ${verification.message}`}
+                    </small>
+                  )}
                 </div>
                 <span className="health-state">{RELATION_TEXT[relation]}</span>
-                {canInstall && (
+                <div className="vh-actions">
                   <button
                     type="button"
-                    className="button rollback-action"
-                    disabled={busy}
-                    title={busy ? "有命令正在执行，等它结束再操作" : undefined}
-                    onClick={() => onRollback(pkg)}
+                    className="link-button"
+                    disabled={busy || verification?.status === "checking"}
+                    onClick={() => void verify(pkg)}
                   >
-                    {rollingBack ? "正在回退…" : relation === "installed" ? "重新安装" : "回退到此版本"}
+                    {verification?.status === "checking" ? "校验中…" : "校验签名"}
                   </button>
-                )}
+                  <button
+                    type="button"
+                    className="link-button"
+                    disabled={busy}
+                    title={pkg.pinned ? "取消固定后，它会被自动剪枝算进保留份数" : "固定后不会被自动剪枝删掉"}
+                    onClick={() => onPin(pkg, !pkg.pinned)}
+                  >
+                    {pkg.pinned ? "取消固定" : "固定"}
+                  </button>
+                  <button
+                    type="button"
+                    className="link-button danger"
+                    disabled={busy}
+                    title="删除不可撤销，会先弹一次确认"
+                    onClick={() => onDelete(pkg)}
+                  >
+                    删除
+                  </button>
+                  {canInstall && (
+                    <button
+                      type="button"
+                      className="button rollback-action"
+                      disabled={busy}
+                      title={busy ? "有命令正在执行，等它结束再操作" : undefined}
+                      onClick={() => onRollback(pkg)}
+                    >
+                      {rollingBack ? "正在回退…" : relation === "installed" ? "重新安装" : "回退到此版本"}
+                    </button>
+                  )}
+                </div>
               </div>
             );
           })}
@@ -122,7 +216,7 @@ export function VersionHistory({
 
       {cacheDirectory && (
         <div className="settings-links card-foot">
-          <span className="hint">安装包只增不减，占多少由你决定</span>
+          <span className="hint">固定的包不会被自动清理；删除不可撤销，会先弹确认</span>
           <button type="button" className="link-button" onClick={() => onOpenDirectory(cacheDirectory)}>
             打开缓存目录
           </button>

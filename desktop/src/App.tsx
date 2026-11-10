@@ -2,22 +2,26 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { AdvancedSettings } from "./components/AdvancedSettings";
 import { ActivityPanel } from "./components/ActivityPanel";
 import { AnnouncementBell } from "./components/AnnouncementBell";
+import { AppearanceSettings } from "./components/AppearanceSettings";
 import { BackgroundSettings } from "./components/BackgroundSettings";
 import { CacheSettings } from "./components/CacheSettings";
 import { HealthPanel } from "./components/HealthPanel";
 import { Icon, Logo } from "./components/Icons";
+import { NetworkDiagnostics } from "./components/NetworkDiagnostics";
 import { NoticeDialog } from "./components/NoticeDialog";
 import { RecentActivity } from "./components/RecentActivity";
 import { Sidebar, type ViewId } from "./components/Sidebar";
 import { TitleBar } from "./components/TitleBar";
-import { UpdateTip } from "./components/UpdateTip";
+import { UpdateSettings } from "./components/UpdateSettings";
 import { VersionHistory } from "./components/VersionHistory";
-import { isElectronRuntime, subscribeMenuAction } from "./lib/bridge";
+import { invokeCommand, isElectronRuntime, subscribeMenuAction } from "./lib/bridge";
 import { changelogAnnouncements, mergeAnnouncements } from "./lib/announcements";
 import { diagnosisCopy } from "./lib/diagnosis";
 import {
   formatBytes,
   formatClock,
+  formatDuration,
+  formatSpeed,
   healthComponentText,
   healthOverallText,
   healthStateText,
@@ -72,6 +76,10 @@ function runAction(action: string) {
       // 即时动作，不列入 COMMAND_ACTIONS：同事报障时点它的时机恰恰是安装刚失败的那一刻，
       // 那时候界面正忙，把它一起禁掉就等于在最需要的时候不可用。
       void store.copyDiagnostics();
+      break;
+    case "announce":
+      // 托盘菜单里点「查看更新公告」。主进程已经把窗口叫出来了，这里只把铃铛展开。
+      store.openAnnouncements();
       break;
     case "quit":
       void window.desktop?.window.quit();
@@ -468,9 +476,18 @@ function ResultBanners() {
  */
 function AboutUpdate() {
   const { appUpdate, github, checkAppUpdate, downloadAppUpdate, installAppUpdate, openRelease } = useAppStore();
-  const { phase, version, received, total, path, error, checkedAt } = appUpdate;
+  const { phase, version, received, total, path, error, checkedAt, startedAt } = appUpdate;
 
   const percent = total > 0 ? Math.min(100, Math.round((received / total) * 100)) : 0;
+  // 平均速度与剩余时间。用 startedAt 算平均，而不是主进程推的瞬时值：
+  // 进度事件每 200ms 一条，累计值算出来的速度稳定、不会来回跳。
+  const elapsedMs = phase === "downloading" && startedAt ? Date.now() - startedAt : 0;
+  const speedText = phase === "downloading" ? formatSpeed(received, elapsedMs) : "";
+  const bytesPerSecond = elapsedMs > 0 ? received / (elapsedMs / 1000) : 0;
+  const etaText =
+    bytesPerSecond > 0 && total > received ? formatDuration(((total - received) / bytesPerSecond) * 1000) : "";
+  // 已下载量 / 总量：总量来自 Release 资产大小，下载开始前就有，所以这里能给出具体数字。
+  const sizeText = total > 0 ? `${formatBytes(received)} / ${formatBytes(total)}` : formatBytes(received);
   const hasAsset = (github?.updater?.assets ?? []).some((asset) => asset.name.toLowerCase().endsWith(".exe"));
   // 「查过、没有新版本」和「还没查过」都是 idle，靠 checkedAt 区分 —— 这两种状态的
   // 按钮文案必须不一样，否则用户会以为上一次检查根本没生效。
@@ -498,8 +515,14 @@ function AboutUpdate() {
 
   let status: ReactNode;
   if (phase === "checking") status = "正在向 GitHub Releases 查询…";
-  else if (phase === "downloading") status = `正在下载 ${percent}%`;
-  else if (phase === "installing") status = "正在安装，完成后应用会自动重启。";
+  else if (phase === "downloading") {
+    // 三个具体数字一次给全：百分比、已下载 / 总量、平均速度与剩余时间。
+    // 不知道总量时（极少数代理会吃掉 Content-Length）至少也有已下载字节数。
+    const parts = [`正在下载 ${percent}%`, sizeText];
+    if (speedText) parts.push(speedText);
+    if (etaText) parts.push(`剩余约 ${etaText}`);
+    status = parts.join(" · ");
+  } else if (phase === "installing") status = "正在安装，完成后应用会自动重启。";
   else if (phase === "error") status = <span className="danger-text">检查失败：{error}</span>;
   else if (downloaded) status = `已下载 v${version ?? ""}，SHA-256 校验通过，可以安装。`;
   else if (available) status = `发现新版本 v${version ?? ""}，当前安装的是 v${__APP_VERSION__}。`;
@@ -573,9 +596,18 @@ function AboutUpdate() {
         <Icon name={statusIcon} size={13} />
         <span>{status}</span>
       </p>
-      {phase === "downloading" && total > 0 && (
-        <div className="progress-track" role="progressbar" aria-valuenow={percent} aria-valuemin={0} aria-valuemax={100}>
-          <span className="progress-fill" style={{ width: `${percent}%` }} />
+      {phase === "downloading" && (
+        <div
+          className={`progress-track ${total > 0 ? "" : "indeterminate"}`}
+          role="progressbar"
+          aria-valuenow={total > 0 ? percent : undefined}
+          aria-valuemin={0}
+          aria-valuemax={100}
+        >
+          <span
+            className="progress-fill"
+            style={total > 0 ? { width: `${percent}%` } : undefined}
+          />
         </div>
       )}
       <p className="hint">安装包未签名，首次运行 Windows 可能弹出 SmartScreen 提示，选择「更多信息 → 仍要运行」即可。</p>
@@ -601,11 +633,16 @@ export default function App() {
     rollingBack,
     checkingUpdate,
     clearingCache,
+    autoDownloading,
     error,
     notice,
     settings,
     cachedPackages,
     github,
+    appUpdate,
+    network,
+    networkChecking,
+    announceRequest,
     lastCheckAt,
     bootstrap,
     oneClick,
@@ -623,6 +660,9 @@ export default function App() {
     copyDiagnostics,
     openPath,
     openInstallLocation,
+    deleteCachedPackage,
+    pinCachedPackage,
+    checkNetwork,
     dismissNotice,
   } = useAppStore();
 
@@ -685,11 +725,27 @@ export default function App() {
   // 这时页面不许写「已是最新」—— 那不是最新，是不知道。
   const upToDate = installed && policy.resolved && !policy.updateAvailable;
   const availableVersion = policy.updateAvailable ? policy.targetVersion : null;
+  // Codex 安装包下载走 activity；更新器自身安装包走 appUpdate —— 两句话都是「正在下载」。
+  const downloading = activity?.id === "download" || appUpdate.phase === "downloading";
+
+  // 托盘提示与任务栏角标跟着「有没有可装的新版本 / 是否正在下载」走。
+  // 主进程只负责显示，判断依旧由这里唯一那份策略给出 —— 两条链路不许各算各的。
+  useEffect(() => {
+    void invokeCommand("set_tray_status", {
+      version: policy.updateAvailable ? policy.targetVersion : null,
+      downloading,
+    }).catch(() => {
+      // 托盘可能还没建好（或应用正退出），角标失败不影响主流程。
+    });
+  }, [policy.updateAvailable, policy.targetVersion, downloading]);
 
   let primaryLabel = "一键安装 Codex";
   // 回退和安装共用 install 这条活动链路，所以文案要额外看一眼 rollingBack ——
   // 否则回退途中主按钮写着「正在安装…」，用户会以为点错了。
   if (working) primaryLabel = rollingBack ? "正在回退…" : activity?.id === "install" ? "正在安装…" : "正在准备…";
+  // 自动下载不设 activity.phase，用它单独改主按钮文案，否则用户会看到一颗
+  // 灰着却写着「一键检查并更新」的按钮，不知道后台正在干活。
+  else if (autoDownloading) primaryLabel = "正在自动下载更新包…";
   else if (upToDate) primaryLabel = "打开 Codex";
   else if (installed && availableVersion) primaryLabel = `一键更新到 ${availableVersion}`;
   else if (installed) primaryLabel = "一键检查并更新";
@@ -704,6 +760,11 @@ export default function App() {
   // 「版本历史」卡片的显示开关。`!== false` 而不是真值判断：老配置文件里没有这个键，
   // 读出来是 undefined，那时必须显示（默认开），不能因为「假值」把卡片藏起来。
   const showVersionHistory = settings?.showVersionHistory !== false;
+  // 自动剪枝保留份数：0 = 不自动清理（桌面端默认）。缺失或非法值一律按 0 处理，
+  // 「版本历史」的实况文案与设置页的下拉框读的都是这一个值。
+  const cacheKeepCount = Number(settings?.cacheKeepCount) > 0
+    ? Math.min(10, Math.round(Number(settings?.cacheKeepCount)))
+    : 0;
   const lastCheckLabel = lastCheckClock ? `上次检查 ${lastCheckClock}` : "";
 
   const onPrimary = () => {
@@ -748,6 +809,7 @@ export default function App() {
             announcements={mergeAnnouncements(changelogAnnouncements(), github?.announcements ?? [])}
             hasUpdate={Boolean(github?.updater)}
             dismissedTips={settings?.dismissedTips ?? []}
+            openRequest={announceRequest}
             onDismiss={(id) => void dismissTip(id)}
             onOpenRelease={(url) => void openRelease(url)}
           />
@@ -782,10 +844,6 @@ export default function App() {
                   availableVersion={availableVersion}
                   lastCheckLabel={lastCheckLabel}
                 />
-
-                {/* 策略告警放在主区下面第一屏内：它影响「能不能装、敢不敢装」，
-                    不能被挤到需要滚动才看得见。更新公告在顶栏铃铛里。 */}
-                <UpdateTip policy={policy} installedVersion={status?.version ?? null} />
 
                 {activity && <ActivityPanel activity={activity} />}
 
@@ -976,9 +1034,12 @@ export default function App() {
                   <VersionHistory
                     cachedPackages={cachedPackages}
                     cacheDirectory={cacheDirectory}
+                    keepCount={cacheKeepCount}
                     busy={busy}
                     rollingBack={rollingBack}
                     onRollback={(pkg) => void rollback(pkg)}
+                    onDelete={(pkg) => void deleteCachedPackage(pkg.path)}
+                    onPin={(pkg, pinned) => void pinCachedPackage(pkg.path, pinned)}
                     onOpenDirectory={(path) => void openPath(path)}
                   />
                 )}
@@ -1029,7 +1090,7 @@ export default function App() {
                   </div>
                   <div className="card-foot">
                     <span className="hint">
-                      旧包删掉就找不回来，所以这里不提供删除。要腾空间去「设置 → 安装包缓存」。
+                      旧包删掉就找不回来：逐行删除会先弹一次确认，要腾空间也可以去「设置 → 安装包缓存」。
                     </span>
                   </div>
                 </section>
@@ -1051,6 +1112,19 @@ export default function App() {
                   </div>
                 </div>
 
+                <p className="group-title">更新与通知</p>
+                <UpdateSettings
+                  settings={settings}
+                  onToggle={(key, value) => void saveOptions({ [key]: value })}
+                  onIntervalChange={(hours) => void saveOptions({ checkIntervalHours: hours })}
+                />
+
+                <p className="group-title">外观</p>
+                <AppearanceSettings
+                  settings={settings}
+                  onTheme={(theme) => void saveOptions({ theme })}
+                />
+
                 <p className="group-title">安装包缓存</p>
                 <CacheSettings
                   settings={settings}
@@ -1063,7 +1137,15 @@ export default function App() {
                   onResetDirectory={() => void saveDownloadDirectory("")}
                   onOpen={(path) => void openPath(path)}
                   onToggleVersionHistory={(next) => void saveOptions({ showVersionHistory: next })}
+                  onKeepCountChange={(count) => void saveOptions({ cacheKeepCount: count })}
                   onClearCache={() => void clearCache()}
+                />
+
+                <p className="group-title">网络诊断</p>
+                <NetworkDiagnostics
+                  report={network}
+                  checking={networkChecking}
+                  onCheck={() => void checkNetwork()}
                 />
 
                 <p className="group-title">高级</p>

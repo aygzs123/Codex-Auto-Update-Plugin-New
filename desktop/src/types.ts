@@ -91,6 +91,11 @@ export interface CachedPackage {
   /** installed（就是当前这一版）| older（可回退到的版本）| newer（已下载但比当前新）。 */
   relation: "installed" | "older" | "newer" | "unknown";
   path: string;
+  /**
+   * 是否被用户固定。固定的包不会被自动剪枝删掉（主进程把它写进缓存目录的
+   * `.codex-pins.json`，PowerShell 剪枝时会跳过）。
+   */
+  pinned?: boolean;
 }
 
 export interface CachedPackageList {
@@ -254,9 +259,29 @@ export interface Settings {
    * 用户手动关掉的公告 id（Release tag）。只影响公告时间线，不影响安装与检查更新。
    */
   dismissedTips?: string[];
+  /**
+   * 主题：跟随系统 / 浅色 / 深色。主进程负责应用（nativeTheme.themeSource），
+   * 渲染层只负责发值 —— CSS 的 prefers-color-scheme 会自动跟上。
+   */
+  theme?: ThemePreference;
+  /** 启动时自动检查更新。默认开（字段缺失按 true 处理）。 */
+  autoCheck?: boolean;
+  /** 自动检查发现新版本后自动下载安装包。默认关。 */
+  autoDownload?: boolean;
+  /** 发现新版本时弹 Windows 系统通知。默认开。 */
+  notifyUpdates?: boolean;
+  /** 后台常驻时的复查间隔（小时）：1 / 3 / 6 / 12 / 24。默认 6。 */
+  checkIntervalHours?: number;
+  /**
+   * 自动剪枝保留的安装包份数。0 表示不自动清理（桌面端默认）。
+   * 固定（pin）的包不计入删除，永远保留。
+   */
+  cacheKeepCount?: number;
   defaultDownloadDirectory: string;
   logsDirectory: string;
 }
+
+export type ThemePreference = "system" | "light" | "dark";
 
 /**
  * 「关于 → 检查更新」的状态机。
@@ -278,6 +303,39 @@ export interface AppUpdateState {
   error: string | null;
   /** 上一次检查完成的时刻；从未检查过是 null。 */
   checkedAt: number | null;
+  /** 本次下载开始的时刻（毫秒），用来算速度与剩余时间。没在下载时为 null。 */
+  startedAt: number | null;
+}
+
+/** 网络诊断里的一条探测结果。 */
+export interface NetworkProbeResult {
+  id: string;
+  label: string;
+  url: string;
+  ok: boolean;
+  status: number | null;
+  latencyMs: number | null;
+  error: string | null;
+}
+
+/** check_network 的返回。proxy 是 Chromium 实际采用的代理规则（DIRECT / PROXY ...）。 */
+export interface NetworkReport {
+  checkedAt: number;
+  proxy: string;
+  results: NetworkProbeResult[];
+}
+
+/** 逐个删除缓存安装包的结果。用户在原生确认框里点「取消」时返回 cancelled。 */
+export interface DeleteCachedPackageResult {
+  cancelled?: true;
+  deleted?: true;
+  path?: string;
+}
+
+/** 固定 / 取消固定一个缓存安装包的结果。 */
+export interface PinnedPackageResult {
+  pinned: boolean;
+  pinnedPaths: string[];
 }
 
 /** 主进程通过 desktop:progress 推送的实时事件。 */

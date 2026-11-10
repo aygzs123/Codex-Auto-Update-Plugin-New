@@ -26,6 +26,21 @@ export function clearedNotice(result: {
   return `${freed}；另有 ${result.failedPaths.length} 个正被占用没能删除，关掉杀毒软件或安装程序后可以再试一次`;
 }
 
+/**
+ * 下载速度 → 「11.2 MB/s」。
+ *
+ * 传的是「已下载字节数 + 已用毫秒」，而不是主进程推送的瞬时速度：脚本推的是累计值，
+ * 拿累计值算平均速度不会有抖动，也不会在日志稀疏时显示 0。算不出来（刚起步、用时为 0）
+ * 就返回空串，调用处据此不渲染这一项 —— 「0.0 MB/s」比不显示更像卡死了。
+ */
+export function formatSpeed(bytes: number, elapsedMs: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0 || !Number.isFinite(elapsedMs) || elapsedMs <= 0) return "";
+  const perSecond = bytes / (elapsedMs / 1000);
+  if (perSecond < 1024) return `${Math.max(1, Math.round(perSecond))} B/s`;
+  if (perSecond < 1024 * 1024) return `${Math.round(perSecond / 1024)} KB/s`;
+  return `${(perSecond / 1024 / 1024).toFixed(1)} MB/s`;
+}
+
 /** 把毫秒格式化成「1 分 20 秒」。 */
 export function formatDuration(ms: number): string {
   const totalSeconds = Math.max(0, Math.round(ms / 1000));

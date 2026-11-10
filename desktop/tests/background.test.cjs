@@ -120,10 +120,18 @@ test("Windows 上要先设 AUMID，否则通知根本不显示", () => {
 // ---------- 后台复查 ----------
 
 test("后台复查定时器只在开了后台模式时存在", () => {
-  assert.match(main, /const BACKGROUND_CHECK_INTERVAL_MS = 6 \* 60 \* 60 \* 1000;/, "间隔应当是 6 小时");
+  // 间隔不再写死 6 小时：它现在是设置项（checkIntervalHours），非法值落回 6。
+  assert.match(main, /const CHECK_INTERVAL_HOURS = \[1, 3, 6, 12, 24\];/, "可选间隔应当只有这几档");
+  assert.match(main, /const DEFAULT_CHECK_INTERVAL_HOURS = 6;/, "默认间隔应当是 6 小时");
+  assert.match(
+    main,
+    /return normalizeCheckInterval\(settings\.checkIntervalHours\) \* 60 \* 60 \* 1000;/,
+    "定时器间隔应当来自设置，而不是写死",
+  );
   const apply = sliceFunction(main, "applyBackgroundTimer");
   // 先无条件清掉旧的，再按新设置决定要不要起 —— 这样「关掉开关」才能真正停掉它。
   assert.match(apply, /clearInterval\(backgroundTimer\)[\s\S]*?backgroundTimer = null;[\s\S]*?const settings = readSettings\(\);/);
+  assert.match(apply, /if \(settings\.autoCheck === false\) return;/, "关掉自动检查就不该再起定时器");
   assert.match(
     apply,
     /if \(!settings\.minimizeToTray && !settings\.launchAtLogin\) return;/,

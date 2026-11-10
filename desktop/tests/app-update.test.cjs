@@ -54,7 +54,7 @@ test("摘要只认主进程自己从 GitHub 拿到的那一份", () => {
 test("下载边下边校验，失败删半截文件，成功后原子改名", () => {
   const download = section(main, "async function downloadAppUpdate(", 3000);
   assert.match(download, /\.part/, "没有临时文件");
-  assert.match(download, /if \(sha256 !== asset\.sha256\) throw/, "下载完没有比对摘要");
+  assert.match(download, /sha256 !== asset\.sha256/, "下载完没有比对摘要");
   assert.match(download, /size !== asset\.size/, "没有比对大小");
   assert.match(download, /renameSync\(partial, target\)/, "没有原子改名");
   assert.match(download, /unlinkSync\(partial\)/, "失败时没删 .part");
@@ -62,7 +62,7 @@ test("下载边下边校验，失败删半截文件，成功后原子改名", ()
 
   const file = section(main, "function downloadAppUpdateFile(", 3000);
   assert.match(file, /createHash\("sha256"\)/, "没有边下边算摘要");
-  assert.match(file, /pipeline\(response, meter, createWriteStream\(partialPath\)\)/, "没有走流式管道");
+  assert.match(file, /pipeline\(response, meter, createWriteStream\(partialPath/, "没有走流式管道");
   assert.match(file, /request\.abort\(\)/, "超时没有中止请求");
 });
 
@@ -148,7 +148,9 @@ test("「关于」卡片有检查更新入口，文案交代校验与 SmartScree
 
 // ---------- 版本固定已彻底移除 ----------
 
-test("全仓不再有 pinToGithubRelease / codex-pin / PinSettings", () => {
+test("全仓不再有 pinToGithubRelease / codex-pin-v / PinSettings", () => {
+  // 「固定 Codex 版本」那套东西的残留。注意不能直接搜 codex-pin —— 缓存目录里的
+  // `.codex-pins.json`（逐包固定，防自动剪枝）是另一件事，长得像但用途相反。
   const offenders = [];
   const walk = (directory) => {
     for (const name of readdirSync(directory)) {
@@ -162,7 +164,7 @@ test("全仓不再有 pinToGithubRelease / codex-pin / PinSettings", () => {
       // 测试自己会提到这些名字，跳过 tests 目录本身。
       if (path.includes(`${join("desktop", "tests")}`)) continue;
       const text = readFileSync(path, "utf8");
-      if (/pinToGithubRelease|codex-pin|PinSettings/.test(text)) offenders.push(path.slice(root.length + 1));
+      if (/pinToGithubRelease|codex-pin-v|PinSettings/.test(text)) offenders.push(path.slice(root.length + 1));
     }
   };
   walk(root);

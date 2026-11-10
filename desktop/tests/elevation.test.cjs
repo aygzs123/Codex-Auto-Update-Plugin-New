@@ -82,7 +82,7 @@ test("桌面端：一键更新与回退都带上 -AllowElevation", () => {
   // 谁也装不回去，回退功能等于废掉。
   assert.match(
     codexSource,
-    /flags: allowDowngrade\s*\?\s*\["-AllowElevation", "-AllowDowngrade", KEEP_ALL_CACHE\]\s*:\s*\["-AllowElevation", KEEP_ALL_CACHE\]/,
+    /flags: allowDowngrade\s*\?\s*\["-AllowElevation", "-AllowDowngrade", \.\.\.cacheRetentionFlags\(cacheKeepCount\)\]\s*:\s*\["-AllowElevation", \.\.\.cacheRetentionFlags\(cacheKeepCount\)\]/,
     "installCodex 必须无条件带 -AllowElevation",
   );
   // 无条件 = 两个分支里都有，不能只写在降级那一支上。

@@ -10,7 +10,7 @@
 //   3. 退出码必须显式带出来，否则脚本内的 exit N 出不来，状态语义全丢。
 
 const assert = require("node:assert/strict");
-const { buildInvocation, quoteValue, wrapCommand } = require("../electron/ps.cjs");
+const { buildInvocation, quoteValue, scriptEnvironment, wrapCommand } = require("../electron/ps.cjs");
 
 const tests = [];
 const test = (name, fn) => tests.push({ name, fn });
@@ -92,6 +92,25 @@ test("包装：归零在调用之前，保证脚本正常走完时报 0 而不�
     wrapped.indexOf("$LASTEXITCODE = 0;") < wrapped.indexOf("& 'C:\\check.ps1'"),
     "归零必须发生在调用之前",
   );
+});
+
+// ---------- 模块搜索路径 ----------
+
+test("脚本环境补回 Windows PowerShell 5.1 的模块目录，且保留继承值", () => {
+  // 2026-11-10 真机故障：从 PowerShell 7 的终端启动应用后，5.1 继承了指向 PS7 模块目录的
+  // PSModulePath，找不到自己的模块 —— 修复资源副本挂在 Get-FileHash、签名校验挂在
+  // Get-AuthenticodeSignature。两条都是「Windows 自带却报不认识」。
+  const inherited = "C:\\Program Files\\PowerShell\\7\\Modules";
+  const env = scriptEnvironment({ PSModulePath: inherited });
+  const parts = String(env.PSModulePath).split(";");
+  assert.match(parts[0], /WindowsPowerShell[\\/]v1\.0[\\/]Modules$/i, "5.1 的模块目录必须排在最前面");
+  assert.ok(parts.includes(inherited), "继承来的模块路径不能被丢掉：用户自己的模块还要能用");
+});
+
+test("脚本环境保留其它环境变量与 PYTHONIOENCODING", () => {
+  const env = scriptEnvironment({ CODEX_VERIFY_PATH: "C:\\pkg.msix" });
+  assert.equal(env.CODEX_VERIFY_PATH, "C:\\pkg.msix");
+  assert.equal(env.PYTHONIOENCODING, "utf-8");
 });
 
 // ---------- runner ----------

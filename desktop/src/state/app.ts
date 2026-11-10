@@ -2,7 +2,7 @@ import { create } from "zustand";
 import { invokeCommand, subscribeAppUpdate, subscribeBackgroundCheck, subscribeProgress } from "../lib/bridge";
 import { diagnosticsText } from "../lib/diagnostics";
 import { clearedNotice } from "../lib/format";
-import { resolveUpdatePolicy, type UpdatePolicy } from "../lib/policy";
+import { resolveUpdatePolicy, compareVersions, type UpdatePolicy } from "../lib/policy";
 import type {
   Activity,
   ActivityId,
@@ -10,15 +10,19 @@ import type {
   CachedPackage,
   CachedPackageList,
   ClearCacheResult,
+  DeleteCachedPackageResult,
   DownloadResult,
   GithubUpdates,
   HealthReport,
   InstallResult,
   LaunchResult,
+  NetworkReport,
   Phase,
+  PinnedPackageResult,
   ProgressEvent,
   Settings,
   SignatureReport,
+  ThemePreference,
   UpdateReport,
 } from "../types";
 import { isClearCancelled } from "../types";
@@ -86,6 +90,19 @@ interface AppState {
    * 「正在安装」，也不该在清完之后把顶部那张卡片重画一遍。
    */
   clearingCache: boolean;
+  /**
+   * 正在按设置自动下载新版本的安装包。
+   *
+   * 单独一个标志位并计入 isCommandRunning：自动下载和手动下载用的是同一条命令、
+   * 同一个缓存目录，叠在一起只会互相报错；而它跑着的时候界面也得显示进度，
+   * 主按钮不能看起来「什么都没发生」。
+   */
+  autoDownloading: boolean;
+  /** 最近一次网络诊断的结果。 */
+  network: NetworkReport | null;
+  networkChecking: boolean;
+  /** 递增计数：从托盘菜单点「查看更新公告」时 +1，铃铛据此展开。 */
+  announceRequest: number;
   error: string | null;
   notice: string | null;
 
@@ -110,6 +127,21 @@ interface AppState {
    * 不弹模态、失败不报错、有超时。详见实现处的注释。
    */
   autoCheckUpdate: () => Promise<void>;
+  /**
+   * 自动检查发现新版本后，按设置往下走一步：把安装包下载到缓存。
+   *
+   * 只下载、不安装 —— 需要管理员权限的安装永远由人点（AGENTS.md 的硬规矩）。
+   * 失败静默：后台流程不该在界面上留下红色报错；用户手动点「一键更新」仍然可以重试。
+   */
+  autoDownloadPackage: () => Promise<void>;
+  /** 网络与代理诊断（只探测主进程里写死的三个地址）。 */
+  checkNetwork: () => Promise<void>;
+  /** 删除缓存里的一个安装包（主进程会先弹原生确认框）。 */
+  deleteCachedPackage: (path: string) => Promise<void>;
+  /** 固定 / 取消固定一个缓存安装包；固定的包不会被自动剪枝删掉。 */
+  pinCachedPackage: (path: string, pinned: boolean) => Promise<void>;
+  /** 展开顶栏的更新公告铃铛（托盘菜单「查看更新公告」走这里）。 */
+  openAnnouncements: () => void;
   runHealthProbe: () => Promise<void>;
   runRepair: () => Promise<void>;
   launch: () => Promise<void>;
@@ -124,6 +156,12 @@ interface AppState {
     minimizeToTray?: boolean;
     launchAtLogin?: boolean;
     showVersionHistory?: boolean;
+    theme?: ThemePreference;
+    autoCheck?: boolean;
+    autoDownload?: boolean;
+    notifyUpdates?: boolean;
+    checkIntervalHours?: number;
+    cacheKeepCount?: number;
   }) => Promise<void>;
   /** 重新读一次 GitHub Release（更新器新版本 / 更新公告）。force 时绕过五分钟缓存。 */
   refreshGithub: (force?: boolean) => Promise<void>;
@@ -174,6 +212,7 @@ export const isCommandRunning = (state: {
   checkingUpdate: boolean;
   rollingBack: boolean;
   clearingCache: boolean;
+  autoDownloading: boolean;
 }): boolean =>
   state.phase === "working" ||
   state.phase === "checking" ||
@@ -181,7 +220,8 @@ export const isCommandRunning = (state: {
   state.repairing ||
   state.checkingUpdate ||
   state.rollingBack ||
-  state.clearingCache;
+  state.clearingCache ||
+  state.autoDownloading;
 
 /**
  * 「打开缓存目录」该打开哪个目录 —— 全应用只此一处判据。
@@ -217,13 +257,26 @@ export const useAppStore = create<AppState>((set, get) => ({
   cachedPackages: null,
   github: null,
   githubLoading: false,
-  appUpdate: { phase: "idle", version: null, received: 0, total: 0, path: null, error: null, checkedAt: null },
+  appUpdate: {
+    phase: "idle",
+    version: null,
+    received: 0,
+    total: 0,
+    path: null,
+    error: null,
+    checkedAt: null,
+    startedAt: null,
+  },
   probing: false,
   repairing: false,
   rollingBack: false,
   checkingUpdate: false,
   lastCheckAt: null,
   clearingCache: false,
+  autoDownloading: false,
+  network: null,
+  networkChecking: false,
+  announceRequest: 0,
   error: null,
   notice: null,
 
@@ -438,6 +491,9 @@ export const useAppStore = create<AppState>((set, get) => ({
 
     set({ checkingUpdate: true });
     let timer: ReturnType<typeof setTimeout> | undefined;
+    // 自动下载只在**这一次检查真的问到「有新版」**时才触发。放在 try 里赋值、try 外调用：
+    // 检查失败时 update 还是上一次的旧结论，照它去下载就是凭过期信息动手。
+    let autoDownloadTarget: string | null = null;
     try {
       const update = await Promise.race([
         invokeCommand<UpdateReport>("check_update", {
@@ -457,6 +513,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       // 失败静默：本地通知发不出来不该在界面上留下任何痕迹。
       if (policy.updateAvailable && policy.targetVersion) {
         void invokeCommand("notify_update", { version: policy.targetVersion }).catch(() => {});
+        autoDownloadTarget = policy.targetVersion;
       }
       // -CheckOnly 不下载，但仍然会剪枝缓存目录（脚本按「保留最近两个」剪），
       // 所以缓存清单可能真的变了 —— 不刷，「版本历史」卡片列的就是已经不在磁盘上的包。
@@ -470,7 +527,85 @@ export const useAppStore = create<AppState>((set, get) => ({
       if (timer) clearTimeout(timer);
       set({ checkingUpdate: false });
     }
+    // 必须排在 finally 之后：finally 先清掉 checkingUpdate，自动下载那条命令才不会被
+    // isCommandRunning 的忙判据挡掉 —— 否则开关打开、界面也显示「已开启」，却永远不下载。
+    if (autoDownloadTarget) void get().autoDownloadPackage();
   },
+
+  autoDownloadPackage: async () => {
+    // 开关没开就什么都不做。默认关：没人要求的 800 MB 下载不该自己发生。
+    if (get().settings?.autoDownload !== true) return;
+    const current = get();
+    if (!current.status?.installed) return;
+    if (isCommandRunning(current)) return;
+    const policy = currentUpdatePolicy(current);
+    const version = policy.updateAvailable ? policy.targetVersion : null;
+    if (!version) return;
+    // 缓存里已经有这一版就跳过：自动检查每次启动都会跑，重复下载同一个 800 MB 的包
+    // 既浪费时间，也会在主进程那条「清掉上一版遗留文件」的逻辑里反复搬文件。
+    const alreadyCached = (current.cachedPackages?.packages ?? []).some(
+      (pkg) => compareVersions(pkg.version, version) === 0,
+    );
+    if (alreadyCached) return;
+
+    set({
+      autoDownloading: true,
+      activity: startActivity("download", `正在自动下载 ${version}`),
+    });
+    try {
+      const download = await invokeCommand<DownloadResult>("download_codex", {
+        downloadDirectory: get().settings?.downloadDirectory ?? "",
+      });
+      if (download.status === "downloaded") {
+        // 与「发现新版本」分开记账（主进程的 lastDownloadedNotified），点开同一个窗口。
+        void invokeCommand("notify_update", { version, downloaded: true }).catch(() => {});
+      }
+      await get().refreshCachedPackages();
+    } catch {
+      // 静默失败：自动流程不该在界面上留下来源不明的红色报错。用户点「一键更新」
+      // 仍然会走完整的检查、下载、签名校验，失败也会给出明确原因。
+    } finally {
+      // autoDownloading 必须清：漏清就是所有入口永久置灰，只能重启应用。
+      set({ autoDownloading: false, activity: null });
+    }
+  },
+
+  checkNetwork: async () => {
+    set({ networkChecking: true, error: null });
+    try {
+      const network = await invokeCommand<NetworkReport>("check_network");
+      set({ network });
+    } catch (error) {
+      set({ error: describe(error) });
+    } finally {
+      set({ networkChecking: false });
+    }
+  },
+
+  deleteCachedPackage: async (path) => {
+    if (isCommandRunning(get())) return;
+    try {
+      const result = await invokeCommand<DeleteCachedPackageResult>("delete_cached_package", { path });
+      // 原生确认框里点了「取消」：取消是正常选择，不是失败，也不提示。
+      if (result.cancelled) return;
+      await get().refreshCachedPackages();
+      set({ notice: `已删除安装包 ${fileNameOf(path)}` });
+    } catch (error) {
+      set({ error: describe(error) });
+    }
+  },
+
+  pinCachedPackage: async (path, pinned) => {
+    try {
+      await invokeCommand<PinnedPackageResult>("pin_cached_package", { path, pinned });
+      // 回读清单而不是本地改：固定状态以主进程写的 .codex-pins.json 为准。
+      await get().refreshCachedPackages();
+    } catch (error) {
+      set({ error: describe(error) });
+    }
+  },
+
+  openAnnouncements: () => set((state) => ({ announceRequest: state.announceRequest + 1 })),
 
   /** 健康自检带窗口探测：会真正启动 Codex 并等主窗口出现，能直接复现「无窗口」故障。 */
   runHealthProbe: async () => {
@@ -621,6 +756,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         path: null,
         error: null,
         checkedAt: Date.now(),
+        startedAt: null,
       },
     }));
   },
@@ -643,6 +779,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         total: asset.size,
         path: null,
         error: null,
+        startedAt: Date.now(),
       },
     }));
     try {
@@ -656,10 +793,13 @@ export const useAppStore = create<AppState>((set, get) => ({
           path: result.path,
           received: result.size,
           total: result.size,
+          startedAt: null,
         },
       }));
     } catch (error) {
-      set((state) => ({ appUpdate: { ...state.appUpdate, phase: "error", error: describe(error) } }));
+      set((state) => ({
+        appUpdate: { ...state.appUpdate, phase: "error", error: describe(error), startedAt: null },
+      }));
     }
   },
 
@@ -826,16 +966,19 @@ export const useAppStore = create<AppState>((set, get) => ({
  */
 export function currentUpdatePolicy(state = useAppStore.getState()): UpdatePolicy {
   return resolveUpdatePolicy({
-    installedVersion: state.status?.version ?? null,
     storeVersion: state.update?.availableVersion ?? null,
     storeUpdateAvailable: state.update?.updateAvailable ?? null,
-    cachedVersions: (state.cachedPackages?.packages ?? []).map((pkg) => pkg.version),
   });
 }
 
 function describe(error: unknown): string {
   if (error instanceof Error) return error.message;
   return String(error);
+}
+
+/** 从完整路径里取文件名，用于回执文案。取不到就退回原值。 */
+function fileNameOf(path: string): string {
+  return String(path).split(/[\\/]/).pop() || String(path);
 }
 
 /**
