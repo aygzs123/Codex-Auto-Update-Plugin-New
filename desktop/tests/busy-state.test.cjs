@@ -59,7 +59,7 @@ test("「检查更新」必须置位并在 finally 里清掉", () => {
 
 test("所有会真跑命令的入口都走同一个判据", () => {
   // 快捷键（Ctrl+R / Ctrl+I）由主进程直接发到渲染进程，不经过 DOM。按钮置灰拦不住它，
-  // 所以 runAction —— 窗口内菜单和原生菜单的汇合点 —— 必须自己再判一次。
+  // 所以 runAction —— 侧栏、按钮与快捷键的汇合点 —— 必须自己再判一次。
   assert.match(app, /const COMMAND_ACTIONS = new Set\(\["check", "install", "launch", "health", "repair"\]\)/);
   assert.match(
     app,
@@ -103,7 +103,7 @@ test("页面按钮：命令入口跟 busy 走，打开目录的即时入口不�
 });
 
 test("置灰必须给出理由，否则用户看到的是「点了没反应」", () => {
-  assert.match(app, /checkingUpdate \? "正在检查…" : "仅检查更新"/, "检查更新期间次按钮要显示进行中");
+  assert.match(app, /checkingUpdate \? "正在检查…" : "检查更新"/, "检查更新期间次按钮要显示进行中");
   assert.match(app, /有命令正在执行，等它结束再操作/, "主区按钮置灰要有 title 说明");
 });
 

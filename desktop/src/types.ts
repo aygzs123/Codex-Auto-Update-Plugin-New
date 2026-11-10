@@ -106,6 +106,46 @@ export interface CachedPackageList {
   packages: CachedPackage[];
 }
 
+/**
+ * GitHub Release 里的一个资产（安装包）。
+ *
+ * `digest` 是 GitHub 自己算的 `sha256:<hex>`；应用内下载完必须拿它比对，所以这里
+ * 原样保留。没有摘要的资产不能下载 —— 无法校验不等于校验通过。
+ */
+export interface GithubAsset {
+  name: string;
+  size: number;
+  url: string;
+  digest: string;
+}
+
+/**
+ * GitHub Release 里的一个版本条目。
+ *
+ * `tag` 是识别公告与新版本的唯一 id（例如 `desktop-v0.3.0`）；`body` 是 Release 正文，
+ * 界面上截成一小段「更新公告」，不整段铺开。
+ */
+export interface GithubReleaseInfo {
+  version: string;
+  tag: string;
+  name: string;
+  body: string;
+  url: string;
+  publishedAt: string | null;
+  assets: GithubAsset[];
+}
+
+/** 主进程 get_github_updates 的结果。网络失败时 error 有值，数据可能是上次成功读到的。 */
+export interface GithubUpdates {
+  /** 比当前运行版本新的最新一条；没有就是 null。 */
+  updater: GithubReleaseInfo | null;
+  /** 最近的更新公告，按发布时间倒序。旧版磁盘缓存里可能没有这个字段。 */
+  announcements?: GithubReleaseInfo[];
+  error: string | null;
+  /** true 表示这是磁盘上的旧结果，本次没有真的连上 GitHub。 */
+  stale?: boolean;
+}
+
 /** clear-cached-codex-packages.ps1 的结果，见 parse.cjs 的 parseClearedPackages。 */
 export interface ClearedPackageList {
   /** 与 CachedPackageList 同理，可能为 null。 */
@@ -210,8 +250,34 @@ export interface Settings {
    * 也照旧在。要真的腾空间得点「清空缓存」，那是另一个动作。
    */
   showVersionHistory?: boolean;
+  /**
+   * 用户手动关掉的公告 id（Release tag）。只影响公告时间线，不影响安装与检查更新。
+   */
+  dismissedTips?: string[];
   defaultDownloadDirectory: string;
   logsDirectory: string;
+}
+
+/**
+ * 「关于 → 检查更新」的状态机。
+ *
+ * idle → checking → ready（有新版）→ downloading → ready（已下载）→ installing
+ * 任何一步失败都进 error，可重试。`ready` 同时表示「检查完且已是最新」和「安装包已下载」，
+ * 靠 `path` 区分：path 为空 = 没有可装的新版本。
+ */
+export type AppUpdatePhase = "idle" | "checking" | "downloading" | "ready" | "installing" | "error";
+
+export interface AppUpdateState {
+  phase: AppUpdatePhase;
+  /** 检查到的新版本号；没有新版本时为 null。 */
+  version: string | null;
+  received: number;
+  total: number;
+  /** 已下载并校验通过的安装包路径。 */
+  path: string | null;
+  error: string | null;
+  /** 上一次检查完成的时刻；从未检查过是 null。 */
+  checkedAt: number | null;
 }
 
 /** 主进程通过 desktop:progress 推送的实时事件。 */

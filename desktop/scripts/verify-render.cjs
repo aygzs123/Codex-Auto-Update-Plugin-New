@@ -13,7 +13,7 @@
 //   npm run verify:render           校验 dist/ 构建产物
 //   npm run verify:render:packaged  校验 electron-builder 打包后的 app.asar 内产物
 
-const { app, BrowserWindow, clipboard, ipcMain, nativeTheme } = require("electron");
+const { app, BrowserWindow, Menu, clipboard, ipcMain, nativeTheme } = require("electron");
 const { existsSync, mkdirSync, writeFileSync } = require("node:fs");
 const { join } = require("node:path");
 
@@ -136,6 +136,16 @@ const checkingHold = process.argv.includes("--checking");
 // 安装那一步用挂住的方式模拟一次长命令，否则它瞬间返回，观察不到「正在回退」的中间态。
 const rollbackScenario = process.argv.includes("--rollback");
 
+// --app-update：「设置 → 关于 → 检查更新」这条自更新链路。
+//
+// 桩里放一个比当前版本新的 `desktop-v0.4.0`（带 .exe 资产与 sha256 摘要），于是
+// 「检查更新」之后必须出现「发现新版本 v0.4.0」与「下载并安装」；点下载（走 IPC 桩，
+// 不跑真实安装器）之后必须变成「已下载…可以安装」。
+//
+// 这条场景同时验证公告的两个来源：CHANGELOG 历史（0.1.0 / 0.2.0）来自打包进应用的
+// JSON，0.4.0 来自远端 —— 合并后按时间倒序、同 tag 不重复。
+const appUpdateScenario = process.argv.includes("--app-update");
+
 // 进度序列取自 scripts/simulate-install.cjs 跑出来的真实事件流（含静默期爬升 20%→53%）。
 const PROGRESS_STREAM = [
   { kind: "phase", id: "install", phase: "preparing", label: "准备安装", percent: 4 },
@@ -238,6 +248,28 @@ const STUB_UPDATE_LATEST = {
   updateAvailable: false,
 };
 
+// 自更新场景用的 GitHub Release：比当前打包版本（0.3.0）新一版，资产带 GitHub
+// 计算好的 sha256 摘要。下载命令只认这个摘要，所以桩里必须给得像真的。
+//
+// 正文带 Markdown 标记（标题、列表、反引号），用来验证公告摘要会把它剥成纯文本；
+// 直接铺原文的话，界面上会出现一排 `##` 和 `-`。
+const STUB_UPDATER = {
+  version: "0.4.0",
+  tag: "desktop-v0.4.0",
+  name: "Codex Updater 0.4.0",
+  body: "## 本次更新\n\n- 设置 → 关于可以直接检查更新\n- 公告按 `CHANGELOG` 维护\n\n升级后请重启一次应用。",
+  url: "https://github.com/aygzs123/Codex-Auto-Update-Plugin-New/releases/tag/desktop-v0.4.0",
+  publishedAt: "2026-11-20T00:00:00Z",
+  assets: [
+    {
+      name: "Codex Updater Setup 0.4.0.exe",
+      size: 88_000_000,
+      url: "https://github.com/aygzs123/Codex-Auto-Update-Plugin-New/releases/download/desktop-v0.4.0/CodexUpdater.exe",
+      digest: `sha256:${"a".repeat(64)}`,
+    },
+  ],
+};
+
 // 「版本历史」卡片的数据源。三行一次覆盖三种 relation：比当前新的（已下载未安装）、
 // 当前这一版、以及唯一能回退的那一版。未安装的机器上缓存是空的 —— 这条也要有，
 // 空列表必须给出解释文案，不能是一个空盒子。
@@ -303,6 +335,7 @@ function registerStubHandlers() {
           downloadDirectory: "",
           defaultDownloadDirectory: "C:\\Users\\me\\AppData\\Roaming\\Codex Updater\\downloads",
           logsDirectory: "C:\\Users\\me\\AppData\\Roaming\\Codex Updater\\logs",
+          dismissedTips: [],
         };
       case "get_status":
       case "check_health":
@@ -401,6 +434,34 @@ function registerStubHandlers() {
           });
         }
         return { ...(upToDateScenario ? STUB_UPDATE_LATEST : STUB_UPDATE) };
+      case "get_github_updates":
+        // 不桩的话会落到默认分支回一个 {}：渲染进程读到 undefined 字段，公告与更新结论
+        // 都变成空的 —— 而界面上看起来一切正常。
+        //
+        // 公告只放远端的 0.4.0；0.1.0 / 0.2.0 / 0.3.0 来自打包进应用的 CHANGELOG，
+        // 两条来源合并后必须是 0.4.0 在最前、且没有重复的 tag。
+        return appUpdateScenario
+          ? {
+              updater: { ...STUB_UPDATER },
+              announcements: [{ ...STUB_UPDATER }],
+              error: null,
+              stale: false,
+            }
+          : { updater: null, announcements: [], error: null, stale: false };
+      case "download_app_update":
+        // 自更新场景：不真的下载一百多兆，也不跑真实安装器。这里只验证
+        // 「界面 → IPC → 回到界面」这条链路，以及下载完成后界面切到可安装态。
+        return {
+          path: "C:\\Users\\me\\AppData\\Roaming\\Codex Updater\\updates\\Codex Updater Setup 0.4.0.exe",
+          size: STUB_UPDATER.assets[0].size,
+          sha256: "a".repeat(64),
+        };
+      case "install_app_update":
+        // 真正的安装会启动安装器并退出应用。桩里只回执，不跑它。
+        return { ok: true };
+      case "open_release":
+        // 「查看公告」只验证链路通到主进程；真实 URL 前缀校验在 main.cjs，由单测钉住。
+        return { ok: true };
       case "copy_text":
         // 「复制诊断信息」的链路要真的走完才叫验证过：菜单 → runAction → store 拼文本 →
         // IPC → 剪贴板。这里写进**真实的**系统剪贴板，断言再从主进程读回来。
@@ -466,12 +527,46 @@ async function inspect(window) {
       // 启动是「只读本机」→「联网查最新版」两段，副标题是唯一能交代中间态的地方：
       // 第一段要说清在读什么且不联网，第二段要自己声明查询还在飞。
       lede: text(".hero-card .lede"),
-      // 顶栏那一行（已安装 X · 已是最新 / 可更新到 Y）。启动自动检查的结论就落在它上面，
-      // 是「开机就知道是不是最新」这件事在界面上的唯一落点。
-      build: text(".build"),
-      // 「上次检查 14:32」。它和 .build 是兄弟节点（不是嵌在里面）—— 嵌进去会破坏
-      // 按 .build 取整行文案的那些断言。
-      lastCheck: text(".last-check"),
+      // 版本结论现在只在主区给：大字是结论，右侧「版本状态」仪表写「当前 → 分发源」。
+      // 顶栏那枚小胶囊已经删掉（窗口一窄就截断版本号），所以这里量的是仪表本身。
+      instrument: (() => {
+        const nodes = [...document.querySelectorAll(".inst-flow .inst-node")];
+        return {
+          nodes: nodes.map((node) => ({
+            label: node.querySelector(".k")?.textContent.trim() ?? "",
+            value: node.querySelector(".v")?.textContent.trim() ?? "",
+            pending: !!node.querySelector(".skeleton"),
+          })),
+          foot: text(".inst-foot"),
+        };
+      })(),
+      // 策略告警（UpdateTip）。公告已经搬进顶栏铃铛，这里只剩三条不可关闭的告警；
+      // 这份桩数据里固定版本正常、可回退包也在，所以必须是 0 条。
+      tip: (() => {
+        const stack = document.querySelector(".tip-stack");
+        if (!stack) return null;
+        return {
+          count: stack.querySelectorAll(".tip").length,
+          titles: [...stack.querySelectorAll(".tip-body strong")].map((node) => node.textContent.trim()),
+          text: stack.textContent.replace(/\s+/g, " ").trim(),
+          closeCount: stack.querySelectorAll(".tip-close").length,
+          actionCount: stack.querySelectorAll(".tip-action").length,
+        };
+      })(),
+      // 「上次检查 14:32」。顶栏删掉之后它落到主区底部的 .hero-meta 里 ——
+      // 结论已经出来了，就必须能说出它是什么时候问到的。
+      lastCheck: text(".hero-meta span"),
+      // 顶栏的公告铃铛与红点。公告不再铺在概览页里，入口就是这颗铃铛。
+      bell: (() => {
+        const button = document.querySelector(".bell-button");
+        if (!button) return null;
+        return {
+          present: true,
+          dot: !!document.querySelector(".bell-dot"),
+          label: button.getAttribute("aria-label") || "",
+          expanded: button.getAttribute("aria-expanded") === "true",
+        };
+      })(),
       ctaLabel: cta ? cta.textContent.trim() : "",
       ctaDisabled: cta ? cta.disabled : null,
       // 主区一共几颗按钮。次按钮「仅检查更新」在「已是最新」时应当隐去 ——
@@ -808,7 +903,24 @@ async function inspect(window) {
       };
     })();
 
-    return { pathRowButtons, installLocationField, cache };
+    // 「关于 → Codex Updater 更新」一块。版本号、检查按钮与状态行都必须真的在页面上：
+    // 这是自更新唯一的入口，藏起来等于功能不存在。
+    const appUpdate = (() => {
+      const block = document.querySelector(".about-update");
+      if (!block) return null;
+      const about = block.closest(".card") ?? document;
+      const version = about.querySelector(".about-row .pill")?.textContent.trim() ?? "";
+      return {
+        version,
+        status: block.parentElement?.querySelector(".about-update-status")?.textContent.trim() ?? "",
+        buttons: [...block.querySelectorAll("button")].map((button) => ({
+          label: button.textContent.trim(),
+          disabled: button.disabled,
+        })),
+      };
+    })();
+
+    return { pathRowButtons, installLocationField, cache, appUpdate };
   })()`);
 
   // 版本历史页：逐行量回退按钮。ctaLabel 在概览页的主按钮上，这里量不到，
@@ -930,6 +1042,10 @@ async function main() {
   registerStubHandlers();
   if (darkMode) nativeTheme.themeSource = "dark";
 
+  // 截图时窗口真的会显示出来。不显式清空的话，它带着 Electron 默认的
+  // File / Edit 菜单栏，看起来像另一个应用 —— 真实主窗口没有这一套。
+  Menu.setApplicationMenu(null);
+
   const window = new BrowserWindow({
     // 截图需要真实合成，隐藏窗口抓图不可靠。
     show: Boolean(screenshotDir),
@@ -1036,10 +1152,12 @@ async function main() {
   if (expectAutoCheck) {
     const autoDeadline = Date.now() + 5000;
     while (Date.now() < autoDeadline) {
-      const build = await window.webContents.executeJavaScript(
-        `(() => { const node = document.querySelector(".build"); return node ? node.textContent.trim() : ""; })()`,
+      // 结论落在主区大字上：「已是最新版 X」或「可更新到 Y」。等它出现，
+      // 说明启动那次自动检查真的回来了，而不是只在网络里飞着。
+      const heading = await window.webContents.executeJavaScript(
+        `(() => { const node = document.querySelector(".hero-card h1"); return node ? node.textContent.trim() : ""; })()`,
       );
-      if (build.includes("已是最新") || build.includes("可更新到")) {
+      if (heading.includes("已是最新版") || heading.includes("可更新到")) {
         autoCheckLanded = true;
         break;
       }
@@ -1047,8 +1165,7 @@ async function main() {
     }
     report = await inspect(window);
     if (!autoCheckLanded) {
-      autoCheckProblem =
-        `启动后 5 秒内顶栏既没有「已是最新」也没有「可更新到」，自动检查的结论没有落到界面上：${report.build || "(空)"}`;
+      autoCheckProblem = `启动后 5 秒内主区既没有「已是最新版」也没有「可更新到」，自动检查的结论没有落到界面上：${report.heading || "(空)"}`;
     }
   }
 
@@ -1075,6 +1192,81 @@ async function main() {
     `(() => { const nav = document.querySelector('.nav-item[data-nav="overview"]'); if (nav) nav.click(); return true; })()`,
   );
   await new Promise((resolve) => setTimeout(resolve, 300));
+
+  // 自更新场景：进「设置 → 关于」，把检查 → 下载两步完整点一遍。
+  //
+  // 只断言「卡片上有按钮」是不够的：这颗按钮要真的把 store 走通（检查 → 找到新版本
+  // → 点下载 → 拿到路径），界面上才可能从「发现新版本」走到「已下载」。安装那一步
+  // 不点 —— 真实安装会启动安装器并退出应用。
+  let appUpdateReport = null;
+  let bellReport = null;
+  if (appUpdateScenario) {
+    const clickSettings = async () => {
+      await window.webContents.executeJavaScript(
+        `(() => { const item = document.querySelector('.nav-item[data-nav="settings"]'); if (item) item.click(); return !!item; })()`,
+      );
+      await new Promise((resolve) => setTimeout(resolve, 260));
+    };
+    const readAbout = () =>
+      window.webContents.executeJavaScript(`(() => {
+        const block = document.querySelector(".about-update");
+        if (!block) return null;
+        const about = block.closest(".card") ?? document;
+        return {
+          version: about.querySelector(".about-update-version .ver")?.textContent.trim() ?? "",
+          badge: about.querySelector(".about-update-version .pill")?.textContent.trim() ?? "",
+          status: about.querySelector(".about-update-status")?.textContent.trim() ?? "",
+          buttons: [...block.querySelectorAll("button")].map((button) => ({
+            label: button.textContent.trim(),
+            disabled: button.disabled,
+          })),
+        };
+      })()`);
+    const clickAbout = (label) =>
+      window.webContents.executeJavaScript(`(() => {
+        const block = document.querySelector(".about-update");
+        const button = block && [...block.querySelectorAll("button")].find((node) => node.textContent.includes(${JSON.stringify(label)}));
+        if (button) button.click();
+        return !!button;
+      })()`);
+
+    await clickSettings();
+    const initial = await readAbout();
+
+    await clickAbout("检查更新");
+    // 检查要走一次 refreshGithub(true) 的 IPC 往返，给它一点时间落定。
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    const checked = await readAbout();
+
+    await clickAbout("下载并安装");
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    const downloaded = await readAbout();
+
+    // 公告铃铛：点开量时间线。0.4.0 来自远端桩，0.1.0 / 0.2.0 / 0.3.0 来自 CHANGELOG。
+    const bell = await window.webContents.executeJavaScript(`(async () => {
+      const button = document.querySelector(".bell-button");
+      if (button) button.click();
+      await new Promise((resolve) => setTimeout(resolve, 260));
+      const panel = document.querySelector(".bell-panel");
+      if (!panel) return null;
+      const entries = [...panel.querySelectorAll(".timeline-item")].map((item) => ({
+        title: item.querySelector(".timeline-head strong")?.textContent.trim() ?? "",
+        body: item.querySelector(".timeline-body p")?.textContent.trim() ?? "",
+      }));
+      const closeButton = panel.querySelector(".bell-close");
+      // 截图模式故意不关：要截的就是这块时间线。断言本身不受影响 —— 面板开着
+      // 也不改任何按钮的可点状态，后面的场景会自己切回概览。
+      ${screenshotDir ? "" : "if (closeButton) closeButton.click();"}
+      return { entries, empty: !!panel.querySelector(".bell-empty") };
+    })()`);
+    bellReport = bell;
+    appUpdateReport = { initial, checked, downloaded };
+
+    await window.webContents.executeJavaScript(
+      `(() => { const item = document.querySelector('.nav-item[data-nav="overview"]'); if (item) item.click(); return true; })()`,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 300));
+  }
 
   // 进度流场景：先推下载阶段（验证不确定进度条），再推安装阶段（验证百分比推进）。
   let downloadReport = null;
@@ -1395,6 +1587,80 @@ async function main() {
   if (report.errorText) problems.push(`界面显示了错误：${report.errorText}`);
   if (!report.heading) problems.push("主区没有渲染出标题");
   if (!report.ctaLabel) problems.push("没有渲染出主操作按钮");
+
+  // 自更新场景：检查 → 下载两步必须真的把界面从「已是最新」推到「可以安装」。
+  if (appUpdateScenario) {
+    if (!appUpdateReport) {
+      problems.push("没有采集到「关于」里的自更新状态");
+    } else {
+      const { initial, checked, downloaded } = appUpdateReport;
+      if (!initial) {
+        problems.push("设置页「关于」里没有自更新卡片（.about-update）");
+      } else {
+        if (!initial.version.startsWith("v")) {
+          problems.push(`「关于」没有显示版本号：${initial.version || "(空)"}`);
+        }
+        if (!initial.buttons.some((button) => button.label.includes("检查更新"))) {
+          problems.push(`「关于」没有「检查更新」按钮：${initial.buttons.map((b) => b.label).join(", ")}`);
+        }
+        if (initial.status.includes("发现新版本")) {
+          problems.push("还没点检查就出现了新版本，状态是猜出来的");
+        }
+        if (initial.badge !== "尚未检查") {
+          problems.push(`还没检查时徽章应是「尚未检查」，实际是「${initial.badge || "(空)"}」`);
+        }
+
+        // 点完检查：桩里的 desktop-v0.4.0 必须被认出来，按钮换成「下载并安装」。
+        if (!checked?.status.includes("发现新版本 v0.4.0")) {
+          problems.push(`点「检查更新」后没有显示新版本：${checked?.status || "(空)"}`);
+        }
+        if (!checked?.badge.includes("v0.4.0")) {
+          problems.push(`发现新版本后徽章没有跟上版本号：${checked?.badge || "(空)"}`);
+        }
+        if (!checked?.buttons.some((button) => button.label.includes("下载并安装"))) {
+          problems.push(`发现新版本后按钮不是「下载并安装」：${checked?.buttons.map((b) => b.label).join(", ")}`);
+        }
+
+        // 点完下载：路径落到 store 之后，状态换成「已下载…可以安装」。
+        if (!downloaded?.status.includes("已下载")) {
+          problems.push(`点「下载并安装」后没有进入可安装态：${downloaded?.status || "(空)"}`);
+        }
+        if (!downloaded?.buttons.some((button) => button.label.includes("安装并重启"))) {
+          problems.push(`下载完成后按钮不是「安装并重启」：${downloaded?.buttons.map((b) => b.label).join(", ")}`);
+        }
+        if (downloaded?.badge !== "待安装") {
+          problems.push(`下载完成后徽章应是「待安装」，实际是「${downloaded?.badge || "(空)"}」`);
+        }
+        if (downloaded?.status.includes("v0.4.0") === false) {
+          problems.push(`下载完成后的状态没带上版本号：${downloaded?.status || "(空)"}`);
+        }
+      }
+    }
+
+    // 公告两个来源合并：远端 0.4.0 在前，CHANGELOG 历史（0.2.0 / 0.1.0）在后，
+    // 且 0.3.0 只出现一次（本地与远端同 tag 时以本地为准）。
+    if (!bellReport) {
+      problems.push("顶栏公告铃铛点开后没有面板");
+    } else if (bellReport.empty) {
+      problems.push("公告时间线是空的：CHANGELOG 历史没有进来");
+    } else {
+      const titles = bellReport.entries.map((entry) => entry.title);
+      for (const version of ["v0.4.0", "v0.3.0", "v0.2.0", "v0.1.0"]) {
+        if (!titles.includes(version)) problems.push(`公告里缺少 ${version}：${titles.join(" / ")}`);
+      }
+      const duplicates = titles.filter((title, index) => titles.indexOf(title) !== index);
+      if (duplicates.length > 0) problems.push(`公告里有重复条目：${duplicates.join(", ")}`);
+      if (titles[0] !== "v0.4.0") {
+        problems.push(`公告应按发布时间倒序，第一条却是：${titles[0]}`);
+      }
+      // 正文必须是剥好的纯文本：Markdown 标记铺到界面上就是一排 `##` 和 `-`。
+      const dirty = bellReport.entries.filter((entry) => /(^|\s)#{1,6}\s|`/.test(entry.body));
+      if (dirty.length > 0) problems.push(`公告正文没有剥掉 Markdown 标记：${dirty[0].body}`);
+    }
+  } else if (report.tip) {
+    // 默认场景没有 updater Release、也没有回滚风险：出现提示条只可能是判据出了岔子。
+    problems.push(`默认场景不该出现策略提示：${report.tip.text}`);
+  }
   // --checking 场景的主按钮本来就该是灰的（命令正在跑），这里按「就绪即可点」断言会误报。
   if (!checkingHold && report.ctaDisabled !== false) problems.push("主操作按钮在就绪状态下应当可点击");
 
@@ -1448,8 +1714,8 @@ async function main() {
     );
   }
 
-  // 侧栏导航必须真的能看到、点到，且每一页都渲染得出来：窗口无边框，原生菜单栏
-  // 不显示，侧栏是四个页面唯一的可见入口；窄窗口下把它藏起来，等于用户拖小窗口之后
+  // 侧栏导航必须真的能看到、点到，且每一页都渲染得出来：应用没有菜单栏，
+  // 侧栏是四个页面唯一的可见入口；窄窗口下把它藏起来，等于用户拖小窗口之后
   // 再也去不了诊断与设置。
   if (menuOpen) {
     if (!navReport) {
@@ -1549,7 +1815,9 @@ async function main() {
     if ((commandCalls.check_update || 0) !== 0) {
       problems.push(`未安装时不该发起更新检查，check_update 实际发出 ${commandCalls.check_update} 次`);
     }
-    if (report.build !== "未安装") problems.push(`未安装时顶栏文案不正确：${report.build}`);
+    if (report.instrument?.nodes?.[0]?.value !== "未安装") {
+      problems.push(`未安装时版本状态仪表里的当前版本不正确：${report.instrument?.nodes?.[0]?.value}`);
+    }
   } else {
     // 启动会自动查一次，所以界面**开机就知道**有没有新版本 —— 这正是本次改动本身。
     // 断言分两种形状：默认桩说「有 26.902.100.0 可更新」，--up-to-date 桩说「已是最新」。
@@ -1559,12 +1827,20 @@ async function main() {
     // 否则就是把「还没查完」当成「没查」。
     if (expectAutoCheck && upToDateScenario) {
       // 用户抱怨的原话就是这一条：以前启动只读版本，必须点一下「检查版本号」才知道已经在
-      // 最新版上。现在什么都不点，顶栏就该写着「已是最新」。
-      if (!report.build.includes("已是最新")) {
-        problems.push(`已是最新时顶栏没有说出来（用户仍要点一下才知道）：${report.build || "(空)"}`);
+      // 最新版上。现在什么都不点，界面就必须给出「已是最新」。
+      const nodes = report.instrument?.nodes ?? [];
+      if (nodes[0]?.value !== "26.901.6511.0") {
+        problems.push(`版本状态仪表缺少已安装版本：${nodes[0]?.value}`);
       }
-      if (report.build.includes("可更新到")) problems.push(`已是最新时不该同时出现「可更新到」：${report.build}`);
-      if (!report.build.includes("已安装 26.901.6511.0")) problems.push(`顶栏缺少已安装版本：${report.build}`);
+      if (nodes[1]?.value !== "已是最新") {
+        problems.push(`已是最新时版本状态仪表没有说出来（用户仍要点一下才知道）：${nodes[1]?.value || "(空)"}`);
+      }
+      if (JSON.stringify(report.instrument ?? {}).includes("可更新到")) {
+        problems.push(`已是最新时不该同时出现「可更新到」：${JSON.stringify(report.instrument)}`);
+      }
+      if (report.heading.includes("可更新到")) {
+        problems.push(`已是最新时主区大字仍写着「可更新到」：${report.heading}`);
+      }
       // 结论落到按钮上：既然是最新，主按钮就是「打开 Codex」，「仅检查更新」没有存在意义
       //（它只会重复一遍已经知道的结论，还多弹一个对话框）。
       if (report.ctaLabel !== "打开 Codex") problems.push(`已是最新时主操作按钮应为「打开 Codex」：${report.ctaLabel}`);
@@ -1583,14 +1859,18 @@ async function main() {
       if (report.ctaLabel !== "一键更新到 26.902.100.0") {
         problems.push(`启动自动检查的结论没有落到主按钮上：${report.ctaLabel}`);
       }
-      if (!report.build.includes("已安装 26.901.6511.0")) problems.push(`顶栏缺少已安装版本：${report.build}`);
-      if (!report.build.includes("可更新到 26.902.100.0")) {
-        problems.push(`顶栏没有写出可更新到的版本（用户仍要点一下才知道）：${report.build || "(空)"}`);
+      // 结论的落点现在只有主区一处（顶栏状态胶囊已删）：大字说结论、仪表说「当前 → 分发源」。
+      if (!report.heading.includes("可更新到 26.902.100.0")) {
+        problems.push(`主区没有写出可更新到的版本（用户仍要点一下才知道）：${report.heading || "(空)"}`);
+      }
+      const nodes = report.instrument?.nodes ?? [];
+      if (nodes[0]?.value !== "26.901.6511.0") {
+        problems.push(`版本状态仪表里的当前版本不对：${nodes[0]?.value}`);
       }
       // 「上次检查 HH:MM」。结论已经出来了，就必须能说出它是什么时候问到的 ——
       // 一个没有时间戳的「可更新到 X」无法判断是不是上周的残留。
-      if (!/^上次检查 \d{2}:\d{2}$/.test(report.lastCheck)) {
-        problems.push(`顶栏没有写出「上次检查 HH:MM」：${report.lastCheck || "(空)"}`);
+      if (!/上次检查 \d{2}:\d{2}/.test(report.lastCheck)) {
+        problems.push(`主区没有写出「上次检查 HH:MM」：${report.lastCheck || "(空)"}`);
       }
       // 有新版可更新 ≠ 该弹对话框。用户什么都没点 —— 弹框是手动检查的表达方式。
       if (startupReport.notice?.present) {
@@ -1976,7 +2256,9 @@ async function main() {
         ? "checking"
         : upToDateScenario
           ? "up-to-date"
-          : launchNoWindow
+          : appUpdateScenario
+            ? "app-update"
+            : launchNoWindow
           ? "launch-no-window"
           : rollbackScenario
             ? "rollback"

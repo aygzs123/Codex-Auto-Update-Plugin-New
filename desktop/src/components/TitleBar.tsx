@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent, ReactNode } from "react";
-import { Logo } from "./Icons";
 
 // 用 SVG 而不是字体符号画图标：− □ × 这些字符的基线和对齐随字体变化，塞进小尺寸
 // 里必然歪，而且「还原」态需要的双矩形根本没有对应字符。
@@ -43,11 +42,27 @@ function CloseIcon() {
 }
 
 /**
- * 窗口控制：macOS 那三颗红绿灯。
+ * 左上角的三颗 mac 圆点。
  *
- * 看到的是 12px 的圆点，真正可点的区域是 32×28 —— 圆点本身在触摸板/小屏上太小，
- * 只画一个小圆点会得到一个「看得见、点不中」的按钮。图标只在悬停时浮现，
- * 与 mac 的行为一致，同时让第一次用的人悬停就知道哪个是关闭。
+ * 纯装饰：真正的窗口操作在最右边那组按钮上。把它们做成按钮会和右侧重复，而且
+ * 12px 的圆点本身也不是合格的点击目标（真正能点的区域在右侧 32×28 的按钮里）。
+ * `aria-hidden` + 不参与 drag 排除，滚动/拖动标题栏时一切照旧。
+ */
+function TrafficLights() {
+  return (
+    <div className="traffic" aria-hidden="true">
+      <span className="traffic-dot red" />
+      <span className="traffic-dot yellow" />
+      <span className="traffic-dot green" />
+    </div>
+  );
+}
+
+/**
+ * 窗口控制：最小化 / 最大化（还原）/ 关闭。
+ *
+ * 固定在最右边，顺序按 Windows 的惯例（而不是 mac 的红黄绿）。按钮的可点区域是
+ * 32×28 —— 只画一个 10px 的图标会得到一个「看得见、点不中」的按钮。
  *
  * 状态以主进程推送为准：双击标题栏最大化不会经过这里，本地猜测会停在错误图标上。
  */
@@ -69,42 +84,33 @@ function WindowControls() {
   }, [controls]);
 
   return (
-    <div className="window-controls traffic" aria-label="窗口控制">
+    <div className="window-controls" aria-label="窗口控制">
       <button
         type="button"
-        className="window-control red"
-        aria-label="关闭窗口"
-        title="关闭窗口"
-        onClick={() => void controls?.close()}
-      >
-        <span className="tl-dot" aria-hidden="true" />
-        <span className="tl-glyph" aria-hidden="true">
-          <CloseIcon />
-        </span>
-      </button>
-      <button
-        type="button"
-        className="window-control yellow"
+        className="window-control minimize"
         aria-label="最小化"
         title="最小化"
         onClick={() => void controls?.minimize()}
       >
-        <span className="tl-dot" aria-hidden="true" />
-        <span className="tl-glyph" aria-hidden="true">
-          <MinimizeIcon />
-        </span>
+        <MinimizeIcon />
       </button>
       <button
         type="button"
-        className="window-control green"
+        className="window-control maximize"
         aria-label={maximized ? "向下还原" : "最大化"}
         title={maximized ? "向下还原" : "最大化"}
         onClick={() => void controls?.maximize()}
       >
-        <span className="tl-dot" aria-hidden="true" />
-        <span className="tl-glyph" aria-hidden="true">
-          {maximized ? <RestoreIcon /> : <MaximizeIcon />}
-        </span>
+        {maximized ? <RestoreIcon /> : <MaximizeIcon />}
+      </button>
+      <button
+        type="button"
+        className="window-control close"
+        aria-label="关闭窗口"
+        title="关闭窗口"
+        onClick={() => void controls?.close()}
+      >
+        <CloseIcon />
       </button>
     </div>
   );
@@ -136,33 +142,21 @@ function useWindowDrag() {
 /**
  * 标题栏。
  *
- * 整个窗口只有这一条可拖动；红绿灯在左（mac 的位置），状态胶囊在右。状态胶囊由 App
- * 传进来 —— 「已安装 X · 已是最新」与启动自动检查的结论同源，判据只有 store 里那一份。
+ * 整个窗口只有这一条可拖动。左侧是三颗 mac 圆点（装饰），右侧是最小化 / 最大化 /
+ * 关闭，中间留白用于拖动 —— 视觉上保留 mac 的辨识度，操作习惯仍按 Windows 走。
  */
-export function TitleBar({
-  onAction,
-  busy = false,
-  statusSlot,
-}: {
-  onAction: (action: string) => void;
-  busy?: boolean;
-  statusSlot?: ReactNode;
-}) {
+export function TitleBar({ actions }: { actions?: ReactNode }) {
   const dragHandlers = useWindowDrag();
-  // onAction 与 busy 曾经服务于顶栏的下拉菜单；现在命令入口都在页面里，但主进程
-  // 的原生菜单（Ctrl+R / Ctrl+I）仍然会通过 App 的 runAction 进来。保留参数是为了
-  // 让这层壳继续是「唯一标题栏」这件事不变形，同时以后加窗口级菜单时不必改签名。
-  void onAction;
-  void busy;
 
   return (
     <header className="topbar" {...dragHandlers}>
-      <WindowControls />
-      <div className="titlebar-title">
-        <Logo size={16} className="tb-logo" />
-        <span>Codex Updater</span>
+      <div className="topbar-left">
+        <TrafficLights />
       </div>
-      <div className="titlebar-right">{statusSlot}</div>
+      <div className="topbar-actions">
+        {actions}
+        <WindowControls />
+      </div>
     </header>
   );
 }

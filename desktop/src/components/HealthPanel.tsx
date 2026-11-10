@@ -100,7 +100,7 @@ export function HealthPanel({
             <h3>
               资源副本<span className="sub">{okCount} / {total} 完整</span>
             </h3>
-            <span className="sub">只读本机</span>
+            <span className="sub">本机实时数据</span>
           </div>
           <div className="comp-list card">
             {components.map((component) => (
@@ -108,9 +108,10 @@ export function HealthPanel({
                 <span className="health-dot" />
                 <div className="health-labels">
                   <strong>{healthComponentText(component.name)}</strong>
+                  {/* 路径独占一行并允许换行：这些目录名有六七十个字符，单行截断会让
+                      「到底在哪」这个问题在这个页面上无法回答。 */}
                   <small title={component.path}>{component.path || "—"}</small>
                 </div>
-                <span className="path">{component.path || "—"}</span>
                 <span className="health-state">
                   {healthStateText(component.state)}
                   {component.leftovers > 0 && <em> · 残留 {component.leftovers}</em>}

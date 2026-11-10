@@ -52,7 +52,8 @@ DIB 条目），改了 `scripts/make-icon.cjs` 之后跑 `npm run icon:make` 重
   `setProgressBar()`：阶段事件按百分比，下载字节数是不确定态（下载总量本就无从得知，
   不编造百分比）。命令结束在 `ipcMain.handle` 的 `finally` 里清成 `-1`。
 - **关窗保护。** 只拦**会改动系统的长命令**（`download_codex` / `install_codex` /
-  `repair_bundles` / `launch_codex`）——「检查更新」跑一半关掉完全无害，为它弹框是打扰。
+  `repair_bundles` / `launch_codex` / `clear_cached_packages` / `download_app_update`）——
+  「检查更新」跑一半关掉完全无害，为它弹框是打扰。
   确认框默认按钮是「继续等待」，`app.quit()` 经 `before-quit` 置标志放行。
 - **跟随系统深浅色。** `styles.css` 的颜色全在 `:root` 变量里，深色只由一个
   `@media (prefers-color-scheme: dark)` 重定义变量；窗口底色由 `nativeTheme` 决定，并订阅
@@ -61,6 +62,38 @@ DIB 条目），改了 `scripts/make-icon.cjs` 之后跑 `npm run icon:make` 重
 - **启动即查一次。** 界面就绪后异步跑一遍静默检查（不弹对话框），顶栏写出「上次检查
   HH:MM」。「诊断 → 复制诊断信息」把完整现场拼成一段文本写进剪贴板 —— 这是**即时动作**，
   界面忙的时候也必须能点，同事报障时正是安装刚失败的那一刻。
+
+## 应用自身更新与公告
+
+数据源只有一处：本仓库的 GitHub Release，tag 约定为 `desktop-v<版本>`
+（例如 `desktop-v0.3.0`），只认已发布（非 draft / 非 prerelease）的条目。
+
+**检查更新在「设置 → 关于」。** 它检查的是**更新器自己**的版本，和主区的 Codex
+更新是两条独立链路：主区跟 Microsoft Store 分发源走，这里跟本仓库的 Release 走。
+发现新版本后：
+
+1. 点「下载并安装」，主进程用 Electron `net` 流式下载到 `userData/updates/`，边下边算
+   SHA-256，进度经 `desktop:app-update` 推给界面（任务栏进度条同步）；
+2. 下载地址必须是 `https://github.com/<repo>/releases/download/` 前缀、资产必须是 `.exe`、
+   且必须带 GitHub 计算好的 `sha256:` 摘要 —— **没有摘要就拒绝**，「无法校验」不等于
+   「校验通过」。摘要只认主进程自己从 GitHub API 拿的那一份，不接受渲染进程传值；
+3. 摘要与大小都匹配后才原子改名成正式文件，然后点「安装并重启」拉起 per-user NSIS
+   安装器（`--updated /S --force-run`），应用随后退出。安装路径必须落在
+   `userData/updates/` 里，**全程不请求提权**。
+
+**公告以 [`CHANGELOG.md`](CHANGELOG.md) 为唯一来源。** `npm run sync:changelog` 把它切成
+`src/lib/changelog.generated.json`（提交入库，漂移由 `tests/changelog.test.cjs` 比对），
+应用内「更新公告」铃铛把这份历史与 GitHub 上更新的 Release 合并展示：按 tag 去重、
+**本地优先**、发布时间倒序、最多 10 条。历史 Release 的正文是通用模板，版本说明以
+CHANGELOG 为准。铃铛有更新器新版本时亮红点，单条公告可按 tag 忽略（存在 `settings.json`
+的 `dismissedTips`）。
+
+「更新后无法退回当前版本」（缓存里没有当前版本的安装包）这条告警**不可关闭** ——
+关掉不等于问题消失。
+
+读取 GitHub 走主进程的 Electron `net`（跟随系统代理），结果内存缓存五分钟、并落盘到
+`userData/github-cache.json`。磁盘缓存是为了离线启动时仍有公告可看；真的没连上时带
+`stale` 标记，不影响 Codex 更新那条链路。
 
 ## 后台与启动（可选项，默认关）
 
@@ -92,11 +125,13 @@ AGENTS.md 那条「后台运行绝不弹 UAC」）。
   `app.asar` 里的 `.ps1`）。开发态则直接读 `desktop/resources/scripts/`。
   所以这个 exe 是自包含的：机器上没装过插件也能用，也不会去动
   `%USERPROFILE%\.codex` 下的任何东西。
-- Electron 主进程只接受 17 个固定白名单命令（见 `electron/main.cjs` 的
+- Electron 主进程只接受 21 个固定白名单命令（见 `electron/main.cjs` 的
   `allowedCommands`），不接受任意 shell 命令，也不接受渲染进程传脚本路径；
   每个命令对应的脚本名在主进程里写死。剪贴板只有**写**（`copy_text`）没有**读** ——
   一个能把用户剪贴板内容读走的接口没有任何存在的理由；要复制的文本由渲染进程拼
-  （它手上才有完整状态），主进程只负责写进去。
+  （它手上才有完整状态），主进程只负责写进去。读 GitHub Release 与打开 Release 页面
+  也各是一个白名单命令：前者只读本项目仓库的公开 API，后者只接受
+  `https://github.com/<repo>/releases/` 前缀，不接受任意 URL。
 - 渲染进程不启用 Node.js，使用 `contextIsolation` 和受控 preload IPC。
 - MSIX 本体装到哪个盘由 Windows 的部署服务决定，本应用改不了（界面上只如实显示）。
   应用自己控制的是安装包缓存目录：安装包（几百 MB）和安装日志放在那里。
@@ -145,10 +180,15 @@ AGENTS.md 那条「后台运行绝不弹 UAC」）。
 
 ## 发布
 
-改 `package.json` 里的 `version`，再打 `desktop-v*` 标签，即可触发 GitHub Actions
+改 `package.json` 里的 `version`，**并先在 `CHANGELOG.md` 最上面补一条
+`## [x.y.z] - YYYY-MM-DD`**，再打 `desktop-v*` 标签，即可触发 GitHub Actions
 发布工作流（`.github/workflows/desktop-release.yml`）。工作流会先核对标签与
-`package.json` 的版本一致，再跑测试和构建，最后把 `desktop/release/*.exe` 发到
-Release。不需要额外服务器。
+`package.json` 的版本一致，再跑测试和构建、用 `sync-changelog.mjs` 把该版本的小节抽成
+Release 正文，最后把 `desktop/release/*.exe` 发到 Release。缺小节会直接失败 ——
+公告只有 CHANGELOG 一处，发一个空正文的 Release 等于让应用内的公告缺一版。
+不需要额外服务器。
+
+Release 资产的 `sha256` 摘要由 GitHub 计算，正是「关于 → 检查更新」下载后比对的那个值。
 
 > 当前构建**未做代码签名**。用户首次运行会看到 SmartScreen 的「Windows 已保护你的
 > 电脑」提示，需要点「更多信息 → 仍要运行」。要消除这个提示只能买 Authenticode

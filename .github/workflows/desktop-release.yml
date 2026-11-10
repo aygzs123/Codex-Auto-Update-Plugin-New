@@ -60,18 +60,38 @@ jobs:
       - name: Build and publish NSIS installer
         run: npm run electron:build
 
+      # 公告只有 CHANGELOG 一处：Release 正文从这里抽当前版本的小节。
+      # 缺小节时脚本以非零退出 —— 发一个空正文的 Release 等于让应用内的
+      # 更新公告缺一版，而且没人会发现。
+      #
+      # 放在构建之后：electron-builder 会清空 release/ 输出目录，先写进去会被删掉。
+      - name: Extract release notes from CHANGELOG
+        shell: pwsh
+        run: |
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          node scripts/sync-changelog.mjs --version $version --out release/release-notes.md
+          $notes = Get-Content release/release-notes.md -Raw
+          $footer = @"
+
+          ---
+
+          Windows x64 Electron installer for Codex Updater Desktop.
+
+          The installer is intended for the current Windows user and keeps the existing Codex plugin cache.
+
+          > This build is **not code-signed**. Windows SmartScreen will warn on first run
+          > ("Windows protected your PC") — choose "More info" → "Run anyway".
+          "@
+          $combined = $notes.TrimEnd() + "`n" + $footer
+          [System.IO.File]::WriteAllText((Join-Path $PWD 'release/release-notes.md'), $combined, (New-Object System.Text.UTF8Encoding $false))
+
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: desktop/release/*.exe
           tag_name: ${{ github.ref_name }}
           name: Codex Updater ${{ github.ref_name }}
-          body: |
-            Windows x64 Electron installer for Codex Updater Desktop.
-
-            The installer is intended for the current Windows user and keeps the existing Codex plugin cache.
-
-            > This build is **not code-signed**. Windows SmartScreen will warn on first run
-            > ("Windows protected your PC") — choose "More info" → "Run anyway".
+          # 正文 = CHANGELOG 里这个版本的小节 + 固定说明（上一步追加的）。
+          body_path: desktop/release/release-notes.md
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

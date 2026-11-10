@@ -18,6 +18,12 @@ export function subscribeProgress(callback: (event: ProgressEvent) => void): () 
   return desktop ? desktop.onProgress(callback) : () => {};
 }
 
+/** 更新器自身安装包的下载进度。与 Codex 安装链路分属两个通道。 */
+export function subscribeAppUpdate(callback: (event: { received: number; total: number }) => void): () => void {
+  const desktop = typeof window !== "undefined" ? window.desktop : undefined;
+  return desktop ? desktop.onAppUpdateProgress(callback) : () => {};
+}
+
 export function subscribeMenuAction(callback: (action: string) => void): () => void {
   const desktop = typeof window !== "undefined" ? window.desktop : undefined;
   return desktop ? desktop.onMenuAction(callback) : () => {};

@@ -82,16 +82,34 @@ test("样式：窗口按钮仍是三个，且可点区域不小于 32×28", () =
   assert.ok(height >= 28, `窗口按钮高度过小：${height}px`);
 });
 
-test("布局：窗口按钮在固定顶栏里，且就是那三颗红绿灯", () => {
-  // 重新设计之后，窗口操作全部由标题栏左侧的三颗圆点承担：红色关闭、黄色最小化、
-  // 绿色最大化/还原。它们必须待在 .topbar 里（固定、不随内容滚动），不能退回卡片装饰。
+test("布局：三颗 mac 圆点在左上角纯装饰，真正的窗口按钮在右上角", () => {
+  // 左侧：红黄绿三颗圆点，只是还原 mac 的辨识度（aria-hidden，不是按钮）。
+  // 右侧：最小化 / 最大化（还原）/ 关闭，顺序按 Windows 惯例。两处不能混在一起 ——
+  // 把彩点做成按钮既和右侧重复，又把「关闭」放到了最左边。
   const header = titleBarSource.match(/<header className="topbar"[\s\S]*?<\/header>/);
   assert.ok(header, "找不到 .topbar");
-  assert.match(header[0], /<WindowControls \/>/, "窗口按钮必须留在顶栏里");
 
-  assert.match(stylesSource, /\.window-control\.red[^}]*#ff5f57/);
-  assert.match(stylesSource, /\.window-control\.yellow[^}]*#febc2e/);
-  assert.match(stylesSource, /\.window-control\.green[^}]*#28c840/);
+  const left = header[0].indexOf('className="topbar-left"');
+  const right = header[0].indexOf('className="topbar-actions"');
+  const lights = header[0].indexOf("<TrafficLights />");
+  const controls = header[0].indexOf("<WindowControls />");
+  assert.ok(left >= 0 && right >= 0 && lights >= 0 && controls >= 0, "顶栏结构不完整");
+  assert.ok(left < right, "彩点在左、操作区在右");
+  assert.ok(lights > left && lights < right, "彩点必须在左侧区里");
+  assert.ok(controls > right, "窗口按钮必须在操作区里");
+
+  // 彩点是 span，不是 button；三个颜色各一颗。
+  const traffic = titleBarSource.match(/className="traffic"[\s\S]*?<\/div>/);
+  assert.ok(traffic, "找不到装饰用的 .traffic");
+  assert.match(traffic[0], /aria-hidden="true"/);
+  for (const color of ["red", "yellow", "green"]) {
+    assert.match(traffic[0], new RegExp(`className="traffic-dot ${color}"`));
+  }
+  assert.doesNotMatch(traffic[0], /<button/);
+
+  // 按钮顺序：最小化 → 最大化 → 关闭。
+  const order = [...titleBarSource.matchAll(/className="window-control (\w+)"/g)].map((match) => match[1]);
+  assert.deepEqual(order, ["minimize", "maximize", "close"], `按钮顺序应为 最小化/最大化/关闭，实际 ${order.join(" / ")}`);
 
   // 装饰性的卡片圆点随旧布局一起删掉，否则同一个界面里会出现两套「窗口按钮」。
   assert.doesNotMatch(stylesSource, /\.window-head::before/);
@@ -100,20 +118,40 @@ test("布局：窗口按钮在固定顶栏里，且就是那三颗红绿灯", ()
   assert.doesNotMatch(stylesSource, /\.brand-sub/, "副标题的样式也应一并清掉");
 });
 
-test("导航：旧顶栏菜单被侧栏取代，原生快捷键仍然保留", () => {
+test("导航：旧顶栏菜单被侧栏取代", () => {
   // 操作/诊断下拉菜单在改版里被左侧导航取代。四组入口由 Sidebar 提供，
-  // 顶栏不再承载菜单 —— 但主进程那条只留快捷键的原生菜单不能被一起删掉。
+  // 顶栏不再承载菜单。
   const sidebar = read("src", "components", "Sidebar.tsx");
   const ids = [...sidebar.matchAll(/id:\s*"(overview|diagnostics|history|settings)"/g)].map((match) => match[1]);
   assert.deepEqual(ids, ["overview", "diagnostics", "history", "settings"], `侧栏入口应为 概览/诊断/版本历史/设置，实际 ${ids.join(" / ")}`);
   assert.doesNotMatch(titleBarSource, /MENU_GROUPS|menu-trigger|menu-popover/, "顶栏不该再留着旧菜单");
+});
 
-  // 原生菜单栏在 frame:false 下不显示，它留下来只是为了快捷键，不能被一起删掉。
-  assert.match(
-    mainSource,
-    /label:\s*"窗口"[\s\S]{0,400}CmdOrCtrl\+W/,
-    "原生菜单必须保留窗口命令的快捷键（Ctrl+W / Ctrl+M）",
-  );
+test("菜单：应用菜单被整块清空，不再有原生 File / Edit", () => {
+  // 无边框窗口（frame: false）并不保证原生菜单栏一定不出现 —— 只要没显式清空，
+  // Windows 上就可能露出 Electron 默认的 File / Edit 那一套。用户看到过一次，
+  // 所以这里钉死：应用菜单必须是 null，而不是某套自建菜单。
+  assert.match(mainSource, /Menu\.setApplicationMenu\(null\)/, "必须显式清空应用菜单");
+  // 托盘右键菜单仍然要用 buildFromTemplate，所以只禁止把它装成**应用菜单**。
+  assert.doesNotMatch(mainSource, /setApplicationMenu\(\s*Menu\.buildFromTemplate/, "不应再构建应用菜单");
+  assert.doesNotMatch(mainSource, /createApplicationMenu/, "旧的菜单构建函数必须删掉");
+});
+
+test("快捷键：菜单删掉后由主进程自己接管 Ctrl+R / I / M / W", () => {
+  // 这几个组合以前是菜单的 accelerator 顺带提供的。菜单清空之后如果不接回来，
+  // 用户按了会静默无反应 —— 而且 Ctrl+R 还会退回 Chromium 的刷新页面。
+  assert.match(mainSource, /before-input-event/, "缺少键盘接管");
+  const map = mainSource.match(/const SHORTCUT_ACTIONS = \{([\s\S]*?)\};/);
+  assert.ok(map, "找不到快捷键映射");
+  for (const [key, action] of [
+    ["r", "check"],
+    ["i", "install"],
+    ["m", "minimize"],
+    ["w", "close"],
+  ]) {
+    assert.match(map[1], new RegExp(`\\b${key}:\\s*"${action}"`), `Ctrl+${key.toUpperCase()} 必须映射到 ${action}`);
+  }
+  assert.match(mainSource, /event\.preventDefault\(\)/, "必须拦掉 Chromium 的默认行为（尤其 Ctrl+R）");
 });
 
 // ---------- 固定顶栏 ----------
@@ -132,8 +170,7 @@ test("布局：标题栏在滚动容器之外，且内容区自己滚", () => {
 });
 
 test("布局：窄窗口下也不许藏掉侧栏导航", () => {
-  // 窗口是无边框的（frame: false + autoHideMenuBar），原生菜单栏根本不显示，
-  // 所以侧栏是「检查更新 / 一键安装 / 诊断 / 设置」唯一的可见入口。窄窗口下把它
+  // 应用没有菜单栏，侧栏是「检查更新 / 一键安装 / 诊断 / 设置」唯一的可见入口。窄窗口下把它
   // display:none 掉，等于用户把窗口拖小之后就再也点不到这些页面了。
   // 先剥掉注释，避免断言被说明文字里引用的选择器绊倒。
   const css = stylesSource.replace(/\/\*[\s\S]*?\*\//g, "");
@@ -155,32 +192,17 @@ test("布局：窄窗口下也不许藏掉侧栏导航", () => {
   assert.doesNotMatch(narrow, /\.sidebar\s*\{[^}]*display:\s*none/);
 });
 
-test("布局：窄窗口下顶栏三块不打架（标题 / 状态胶囊 / 上次检查）", () => {
-  // 顶栏是「红绿灯 + 居中标题 + 右侧状态」三块抢同一行宽度。默认 1120 宽够用，
-  // 但窗口能缩到 760：右侧再挂着「上次检查」就会压到居中标题上。胶囊本身也必须有
-  // 上限，否则长版本号会一路往左顶。
+test("布局：顶栏左彩点右按钮，不再重复主区的版本结论", () => {
+  // 顶栏原先塞了「红绿灯 + 居中品牌 + 状态胶囊 + 上次检查」，窗口一窄就互相挤，
+  // 胶囊里的版本号还会被截断。现在左边只剩装饰彩点、右边只剩公告铃铛与窗口按钮，
+  // 结论统一由主区给。两端分开靠 space-between 撑开。
   const css = stylesSource.replace(/\/\*[\s\S]*?\*\//g, "");
-  assert.match(css, /\.status-chip\s*\{[^}]*max-width:\s*360px/);
-  assert.match(css, /\.status-chip\s*\{[^}]*text-overflow:\s*ellipsis/);
-
-  const block = (width) => {
-    const start = css.indexOf(`@media (max-width: ${width}px)`);
-    assert.ok(start >= 0, `找不到 ${width}px 断点`);
-    let depth = 0;
-    for (let index = css.indexOf("{", start); index < css.length; index += 1) {
-      if (css[index] === "{") depth += 1;
-      else if (css[index] === "}") {
-        depth -= 1;
-        if (depth === 0) return css.slice(start, index);
-      }
-    }
-    throw new Error(`${width}px 断点没有闭合`);
-  };
-  // 1100px 以下先收掉次要的「上次检查」，并把胶囊压到 320；
-  // 930px 以下继续压到 290，给居中的「Codex Updater」让出位置。
-  assert.match(block(1100), /\.last-check\s*\{[^}]*display:\s*none/);
-  assert.match(block(1100), /\.status-chip\s*\{[^}]*max-width:\s*320px/);
-  assert.match(block(930), /\.status-chip\s*\{[^}]*max-width:\s*290px/);
+  assert.match(css, /\.topbar\s*\{[^}]*justify-content:\s*space-between/);
+  assert.match(css, /\.topbar-actions\s*\{[^}]*display:\s*flex/);
+  assert.match(css, /\.topbar-actions\s*\{[^}]*gap:/);
+  // 状态胶囊整块删除：留着就还有第二处版本结论，迟早和主区分家。
+  assert.doesNotMatch(css, /\.status-chip\s*\{/);
+  assert.doesNotMatch(titleBarSource, /statusSlot|status-chip/);
 });
 
 // ---------- 桌面端滚动 ----------
@@ -203,7 +225,7 @@ test("滚动：切页回到顶部，键盘也能滚内容区", () => {
 });
 
 test("窗口：初始矩形收进显示器工作区，不把窗口底边放到屏幕外", () => {
-  // 默认 1120×780 在 1280×800@150% 的笔记本上比工作区还高；从外接大屏切回来时
+  // 默认 1180×860 在 1280×800@150% 的笔记本上比工作区还高；从外接大屏切回来时
   // 上次存的大矩形也可能超出。Windows 不会替你挪回来，底部内容就落在屏幕外了。
   assert.match(mainSource, /screen\.getDisplayMatching\(restore\)[\s\S]{0,80}screen\.getPrimaryDisplay\(\)/);
   assert.match(mainSource, /\.workArea/);
@@ -213,6 +235,15 @@ test("窗口：初始矩形收进显示器工作区，不把窗口底边放到�
   assert.match(options, /width,/, "宽度必须用收进工作区后的值");
   assert.match(options, /height,/, "高度必须用收进工作区后的值");
   assert.doesNotMatch(options, /width:\s*restore \? restore\.width/, "不能把存的宽度原样交给 Windows");
+  // 存的矩形比工作区大时改用默认尺寸居中，而不是裁成「顶满工作区」——
+  // 后者会得到一扇比上次拖动还小、却像最大化的窗口。
+  assert.match(
+    mainSource,
+    /const fits = Boolean\(restore\) && restore\.width <= area\.width && restore\.height <= area\.height/,
+    "没有先判断存的矩形能否放进工作区",
+  );
+  assert.match(mainSource, /fits \? restore\.width : DEFAULT_WIDTH/, "放不下时没有退回默认宽度");
+  assert.match(mainSource, /fits \? restore\.height : DEFAULT_HEIGHT/, "放不下时没有退回默认高度");
 });
 
 // ---------- runner ----------

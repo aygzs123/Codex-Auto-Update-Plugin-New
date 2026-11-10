@@ -79,6 +79,7 @@ const ICONS: Record<string, ReactNode> = {
     </>
   ),
   chevron: <path d="m9.5 5.5 6.5 6.5-6.5 6.5" />,
+  close: <path d="m6 6 12 12M18 6 6 18" />,
   arrow: (
     <>
       <path d="M4.5 12h14" />
@@ -120,6 +121,12 @@ const ICONS: Record<string, ReactNode> = {
     <>
       <path d="M12 3.5v8" />
       <path d="M7 6.6a7.5 7.5 0 1 0 10 0" />
+    </>
+  ),
+  bell: (
+    <>
+      <path d="M6.2 10.2a5.8 5.8 0 0 1 11.6 0c0 4 1.4 5.6 1.4 5.6H4.8s1.4-1.6 1.4-5.6Z" />
+      <path d="M10 19.2a2.2 2.2 0 0 0 4 0" />
     </>
   ),
   logo: (

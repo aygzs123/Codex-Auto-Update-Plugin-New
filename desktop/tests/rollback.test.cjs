@@ -188,7 +188,9 @@ test("清空缓存：白名单、长命令、确认框三样齐全", () => {
   // 取消返回 cancelled 而不是抛错：取消是正常选择，不是失败。
   assert.match(mainSource, /if \(!confirmed\) return \{ cancelled: true \};/, "取消要返回 cancelled");
   // 删到一半关窗会留下说不清的中间状态，所以它算长命令。
-  assert.match(mainSource, /"clear_cached_packages",\s*\n\]\);/, "clear_cached_packages 要进 LONG_COMMANDS");
+  const longCommands = mainSource.match(/const LONG_COMMANDS = new Set\(\[([\s\S]*?)\]\);/);
+  assert.ok(longCommands, "找不到 LONG_COMMANDS");
+  assert.match(longCommands[1], /"clear_cached_packages"/, "clear_cached_packages 要进 LONG_COMMANDS");
 });
 
 test("清空缓存：界面如实显示占用，读不到清单时不说「0 个」", () => {

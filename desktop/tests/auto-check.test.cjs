@@ -152,22 +152,23 @@ test("装完之后重新问一次，别留着安装前那份过期结论", () =>
   assert.ok(callAt > doneAt, "重新检查必须在 phase 置为 done 之后，否则会被忙判据挡掉");
 });
 
-test("顶栏写出「已是最新」，且与「可更新到」互斥", () => {
-  const build = app.match(/<span className="build">([\s\S]*?)<\/span>/);
-  assert.ok(build, "找不到顶栏的 .build");
-  assert.match(build[1], /已是最新/, "顶栏没有「已是最新」：自动检查的结论就没有落点");
-  assert.match(
-    build[1],
-    /upToDate \? "[^"]*已是最新" : ""/,
-    "「已是最新」必须由 upToDate 驱动，不能自己另算一份判据",
-  );
-  assert.match(build[1], /可更新到/, "「可更新到」不能丢");
+test("主区写出「已是最新」，且与「可更新到」互斥", () => {
+  // 顶栏那颗状态胶囊在侧栏改版里删掉了：结论只留主区一处。两条文案挂在同一个
+  // if / else-if 链上，天然互斥 —— 不必再靠一个新字段去保证。
+  const chain = app.match(/title = `已是最新版：[\s\S]*?title = `可更新到 \$\{availableVersion\}`/);
+  assert.ok(chain, "找不到主区的「已是最新 / 可更新到」分支");
+  assert.match(chain[0], /title = `已是最新版：/, "主区没有「已是最新」：自动检查的结论就没有落点");
+  assert.match(chain[0], /title = `可更新到 \$\{availableVersion\}`/, "「可更新到」不能丢");
+  // 两条文案在同一串 if / else-if 里，中间不能插进第三个分支 —— 插进去就不再互斥。
+  assert.equal((chain[0].match(/else if/g) ?? []).length, 1, "两条结论之间混进了别的分支");
   // upToDate 的定义：与「可更新到」天然互斥，不用新字段。
   assert.match(
     app,
-    /const upToDate = installed && update\?\.updateAvailable === false;/,
-    "upToDate 的定义变了，顶栏/主按钮/次按钮三处的联动会一起走样",
+    /const upToDate = installed && policy\.resolved && !policy\.updateAvailable;/,
+    "upToDate 的定义变了，主区/主按钮/次按钮三处的联动会一起走样",
   );
+  // 顶栏不该再出现第二份结论（状态胶囊已删）。
+  assert.doesNotMatch(app, /className="build"/, "顶栏还留着旧的结论区 .build");
 });
 
 test("主区标题给出更新结论，而不是只报「已安装 X」", () => {
@@ -175,7 +176,11 @@ test("主区标题给出更新结论，而不是只报「已安装 X」", () => 
   // 应该显示已是最新版：xxx」。主区那行大字是全页最显眼的一处，却只说了「装没装」，
   // 更新结论（要不要点那颗按钮，正是看它）一个字都没有 —— 得往上看顶栏那行小字。
   assert.match(app, /title = `已是最新版：\$\{version/, "主区标题没有「已是最新版：版本号」");
-  assert.match(app, /title = `可更新到 \$\{availableVersion\}`/, "有新版时主区标题要写出可更新到哪一版");
+  assert.match(
+    app,
+    /`可更新到 \$\{availableVersion\}`/,
+    "有新版时主区标题要写出可更新到哪一版",
+  );
   // 结论必须由父组件算好的 upToDate 驱动 —— 与顶栏、主按钮同一处判据。主区自己再算一份，
   // 就会出现「顶栏说已是最新、主区说可更新」这种自相矛盾，而用户无从判断哪个是真的。
   assert.match(app, /<Hero[\s\S]*?upToDate=\{upToDate\}/, "Hero 必须接收父组件的 upToDate");

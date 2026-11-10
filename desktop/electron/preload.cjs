@@ -13,6 +13,13 @@ contextBridge.exposeInMainWorld("desktop", {
     ipcRenderer.on("desktop:progress", listener);
     return () => ipcRenderer.removeListener("desktop:progress", listener);
   },
+  // 更新器自身的安装包下载进度。与 Codex 安装链路分开：两边的 phase 语义不同，
+  // 混在一个通道里会让「正在安装 Codex」和「正在下载更新器」互相覆盖。
+  onAppUpdateProgress: (callback) => {
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on("desktop:app-update", listener);
+    return () => ipcRenderer.removeListener("desktop:app-update", listener);
+  },
   window: {
     minimize: () => ipcRenderer.invoke("desktop:window", "minimize"),
     maximize: () => ipcRenderer.invoke("desktop:window", "maximize"),

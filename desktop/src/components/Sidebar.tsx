@@ -1,4 +1,4 @@
-import { Icon, Logo } from "./Icons";
+import { Icon } from "./Icons";
 
 export type ViewId = "overview" | "diagnostics" | "history" | "settings";
 
@@ -36,14 +36,8 @@ export function Sidebar({
 }) {
   return (
     <aside className="sidebar" aria-label="主导航">
-      <div className="sb-brand">
-        <Logo size={34} className="brand-mark" />
-        <div className="sb-brand-text">
-          <strong>Codex Updater</strong>
-          <span>Desktop · 非官方</span>
-        </div>
-      </div>
-
+      {/* 这里不再放产品名：顶栏的品牌位已经换成三颗圆点，侧栏再重复一遍就多了一块
+          和「工作台」导航抢视线的标题。产品名留在关于页与窗口标题里。 */}
       <nav className="nav">
         <span className="nav-label">工作台</span>
         {NAV.map((item) => {
@@ -74,7 +68,6 @@ export function Sidebar({
         </div>
         <div className="sb-foot-sub">安装包来自 Microsoft Store</div>
       </div>
-      <div className="sb-version">非官方工具 · 与 OpenAI 无关</div>
     </aside>
   );
 }

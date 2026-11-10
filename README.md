@@ -98,6 +98,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File install\install.ps1
 - **保缓存 + 版本回退**：缓存保留最近 2 个 Codex 安装包（约 1.67 GB）供回退，
   桌面应用则一个都不删、由用户决定何时清空（见 [`docs/rollback.md`](docs/rollback.md)）。
 - **插件自更新**：对比本机与远端 `plugin.json` 版本，自动从 GitHub 更新插件。
+- **更新器自身更新（桌面应用）**：「设置 → 关于」直接检查本仓库的 `desktop-v*` Release，
+  发现新版本后在应用内下载、按 GitHub 给出的 SHA-256 校验再静默安装，装完自动重启。
+- **更新公告**：以 [`desktop/CHANGELOG.md`](desktop/CHANGELOG.md) 为唯一来源 —— 发版 CI
+  用对应小节当 Release 正文，应用内铃铛按时间线展示历次发布说明；见
+  [`desktop/README.md`](desktop/README.md#应用自身更新与公告)。
 - **Web 界面**：本地可视化操作，按钮即命令，日志 SSE 实时滚动。
 - **健康自检 + 窗口探测**：检测「进程在跑但主窗口不出现」，并按证据给出判定
   （还在准备 / 官方加密资源搬迁 bug / 判不出来），三档里只有搬迁 bug 那一档才提示修复。
@@ -116,6 +121,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File install\install.ps1
 「版本历史」卡片给回退入口，对不需要它的人可以关掉显示（只隐藏卡片，不改任何行为）。
 「关窗后留在托盘里」和「开机自动启动」是**可选项、默认关闭**，打开后也只是起来查一次、
 发现新版本弹一条系统通知，**绝不自动安装** —— 需要管理员授权的安装永远由人点。
+更新器自己也有更新入口（设置 → 关于），但它只更新这个安装工具，和上面的 Codex 更新是两条链路。
 
 界面行为（单实例锁、窗口位置记忆、任务栏进度、深浅色、启动即查一次）与设计取舍见
 [`desktop/README.md`](desktop/README.md) 与 [`docs/design-notes.md`](docs/design-notes.md)。
@@ -313,7 +319,7 @@ tools/Test-PluginVersionBump.ps1    CI 版本校验脚本
 ```powershell
 cd desktop
 npm test                 # 单元测试，不联网
-npm run verify:render    # 把 dist/ 加载进 Electron 跑十三个界面场景
+npm run verify:render    # 把 dist/ 加载进 Electron 跑十四个界面场景
 npm run verify:simulate  # 模拟安装流程，不下载不安装
 npm run electron:dev     # 开发态启动
 npm run electron:build   # 打包 Windows x64 NSIS .exe

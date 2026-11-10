@@ -139,7 +139,7 @@ test("界面：安装位置原样放进只读输入框，不拼接也不截断",
 //
 // 和「安装位置不许按盘符猜」是同一类 bug：路径必须是现取的真实值，不能是某个默认值。
 //
-// 回归：三个入口（原生菜单、高级设置里的链接、「版本历史」卡片底部）以前各写各的，
+// 回归：三个入口（打开缓存目录的命令、高级设置里的链接、「版本历史」卡片底部）以前各写各的，
 // 其中两处直接读 settings.defaultDownloadDirectory。用户在高级设置里把缓存换到 D 盘
 // 之后，那两颗按钮仍然打开 C 盘的默认目录 —— 与卡片里列出来的包、以及 worker 实际
 // 剪枝的目录都对不上。而开发机上 settings.downloadDirectory 恰好是空、默认目录又恰好
@@ -201,7 +201,7 @@ test("缓存目录：优先级是「枚举解析结果 > 设置原始值 > 默�
 test("缓存目录：三个入口都用共享判据，组件不许自己去解析", () => {
   const app = read("src", "App.tsx");
   const uses = app.match(/effectiveDownloadDirectory\(/g) || [];
-  // 三处：原生菜单的打开动作 + 两张卡片各一处 cacheDirectory。
+  // 三处：菜单动作的打开缓存目录 + 两张卡片各一处 cacheDirectory。
   assert.ok(uses.length >= 3, `App.tsx 里应有三处使用共享判据，实际 ${uses.length} 处`);
   // 卡片必须拿到算好的路径（props 传进去），而不是自己读设置。
   // 注意：CacheSettings 里出现 settings.defaultDownloadDirectory 是**正当的** ——

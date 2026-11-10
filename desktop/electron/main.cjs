@@ -1,12 +1,26 @@
 // 主进程：窗口、菜单、IPC 接线。业务逻辑在 codex.cjs，PowerShell 在 ps.cjs。
 
-const { app, BrowserWindow, Menu, Notification, Tray, clipboard, dialog, ipcMain, nativeTheme, screen, shell } = require("electron");
-const { existsSync, mkdirSync, readFileSync, writeFileSync } = require("node:fs");
-const { join } = require("node:path");
+const { app, BrowserWindow, Menu, Notification, Tray, clipboard, dialog, ipcMain, nativeTheme, net, screen, shell } = require("electron");
+const { createHash } = require("node:crypto");
+const {
+  createWriteStream,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} = require("node:fs");
+const { basename, join, resolve } = require("node:path");
 const { spawn } = require("node:child_process");
+const { Transform } = require("node:stream");
+const { pipeline } = require("node:stream/promises");
 const http = require("node:http");
 
 const codex = require("./codex.cjs");
+const github = require("./github.cjs");
 
 // 在 whenReady 之前设置，userData 才会落在 %APPDATA%\Codex Updater 而不是
 // 由包名推导出的 codex-updater-desktop。
@@ -46,7 +60,23 @@ const allowedCommands = new Set([
   // 打开 Codex 本体的安装目录。路径由主进程自己解析后记着，不接受渲染进程传路径 ——
   // 那正是 open_path 白名单要挡住的那件事，这里不能又开一个口子。
   "open_install_location",
+  // GitHub Release 只读：取更新器自身的新版本与更新公告。
+  "get_github_updates",
+  // 在应用内下载更新器自己的安装包。只接受本仓库 Release 的下载地址，
+  // 摘要必须来自 GitHub API 的响应（见 downloadAppUpdate）。
+  "download_app_update",
+  // 运行下载好的更新器安装包并退出。路径必须在应用自己的 updates 目录里。
+  "install_app_update",
+  // 打开 Release 页面。只接受本仓库的 releases 前缀，不接受任意 URL —— 否则这就是一个
+  // 「让用户的浏览器打开任意地址」的接口。
+  "open_release",
 ]);
+
+// 更新器自身版本与更新公告的唯一来源。仓库写死，不让渲染进程传 —— 那等于允许界面把
+// 用户引到任意 GitHub 仓库去读「新版本」并下载。
+const GITHUB_REPO = "aygzs123/Codex-Auto-Update-Plugin-New";
+// 五分钟内复用一次结果，避免窗口反复刷新把未认证的 60 次/小时配额用完。
+const GITHUB_CACHE_MS = 5 * 60 * 1000;
 
 let devServer;
 const dragOffsets = new Map();
@@ -84,6 +114,9 @@ const LONG_COMMANDS = new Set([
   "repair_bundles",
   "launch_codex",
   "clear_cached_packages",
+  // 更新器自己的安装包也要算：下到一半退出会留下一个说不清是否完整的临时文件，
+  // 而且用户多半以为「再点一次会接着下」。上次下载的残留会在下次下载前清掉，但它仍然是长命令。
+  "download_app_update",
 ]);
 
 // ---------- 设置 ----------
@@ -107,10 +140,281 @@ function writeSettings(patch) {
   return merged;
 }
 
+// ---------- GitHub Release（固定版本 / 更新公告） ----------
+
+// 上一次成功读取的结果。落盘不只是为了省配额：固定版本策略在公司网络断掉时
+// 不能突然变成「没有固定版本」，那会让所有人被提示升级到商店最新版。
+let githubCache = null;
+
+function githubCachePath() {
+  return join(app.getPath("userData"), "github-cache.json");
+}
+
+function readGithubCache() {
+  try {
+    const parsed = JSON.parse(readFileSync(githubCachePath(), "utf8"));
+    return parsed && typeof parsed === "object" && parsed.data ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeGithubCache(cache) {
+  try {
+    mkdirSync(app.getPath("userData"), { recursive: true });
+    writeFileSync(githubCachePath(), `${JSON.stringify(cache)}\n`, "utf8");
+  } catch {
+    // 写缓存失败不该让一次正常的 GitHub 查询变成错误：顶多下次再查一遍。
+  }
+}
+
+/**
+ * 一次只读的 GitHub JSON 请求。
+ *
+ * 走 Electron 的 net 而不是 node:https：它会用系统代理设置，和用户在同一个网络环境下
+ * 打开浏览器时的行为一致。带 User-Agent 是 GitHub API 的硬性要求。
+ */
+function requestJson(url, timeoutMs = 10_000) {
+  return new Promise((resolve, reject) => {
+    const request = net.request({ method: "GET", url });
+    request.setHeader("Accept", "application/vnd.github+json");
+    request.setHeader("User-Agent", "Codex-Updater");
+    const timer = setTimeout(() => {
+      request.abort();
+      reject(new Error("GitHub 请求超时"));
+    }, timeoutMs);
+
+    request.on("response", (response) => {
+      let body = "";
+      response.on("data", (chunk) => {
+        body += chunk;
+      });
+      response.on("end", () => {
+        clearTimeout(timer);
+        if (response.statusCode < 200 || response.statusCode >= 300) {
+          const hint = response.statusCode === 403 ? "（可能触发了 GitHub API 限流）" : "";
+          reject(new Error(`GitHub 返回 ${response.statusCode}${hint}`));
+          return;
+        }
+        try {
+          resolve(JSON.parse(body));
+        } catch {
+          reject(new Error("GitHub 返回的不是 JSON"));
+        }
+      });
+      response.on("error", (error) => {
+        clearTimeout(timer);
+        reject(error);
+      });
+    });
+    request.on("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    request.end();
+  });
+}
+
+/**
+ * 取更新器自身的新版本与更新公告。
+ *
+ * 返回结构固定为 { updater, announcements, error, stale }：网络失败不抛给渲染进程，而是
+ * 带上 error 与上次成功的结果 —— 公告不该因为一次断网就整块消失。
+ */
+async function getGithubUpdates(force = false) {
+  if (githubCache === null) githubCache = readGithubCache();
+  if (!force && githubCache && Date.now() - githubCache.at < GITHUB_CACHE_MS) {
+    return { ...githubCache.data, error: null, stale: false };
+  }
+  try {
+    const data = await github.fetchGithubUpdates({
+      fetchJson: requestJson,
+      repo: GITHUB_REPO,
+      currentVersion: app.getVersion(),
+    });
+    githubCache = { at: Date.now(), data };
+    writeGithubCache(githubCache);
+    return { ...data, error: null, stale: false };
+  } catch (error) {
+    if (githubCache?.data) return { ...githubCache.data, error: error.message, stale: true };
+    return { updater: null, announcements: [], error: error.message, stale: true };
+  }
+}
+
+// ---------- 更新器自身更新 ----------
+
+// 本仓库 Release 资产的下载前缀。这是应用内自更新唯一允许的下载地址空间。
+const APP_UPDATE_PREFIX = `https://github.com/${GITHUB_REPO}/releases/download/`;
+// 同一时间只允许一条下载：两条并发会写同一个目录，最后谁覆盖谁都说不清。
+let appUpdateDownloading = false;
+
+function appUpdatesRoot() {
+  const root = join(app.getPath("userData"), "updates");
+  mkdirSync(root, { recursive: true });
+  return root;
+}
+
+/**
+ * 按 URL 找到资产，并校验「能校验、可安装」。
+ *
+ * 摘要只认主进程自己从 GitHub API 拿到的那个值 —— 不接受渲染进程传摘要，否则「校验」
+ * 就退化成「界面说它是好的」。没有摘要直接拒绝：无法校验不等于校验通过。
+ */
+async function resolveAppUpdateAsset(url) {
+  if (!url.startsWith(APP_UPDATE_PREFIX)) throw new Error("更新包地址不在本仓库的 Release 下载路径下");
+  let data = await getGithubUpdates(false);
+  let asset = (data?.updater?.assets ?? []).find((candidate) => candidate.url === url) ?? null;
+  if (!asset) {
+    // 缓存可能刚好过期或换过一版 Release，强制重拉一次再找。
+    data = await getGithubUpdates(true);
+    asset = (data?.updater?.assets ?? []).find((candidate) => candidate.url === url) ?? null;
+  }
+  if (!asset) throw new Error("GitHub 上找不到这个更新包");
+  if (!asset.name.toLowerCase().endsWith(".exe")) throw new Error("更新包不是 .exe");
+  const digest = String(asset.digest || "");
+  if (!/^sha256:[0-9a-f]{64}$/i.test(digest)) throw new Error("这个更新包没有 SHA-256 摘要，无法校验");
+  return { ...asset, sha256: digest.slice("sha256:".length).toLowerCase() };
+}
+
+/** 流式下载到 .part，边下边算 SHA-256，并把进度推给渲染进程。 */
+function downloadAppUpdateFile(asset, partialPath, emit) {
+  return new Promise((resolveDownload, rejectDownload) => {
+    const request = net.request({ method: "GET", url: asset.url });
+    request.setHeader("Accept", "application/octet-stream");
+    request.setHeader("User-Agent", "Codex-Updater");
+
+    const hash = createHash("sha256");
+    let received = 0;
+    let total = asset.size > 0 ? asset.size : 0;
+    let lastEmit = 0;
+    let settled = false;
+    const timer = setTimeout(() => {
+      request.abort();
+      fail(new Error("更新包下载超时"));
+    }, 10 * 60 * 1000);
+
+    function fail(error) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      rejectDownload(error);
+    }
+
+    function done() {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolveDownload(hash.digest("hex"));
+    }
+
+    request.on("response", (response) => {
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        fail(new Error(`更新包下载失败：HTTP ${response.statusCode}`));
+        return;
+      }
+      const length = Number(response.headers["content-length"]);
+      if (Number.isFinite(length) && length > 0) total = length;
+
+      const meter = new Transform({
+        transform(chunk, _encoding, callback) {
+          received += chunk.length;
+          hash.update(chunk);
+          const now = Date.now();
+          if (now - lastEmit >= 200) {
+            lastEmit = now;
+            emit({ kind: "progress", received, total });
+          }
+          callback(null, chunk);
+        },
+      });
+
+      pipeline(response, meter, createWriteStream(partialPath)).then(done).catch(fail);
+    });
+    request.on("error", fail);
+    request.end();
+  });
+}
+
+/**
+ * 下载更新器自己的安装包。
+ *
+ * 只接受本仓库 Release 资产、只认 .exe、必须带 GitHub 计算的摘要；下载到专用 updates
+ * 目录，校验通过后才原子改名成正式文件。失败时删掉 .part，不留半截文件。
+ */
+async function downloadAppUpdate(args, emit) {
+  if (appUpdateDownloading) throw new Error("已经有一个更新包在下载");
+  const url = String(args?.url || "");
+  const asset = await resolveAppUpdateAsset(url);
+  const root = appUpdatesRoot();
+  const target = join(root, asset.name);
+  const partial = `${target}.part`;
+
+  appUpdateDownloading = true;
+  try {
+    // 清掉上一次的残留（旧版本的安装包 / 半截 .part）。updates 目录只服务「这一次」，
+    // 留在里面的旧安装包既不会被用到，又白占一百多 MB。
+    for (const name of readdirSync(root)) {
+      const path = join(root, name);
+      if (basename(path) === basename(partial)) continue;
+      try {
+        unlinkSync(path);
+      } catch {
+        // 删不掉（被占用）就算了，下次再试；不能因此让本次下载失败。
+      }
+    }
+
+    const sha256 = await downloadAppUpdateFile(asset, partial, emit);
+    if (sha256 !== asset.sha256) throw new Error("更新包 SHA-256 校验失败，已丢弃");
+    const size = statSync(partial).size;
+    if (asset.size > 0 && size !== asset.size) throw new Error(`更新包大小不符（${size} / ${asset.size}）`);
+    renameSync(partial, target);
+    emit({ kind: "progress", received: size, total: size });
+    return { path: target, size, sha256 };
+  } catch (error) {
+    try {
+      unlinkSync(partial);
+    } catch {
+      // 同上：清理失败不应该盖掉真正的错误。
+    }
+    throw error;
+  } finally {
+    appUpdateDownloading = false;
+  }
+}
+
+/**
+ * 运行下载好的安装包。per-user NSIS 安装器，静默安装后自己启动新版本。
+ *
+ * 不请求提权：后台/应用内更新一旦弹 UAC，就成了「点了检查更新，回来发现卡在一个要密码
+ * 的窗口后面」。路径必须在应用自己的 updates 目录里，后缀必须是 .exe。
+ */
+function installAppUpdate(args) {
+  if (!app.isPackaged) throw new Error("开发模式下不安装更新包");
+  const root = appUpdatesRoot();
+  const target = resolve(String(args?.path || ""));
+  if (target !== join(root, basename(target))) throw new Error("更新包不在应用的更新目录里");
+  if (!target.toLowerCase().endsWith(".exe")) throw new Error("更新包不是 .exe");
+  if (!existsSync(target)) throw new Error("更新包不存在，请重新下载");
+
+  const child = spawn(target, ["--updated", "/S", "--force-run"], {
+    detached: true,
+    stdio: "ignore",
+    windowsHide: true,
+  });
+  child.unref();
+  // 先放行关闭流程，再退出：否则托盘/关窗保护会把这次退出当成「用户点了关闭」。
+  isQuitting = true;
+  app.quit();
+  return { ok: true };
+}
+
 // ---------- 窗口位置记忆 ----------
 
-const DEFAULT_WIDTH = 1120;
-const DEFAULT_HEIGHT = 780;
+// 首次打开就按「内容能完整摆下」的尺寸开，别让用户先手动拖一次：设置页是双栏
+// 工作台（侧栏 + 内容），1120 宽会把卡片里的按钮和路径行挤到换行。高度同理，
+// 780 只露出半张设置页。小屏上这两个值仍会被工作区裁掉（见 createWindow）。
+const DEFAULT_WIDTH = 1180;
+const DEFAULT_HEIGHT = 860;
 const MIN_WIDTH = 760;
 const MIN_HEIGHT = 640;
 
@@ -390,6 +694,10 @@ async function executeCommand(event, command, args = {}) {
       // 版本历史卡片是纯展示，隐藏它不动磁盘上的任何东西（缓存里的安装包照旧留着，
       // 回退入口仍然在失败告警里）。清缓存是另一个明确的动作，见 clear_cached_packages。
       if ("showVersionHistory" in args) patch.showVersionHistory = Boolean(args.showVersionHistory);
+      // 已关闭的公告 id。限制条数：这些 id 只增不减，不设上限迟早把配置文件撑大。
+      if ("dismissedTips" in args) {
+        patch.dismissedTips = Array.isArray(args.dismissedTips) ? args.dismissedTips.map(String).slice(-20) : [];
+      }
       const saved = writeSettings(patch);
       // 这两个开关不只是落盘，还要真的动系统与本进程：自启要写注册表，后台复查要起/停定时器。
       if ("launchAtLogin" in patch) applyLoginItem(saved.launchAtLogin);
@@ -453,6 +761,34 @@ async function executeCommand(event, command, args = {}) {
       if (error) throw new Error(error);
       return { ok: true };
     }
+    case "get_github_updates":
+      // 只读、失败不抛（结果里带 error 与上次成功的数据）。断网不该让公告整块消失，
+      // 更不该让启动界面报错。
+      return getGithubUpdates(Boolean(args.force));
+    case "download_app_update": {
+      // 进度走独立通道：desktop:progress 属于 Codex 安装链路，两边的 phase 语义不同。
+      // 任务栏进度条仍然复用 —— 窗口被盖住时，用户能看见「还在下载」。
+      const sendAppUpdate = (payload) => {
+        if (event.sender.isDestroyed()) return;
+        event.sender.send("desktop:app-update", payload);
+        const window = BrowserWindow.fromWebContents(event.sender);
+        if (window && !window.isDestroyed() && payload.total > 0) {
+          window.setProgressBar(Math.min(1, Math.max(0, payload.received / payload.total)));
+        }
+      };
+      return downloadAppUpdate(args, sendAppUpdate);
+    }
+    case "install_app_update":
+      return installAppUpdate(args);
+    case "open_release": {
+      const url = String(args.url || "");
+      const allowedPrefix = `https://github.com/${GITHUB_REPO}/releases/`;
+      // 只认本仓库的 Release 页面。URL 是 GitHub 返回的，但仍然在这里再校一遍：
+      // 渲染进程可以传任意字符串过来，这个命令的本质是「让系统浏览器打开一个地址」。
+      if (!url.startsWith(allowedPrefix)) throw new Error("只能打开本项目的 GitHub Release 页面");
+      await shell.openExternal(url);
+      return { ok: true };
+    }
     default:
       throw new Error(`不支持的命令：${command}`);
   }
@@ -466,61 +802,33 @@ function sendMenuAction(action) {
   }
 }
 
-function createApplicationMenu() {
-  Menu.setApplicationMenu(
-    Menu.buildFromTemplate([
-      {
-        label: "Codex Updater",
-        submenu: [
-          {
-            label: "关于 Codex Updater",
-            click: () =>
-              dialog.showMessageBox({
-                type: "info",
-                title: "关于 Codex Updater",
-                message: "Codex Updater",
-                detail:
-                  "为 Windows 用户提供一键安装 Codex Desktop 的图形界面。\n\n" +
-                  "安装包来自 Microsoft Store 官方分发源，安装前会校验 OpenAI 的 Authenticode 签名。",
-                buttons: ["好"],
-              }),
-          },
-          { type: "separator" },
-          { role: "quit", label: "退出" },
-        ],
-      },
-      {
-        label: "操作",
-        submenu: [
-          { label: "检查更新", accelerator: "CmdOrCtrl+R", click: () => sendMenuAction("check") },
-          { label: "一键安装 / 更新", accelerator: "CmdOrCtrl+I", click: () => sendMenuAction("install") },
-          { label: "打开 Codex", click: () => sendMenuAction("launch") },
-        ],
-      },
-      {
-        label: "诊断",
-        submenu: [
-          { label: "健康自检（含窗口探测）", click: () => sendMenuAction("health") },
-          { label: "修复资源副本（加密资源搬迁）", click: () => sendMenuAction("repair") },
-          { type: "separator" },
-          { label: "打开日志目录", click: () => sendMenuAction("open-logs") },
-          { label: "打开缓存目录", click: () => sendMenuAction("open-cache") },
-        ],
-      },
-      {
-        // 窗口是无边框的（frame: false），这个原生菜单栏根本显示不出来 —— 它在这里
-        // 唯一的作用是承载快捷键。所以界面顶栏只放「操作 / 诊断」两组（窗口命令由
-        // 顶栏右上角的 − □ × 承担），这组仍然留着，否则 Ctrl+W / Ctrl+M 会静默失效。
-        label: "窗口",
-        submenu: [
-          { label: "最小化", accelerator: "CmdOrCtrl+M", click: () => sendMenuAction("minimize") },
-          { label: "最大化 / 还原", click: () => sendMenuAction("maximize") },
-          { type: "separator" },
-          { label: "关闭窗口", accelerator: "CmdOrCtrl+W", click: () => sendMenuAction("close") },
-        ],
-      },
-    ]),
-  );
+// 应用菜单整个不要。窗口是无边框的（frame: false），但原生菜单栏并不总会随之消失：
+// 一旦没有显式清空，Windows 上仍可能露出 Electron 默认的 File / Edit 这一套。
+// 界面自己的入口全在侧栏里，窗口按钮在顶栏的红绿灯上，菜单栏没有任何存在的理由。
+function removeApplicationMenu() {
+  Menu.setApplicationMenu(null);
+}
+
+// 快捷键原来是靠菜单的 accelerator 承载的，菜单删掉之后必须在主进程里自己接管，
+// 否则 Ctrl+R / Ctrl+I / Ctrl+M / Ctrl+W 会静默失效。
+const SHORTCUT_ACTIONS = {
+  r: "check",
+  i: "install",
+  m: "minimize",
+  w: "close",
+};
+
+function attachKeyboardShortcuts(window) {
+  window.webContents.on("before-input-event", (event, input) => {
+    if (input.type !== "keyDown" || input.isAutoRepeat) return;
+    // 只认「Ctrl + 单个字母」：带 Alt / Shift / Meta 的组合留给系统或输入法。
+    if (!input.control || input.alt || input.shift || input.meta) return;
+    const action = SHORTCUT_ACTIONS[String(input.key).toLowerCase()];
+    if (!action) return;
+    // 不拦截的话 Ctrl+R 会同时触发 Chromium 自己的重新加载。
+    event.preventDefault();
+    sendMenuAction(action);
+  });
 }
 
 // ---------- 窗口 ----------
@@ -551,15 +859,27 @@ async function createWindow() {
   const stored = storedWindowBounds();
   // 存的矩形不在任何显示器上就整块丢掉（外接显示器拔了的场景），回到默认尺寸居中。
   const restore = stored && isVisibleOnSomeDisplay(stored) ? stored : null;
-  // 初始矩形要收进工作区。默认 1120×780 比不少笔记本的工作区还高（1280×800@150%
+  // 初始矩形要收进工作区。默认 1180×860 比不少笔记本的工作区还高（1280×800@150%
   // 缩放的工作区只有约 1280×752），从外接大屏切回来时上次存的大矩形也可能超出。
   // 超出的部分 Windows 不会替你挪回来：窗口底部（含内容区最后一行）会直接落在
   // 屏幕外，用户看到的是一扇「缺了下半截」的窗口。
   const area = (restore ? screen.getDisplayMatching(restore) : screen.getPrimaryDisplay()).workArea;
-  const width = Math.min(restore ? restore.width : DEFAULT_WIDTH, Math.max(MIN_WIDTH, area.width));
-  const height = Math.min(restore ? restore.height : DEFAULT_HEIGHT, Math.max(MIN_HEIGHT, area.height));
-  const x = restore ? Math.min(Math.max(restore.x, area.x), area.x + area.width - width) : undefined;
-  const y = restore ? Math.min(Math.max(restore.y, area.y), area.y + area.height - height) : undefined;
+  // 存的尺寸比工作区还大时，**不要**把它裁成工作区大小 —— 那会得到一扇「顶满屏幕、
+  // 还比上次拖的小」的窗口，用户以为界面被压扁了。改用默认尺寸并居中：尺寸是设计过的，
+  // 位置还留在这块显示器上。放大窗口是用户主动做的事，不该由一次换屏被动完成。
+  const fits = Boolean(restore) && restore.width <= area.width && restore.height <= area.height;
+  const width = Math.min(fits ? restore.width : DEFAULT_WIDTH, Math.max(MIN_WIDTH, area.width));
+  const height = Math.min(fits ? restore.height : DEFAULT_HEIGHT, Math.max(MIN_HEIGHT, area.height));
+  const x = restore
+    ? fits
+      ? Math.min(Math.max(restore.x, area.x), area.x + area.width - width)
+      : Math.round(area.x + (area.width - width) / 2)
+    : undefined;
+  const y = restore
+    ? fits
+      ? Math.min(Math.max(restore.y, area.y), area.y + area.height - height)
+      : Math.round(area.y + (area.height - height) / 2)
+    : undefined;
   const window = new BrowserWindow({
     width,
     height,
@@ -585,6 +905,9 @@ async function createWindow() {
   });
 
   mainWindow = window;
+  // 双保险：应用级菜单已清空，这里再把窗口自己的菜单摘掉。
+  window.removeMenu();
+  attachKeyboardShortcuts(window);
 
   if (restore && restore.maximized) window.maximize();
 
@@ -799,7 +1122,7 @@ app.whenReady()
     } catch (error) {
       console.error("内置脚本缺失，请重新安装或运行 npm run sync:scripts：", error.message);
     }
-    createApplicationMenu();
+    removeApplicationMenu();
     await createWindow();
     applyBackgroundTimer();
   })

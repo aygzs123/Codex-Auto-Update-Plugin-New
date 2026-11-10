@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { AdvancedSettings } from "./components/AdvancedSettings";
 import { ActivityPanel } from "./components/ActivityPanel";
+import { AnnouncementBell } from "./components/AnnouncementBell";
 import { BackgroundSettings } from "./components/BackgroundSettings";
 import { CacheSettings } from "./components/CacheSettings";
 import { HealthPanel } from "./components/HealthPanel";
@@ -9,8 +10,10 @@ import { NoticeDialog } from "./components/NoticeDialog";
 import { RecentActivity } from "./components/RecentActivity";
 import { Sidebar, type ViewId } from "./components/Sidebar";
 import { TitleBar } from "./components/TitleBar";
+import { UpdateTip } from "./components/UpdateTip";
 import { VersionHistory } from "./components/VersionHistory";
 import { isElectronRuntime, subscribeMenuAction } from "./lib/bridge";
+import { changelogAnnouncements, mergeAnnouncements } from "./lib/announcements";
 import { diagnosisCopy } from "./lib/diagnosis";
 import {
   formatBytes,
@@ -19,19 +22,27 @@ import {
   healthOverallText,
   healthStateText,
 } from "./lib/format";
-import { connectBackgroundCheck, connectProgress, effectiveDownloadDirectory, isCommandRunning, useAppStore } from "./state/app";
+import {
+  connectAppUpdateProgress,
+  connectBackgroundCheck,
+  connectProgress,
+  currentUpdatePolicy,
+  effectiveDownloadDirectory,
+  isCommandRunning,
+  useAppStore,
+} from "./state/app";
 
 /** 会真正跑一条命令的动作。打开目录、复制诊断都不算 —— 它们瞬间返回，永远不冲突。 */
 const COMMAND_ACTIONS = new Set(["check", "install", "launch", "health", "repair"]);
 
 /**
- * 动作的唯一入口：页面按钮、原生菜单快捷键（Ctrl+R / Ctrl+I）都走这里，避免两套行为漂移。
+ * 动作的唯一入口：页面按钮、快捷键（Ctrl+R / Ctrl+I）都走这里，避免两套行为漂移。
  * 定义在模块作用域，因为它只在事件触发时读取 store，不需要订阅渲染。
  */
 function runAction(action: string) {
   const store = useAppStore.getState();
-  // 这才是真正的闸门。按钮置灰只能拦住鼠标 —— 原生菜单的 Ctrl+R / Ctrl+I 是主进程
-  // 直接发过来的，根本不经过 DOM，那两颗键照样能在安装途中再塞一条命令进来。
+  // 这才是真正的闸门。按钮置灰只能拦住鼠标 —— Ctrl+R / Ctrl+I 由主进程直接发过来，
+  // 根本不经过 DOM，那两颗键照样能在安装途中再塞一条命令进来。
   if (COMMAND_ACTIONS.has(action) && isCommandRunning(store)) return;
   switch (action) {
     case "check":
@@ -107,7 +118,7 @@ function VersionInstrument({
   let nextTone = "";
   let foot = "安装前校验签名";
   let footTone = "";
-  let footIcon: "shield" | "check" | "download" | "refresh" = "shield";
+  let footIcon: "shield" | "check" | "download" | "refresh" | "lock" | "alert" = "shield";
 
   if (checking) {
     foot = "正在读取本机状态";
@@ -175,6 +186,8 @@ function Hero({
   upToDate,
   availableVersion,
   lastCheckLabel,
+  primaryDisabled,
+  primaryDisabledReason,
 }: {
   onPrimary: () => void;
   onSecondary?: () => void;
@@ -190,6 +203,8 @@ function Hero({
   upToDate: boolean;
   availableVersion: string | null;
   lastCheckLabel: string;
+  primaryDisabled?: boolean;
+  primaryDisabledReason?: string;
 }) {
   const { phase, status, checkingUpdate } = useAppStore();
   const installed = status?.installed ?? false;
@@ -238,7 +253,16 @@ function Hero({
     }
   }
 
-  const tone = phase === "checking" ? "gray" : upToDate ? "green" : availableVersion ? "accent" : installed ? "green" : "accent";
+  const tone =
+    phase === "checking"
+      ? "gray"
+      : upToDate
+        ? "green"
+        : availableVersion
+          ? "accent"
+          : installed
+            ? "green"
+            : "accent";
 
   return (
     <section className="panel hero-card hero" data-tone={tone}>
@@ -268,8 +292,8 @@ function Hero({
             <button
               type="button"
               className="button primary large"
-              disabled={busy}
-              title={busy ? "有命令正在执行，等它结束再操作" : undefined}
+              disabled={busy || primaryDisabled}
+              title={busy ? "有命令正在执行，等它结束再操作" : primaryDisabledReason}
               onClick={onPrimary}
             >
               {primaryLabel}
@@ -435,6 +459,130 @@ function ResultBanners() {
   );
 }
 
+/**
+ * 「关于 → 检查更新」：更新器检查的是它**自己**的 GitHub Release，和主区的
+ * Codex Desktop 更新是两条独立的链路 —— 前者更新这个安装工具，后者更新 Codex。
+ *
+ * 四段状态（查 → 下 → 装 → 出错）都写在同一行状态里，按钮跟着 phase 走：
+ * 每一刻界面上只有一颗按钮可点，不给用户「下载和安装该点哪个」这种选择题。
+ */
+function AboutUpdate() {
+  const { appUpdate, github, checkAppUpdate, downloadAppUpdate, installAppUpdate, openRelease } = useAppStore();
+  const { phase, version, received, total, path, error, checkedAt } = appUpdate;
+
+  const percent = total > 0 ? Math.min(100, Math.round((received / total) * 100)) : 0;
+  const hasAsset = (github?.updater?.assets ?? []).some((asset) => asset.name.toLowerCase().endsWith(".exe"));
+  // 「查过、没有新版本」和「还没查过」都是 idle，靠 checkedAt 区分 —— 这两种状态的
+  // 按钮文案必须不一样，否则用户会以为上一次检查根本没生效。
+  const upToDate = phase === "idle" && Boolean(checkedAt);
+  const available = phase === "ready" && !path;
+  const downloaded = phase === "ready" && Boolean(path);
+
+  // 徽章是这一块的主结论：四种状态四种颜色，扫一眼就知道处于哪一档，不必去读下面那行小字。
+  const badge: { tone: "gray" | "green" | "accent" | "orange"; text: string } =
+    phase === "error"
+      ? { tone: "orange", text: "检查失败" }
+      : phase === "checking"
+        ? { tone: "gray", text: "正在检查" }
+        : phase === "downloading"
+          ? { tone: "accent", text: "正在下载" }
+          : phase === "installing"
+            ? { tone: "gray", text: "正在安装" }
+            : downloaded
+              ? { tone: "accent", text: "待安装" }
+              : available
+                ? { tone: "accent", text: `可更新到 v${version ?? ""}` }
+                : upToDate
+                  ? { tone: "green", text: "已是最新" }
+                  : { tone: "gray", text: "尚未检查" };
+
+  let status: ReactNode;
+  if (phase === "checking") status = "正在向 GitHub Releases 查询…";
+  else if (phase === "downloading") status = `正在下载 ${percent}%`;
+  else if (phase === "installing") status = "正在安装，完成后应用会自动重启。";
+  else if (phase === "error") status = <span className="danger-text">检查失败：{error}</span>;
+  else if (downloaded) status = `已下载 v${version ?? ""}，SHA-256 校验通过，可以安装。`;
+  else if (available) status = `发现新版本 v${version ?? ""}，当前安装的是 v${__APP_VERSION__}。`;
+  else if (upToDate) {
+    const clock = formatClock(checkedAt);
+    status = clock ? `已是最新版本，上次检查 ${clock}。` : "已是最新版本。";
+  } else status = "还没有检查过更新器自身的新版本。";
+
+  const statusIcon =
+    phase === "error" ? "alert" : upToDate ? "check" : available || downloaded ? "download" : "info";
+
+  return (
+    <div className="set-block">
+      <div className="about-update">
+        <div className="about-update-main">
+          <div className="about-update-version">
+            <span className="ver">v{__APP_VERSION__}</span>
+            <span className="pill" data-tone={badge.tone}>{badge.text}</span>
+          </div>
+          <p className="about-update-note">从 GitHub Releases 检查更新器自身的新版本，下载后按 SHA-256 校验完整性再安装。</p>
+        </div>
+        <div className="about-update-actions">
+          {available && (
+            <button
+              type="button"
+              className="button primary"
+              disabled={!hasAsset}
+              title={hasAsset ? undefined : "这个 Release 没有 .exe 安装包"}
+              onClick={() => void downloadAppUpdate()}
+            >
+              <Icon name="download" size={14} />
+              下载并安装
+            </button>
+          )}
+          {downloaded && (
+            <button type="button" className="button primary" onClick={() => void installAppUpdate()}>
+              <Icon name="refresh" size={14} />
+              安装并重启
+            </button>
+          )}
+          {phase === "idle" && (
+            <button
+              type="button"
+              // 第一次检查是主操作；已经确认是最新之后，再点只是复查，降一档到次按钮。
+              className={upToDate ? "button" : "button primary"}
+              onClick={() => void checkAppUpdate()}
+            >
+              <Icon name="refresh" size={14} />
+              {upToDate ? "重新检查" : "检查更新"}
+            </button>
+          )}
+          {phase === "error" && (
+            <button type="button" className="button" onClick={() => void checkAppUpdate()}>
+              <Icon name="refresh" size={14} />
+              重试
+            </button>
+          )}
+          {(phase === "checking" || phase === "downloading" || phase === "installing") && (
+            <button type="button" className="button" disabled>
+              {phase === "checking" ? "正在检查…" : phase === "downloading" ? `正在下载 ${percent}%` : "正在安装…"}
+            </button>
+          )}
+          {(available || downloaded) && github?.updater?.url && (
+            <button type="button" className="button" onClick={() => void openRelease(github?.updater?.url ?? "")}>
+              查看 Release
+            </button>
+          )}
+        </div>
+      </div>
+      <p className="about-update-status" data-tone={badge.tone}>
+        <Icon name={statusIcon} size={13} />
+        <span>{status}</span>
+      </p>
+      {phase === "downloading" && total > 0 && (
+        <div className="progress-track" role="progressbar" aria-valuenow={percent} aria-valuemin={0} aria-valuemax={100}>
+          <span className="progress-fill" style={{ width: `${percent}%` }} />
+        </div>
+      )}
+      <p className="hint">安装包未签名，首次运行 Windows 可能弹出 SmartScreen 提示，选择「更多信息 → 仍要运行」即可。</p>
+    </div>
+  );
+}
+
 export default function App() {
   const [view, setView] = useState<ViewId>("overview");
   // 四页共用同一个滚动容器。切换页面时拉回顶部：否则从设置页底部点回概览，
@@ -446,7 +594,6 @@ export default function App() {
   const {
     phase,
     status,
-    update,
     activity,
     healthDetail,
     probing,
@@ -458,6 +605,7 @@ export default function App() {
     notice,
     settings,
     cachedPackages,
+    github,
     lastCheckAt,
     bootstrap,
     oneClick,
@@ -469,6 +617,8 @@ export default function App() {
     pickDirectory,
     saveDownloadDirectory,
     saveOptions,
+    dismissTip,
+    openRelease,
     clearCache,
     copyDiagnostics,
     openPath,
@@ -479,11 +629,14 @@ export default function App() {
   useEffect(() => {
     void bootstrap();
     const offProgress = connectProgress();
+    // 更新器自身安装包的下载进度走独立通道，和 Codex 安装链路各算各的。
+    const offAppUpdate = connectAppUpdateProgress();
     const offMenu = subscribeMenuAction(runAction);
     // 后台常驻时主进程每 6 小时敲一次；走的是启动那条同样的静默检查，不新增第二条路径。
     const offBackground = connectBackgroundCheck();
     return () => {
       offProgress();
+      offAppUpdate();
       offMenu();
       offBackground();
     };
@@ -524,8 +677,14 @@ export default function App() {
   // 按钮都看它，判据只有 isCommandRunning 一处。
   const busy = useAppStore(isCommandRunning);
   const installed = status?.installed ?? false;
-  const upToDate = installed && update?.updateAvailable === false;
-  const availableVersion = update?.availableVersion ?? null;
+
+  // 「该装哪个版本」的唯一判据。这一处同时喂给主区标题、按钮文案、顶栏和系统通知，
+  // 谁都不许再自己读 update。
+  const policy = currentUpdatePolicy();
+  // 有结论、且结论是「没有可装的新版本」时才算最新。读失败时 resolved 为 false，
+  // 这时页面不许写「已是最新」—— 那不是最新，是不知道。
+  const upToDate = installed && policy.resolved && !policy.updateAvailable;
+  const availableVersion = policy.updateAvailable ? policy.targetVersion : null;
 
   let primaryLabel = "一键安装 Codex";
   // 回退和安装共用 install 这条活动链路，所以文案要额外看一眼 rollingBack ——
@@ -537,7 +696,7 @@ export default function App() {
 
   // 按钮置灰必须有个看得见的理由，否则就是「点了没反应」。检查更新期间文案换成
   // 「正在检查…」，用户就知道是自己在等，不是按钮坏了。
-  const secondaryLabel = installed && !upToDate ? (checkingUpdate ? "正在检查…" : "仅检查更新") : undefined;
+  const secondaryLabel = installed && !upToDate ? (checkingUpdate ? "正在检查…" : "检查更新") : undefined;
 
   // 「上次检查 14:32」。查过才显示 —— 写「上次检查 --:--」还不如不写。
   const lastCheckClock = formatClock(lastCheckAt);
@@ -579,37 +738,21 @@ export default function App() {
     (pkg) => pkg.relation === "older" || pkg.relation === "installed",
   ).length;
 
-  const chipTone: "green" | "accent" | "orange" | "gray" =
-    phase === "checking" || checkingUpdate
-      ? "accent"
-      : !installed
-        ? "gray"
-        : upToDate
-          ? "green"
-          : availableVersion
-            ? "orange"
-            : "gray";
-
-  const statusSlot = (
-    <>
-      <span className="status-chip" data-tone={chipTone} title={lastCheckLabel || undefined}>
-        <span className={`dot ${phase === "checking" || checkingUpdate ? "pulse" : ""}`} />
-        <span className="build">
-          {status?.installed ? `已安装 ${status.version ?? "未知版本"}` : "未安装"}
-          {upToDate ? " · 已是最新" : ""}
-          {availableVersion && update?.updateAvailable ? ` · 可更新到 ${availableVersion}` : ""}
-          {checkingUpdate ? " · 正在检查…" : ""}
-        </span>
-      </span>
-      {lastCheckLabel && <span className="last-check">{lastCheckLabel}</span>}
-    </>
-  );
-
   return (
     <div className="app-shell" data-phase={phase}>
       {/* 标题栏与侧栏放在滚动容器外面：否则往下滚就被内容顶走，
           既不像原生应用，也没法在滚动到底部时关掉窗口。 */}
-      <TitleBar onAction={runAction} busy={busy} statusSlot={statusSlot} />
+      <TitleBar
+        actions={
+          <AnnouncementBell
+            announcements={mergeAnnouncements(changelogAnnouncements(), github?.announcements ?? [])}
+            hasUpdate={Boolean(github?.updater)}
+            dismissedTips={settings?.dismissedTips ?? []}
+            onDismiss={(id) => void dismissTip(id)}
+            onOpenRelease={(url) => void openRelease(url)}
+          />
+        }
+      />
 
       <div className="app-body">
         <Sidebar
@@ -640,6 +783,10 @@ export default function App() {
                   lastCheckLabel={lastCheckLabel}
                 />
 
+                {/* 策略告警放在主区下面第一屏内：它影响「能不能装、敢不敢装」，
+                    不能被挤到需要滚动才看得见。更新公告在顶栏铃铛里。 */}
+                <UpdateTip policy={policy} installedVersion={status?.version ?? null} />
+
                 {activity && <ActivityPanel activity={activity} />}
 
                 <ResultBanners />
@@ -651,13 +798,15 @@ export default function App() {
                 )}
 
                 <section className="card statstrip" aria-label="本机状态">
-                  <div className="stat">
+                  {/* 安装位置单独占一整行：MSIX 的路径通常有六七十个字符，挤在四分之一
+                      宽度里必然截断。它又恰好是用户排查「装到哪个盘」时最需要看全的一条。 */}
+                  <div className="stat stat-wide">
                     <span className="stat-ico">
                       <Icon name="box" size={15} />
                     </span>
                     <div>
                       <span className="k">Codex 安装位置</span>
-                      <span className={`v ${installLocation ? "mono" : "muted"}`} title={installLocation ?? ""}>
+                      <span className={`v path ${installLocation ? "mono" : "muted"}`} title={installLocation ?? ""}>
                         {installLocation ?? "尚未安装"}
                       </span>
                     </div>
@@ -717,16 +866,14 @@ export default function App() {
                         打开诊断
                         <Icon name="chevron" size={12} />
                       </button>
-                      <span className="aside">只读本机</span>
+                      <span className="aside">本机实时数据</span>
                     </div>
                   </section>
 
                   <RecentActivity onNavigate={setView} />
                 </div>
 
-                <p className="content-foot">
-                  非官方工具 · 安装包来自 Microsoft Store，安装前校验 OpenAI 签名
-                </p>
+                <p className="content-foot">安装包来自 Microsoft Store · 安装前校验发布者签名</p>
               </div>
             )}
 
@@ -944,11 +1091,11 @@ export default function App() {
                       <Logo size={40} />
                       <div className="info">
                         <strong>Codex Updater</strong>
-                        <p>非官方工具 · 与 OpenAI 无关 · 安装包来自 Microsoft Store</p>
+                        <p>安装包来自 Microsoft Store · 安装前校验发布者签名</p>
                       </div>
-                      <span className="pill" data-tone="gray">v{__APP_VERSION__}</span>
                     </div>
                   </div>
+                  <AboutUpdate />
                   <div className="set-row">
                     <div className="label">
                       <strong>退出更新器</strong>

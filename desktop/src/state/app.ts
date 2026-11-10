@@ -1,14 +1,17 @@
 import { create } from "zustand";
-import { invokeCommand, subscribeBackgroundCheck, subscribeProgress } from "../lib/bridge";
+import { invokeCommand, subscribeAppUpdate, subscribeBackgroundCheck, subscribeProgress } from "../lib/bridge";
 import { diagnosticsText } from "../lib/diagnostics";
 import { clearedNotice } from "../lib/format";
+import { resolveUpdatePolicy, type UpdatePolicy } from "../lib/policy";
 import type {
   Activity,
   ActivityId,
+  AppUpdateState,
   CachedPackage,
   CachedPackageList,
   ClearCacheResult,
   DownloadResult,
+  GithubUpdates,
   HealthReport,
   InstallResult,
   LaunchResult,
@@ -47,6 +50,11 @@ interface AppState {
   healthDetail: HealthReport | null;
   /** 下载缓存里的安装包清单，回退功能的数据源。读不到时为 null。 */
   cachedPackages: CachedPackageList | null;
+  /** GitHub Release：更新器自身的新版本与更新公告。读不到时为 null。 */
+  github: GithubUpdates | null;
+  githubLoading: boolean;
+  /** 「关于 → 检查更新」的状态机（更新器自己，不是 Codex 安装包链路）。 */
+  appUpdate: AppUpdateState;
   probing: boolean;
   repairing: boolean;
   /**
@@ -117,6 +125,20 @@ interface AppState {
     launchAtLogin?: boolean;
     showVersionHistory?: boolean;
   }) => Promise<void>;
+  /** 重新读一次 GitHub Release（更新器新版本 / 更新公告）。force 时绕过五分钟缓存。 */
+  refreshGithub: (force?: boolean) => Promise<void>;
+  /** 检查更新器自身的新版本；结果写进 appUpdate。 */
+  checkAppUpdate: () => Promise<void>;
+  /** 下载检查到的更新器安装包（主进程校验 SHA-256）。 */
+  downloadAppUpdate: () => Promise<void>;
+  /** 运行已下载的安装包；应用会随之退出。 */
+  installAppUpdate: () => Promise<void>;
+  /** 主进程推来的更新器下载进度。 */
+  applyAppUpdateProgress: (event: { received: number; total: number }) => void;
+  /** 关掉一条公告。只落盘 id，不影响安装。 */
+  dismissTip: (id: string) => Promise<void>;
+  /** 用系统浏览器打开本项目的 Release 页面（主进程会再校验一次前缀）。 */
+  openRelease: (url: string) => Promise<void>;
   /** 把当前现场拼成一段文本复制到剪贴板，同事报障时不必截图。 */
   copyDiagnostics: () => Promise<void>;
   pickDirectory: () => Promise<void>;
@@ -164,7 +186,7 @@ export const isCommandRunning = (state: {
 /**
  * 「打开缓存目录」该打开哪个目录 —— 全应用只此一处判据。
  *
- * 三处入口（原生菜单、高级设置里的链接、「版本历史」卡片底部）以前各写各的，其中两处
+ * 三处入口（打开缓存目录的命令、高级设置里的链接、「版本历史」卡片底部）以前各写各的，其中两处
  * 直接读 settings.defaultDownloadDirectory。于是用户在高级设置里把缓存换到 D 盘之后，
  * 那两颗按钮仍然打开 C 盘的默认目录，和卡片里列出来的包、以及 worker 实际剪枝的目录
  * 都对不上 —— 一个「改了设置但只有一半地方生效」的 bug。
@@ -193,6 +215,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   launchResult: null,
   healthDetail: null,
   cachedPackages: null,
+  github: null,
+  githubLoading: false,
+  appUpdate: { phase: "idle", version: null, received: 0, total: 0, path: null, error: null, checkedAt: null },
   probing: false,
   repairing: false,
   rollingBack: false,
@@ -218,6 +243,10 @@ export const useAppStore = create<AppState>((set, get) => ({
     // 缓存清单；而 refreshCachedPackages 恰恰不依赖那次失败的调用（拿不到 settings 时
     // 主进程会按默认缓存目录解析），没有理由跳过。
     await get().refreshCachedPackages();
+
+    // 后台刷新公告与更新器自身的新版本，不阻塞启动：这一步只影响铃铛里的红点，
+    // 与主区的 Codex 版本结论无关。
+    void get().refreshGithub();
 
     // 启动时顺手问一次「是不是最新版本」，答案落在顶栏那一行。
     // 以前只读本机版本，用户要点一下才知道 —— 而点上那一下还会弹一个居中模态。
@@ -250,7 +279,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       });
       set({ update });
 
-      if (update.updateAvailable === false) {
+      const policy = currentUpdatePolicy();
+      if (!policy.updateAvailable) {
         set({
           phase: "done",
           activity: null,
@@ -374,10 +404,12 @@ export const useAppStore = create<AppState>((set, get) => ({
         // 只有真拿到结论才记时间。失败时记的话，顶栏会写着一个「上次检查」而那次其实
         // 什么都没查到 —— 比不显示更误导人。
         lastCheckAt: Date.now(),
-        notice:
-          update.updateAvailable === false
-            ? `已是最新版本${update.installedVersion ? `（${update.installedVersion}）` : ""}`
-            : `发现新版本 ${update.availableVersion}`,
+      });
+      const policy = currentUpdatePolicy();
+      set({
+        notice: policy.updateAvailable
+          ? `发现新版本 ${policy.targetVersion}`
+          : `已是最新版本${update.installedVersion ? `（${update.installedVersion}）` : ""}`,
       });
     } catch (error) {
       set({ error: describe(error) });
@@ -419,11 +451,12 @@ export const useAppStore = create<AppState>((set, get) => ({
         }),
       ]);
       set({ update, lastCheckAt: Date.now() });
+      const policy = currentUpdatePolicy();
       // 有新版才提醒，且提醒本身有条件（窗口是否聚焦、这个版本是不是已经提醒过）——
       // 那三条判据的依据都在主进程手上，所以判断留给主进程，这里只把结论递过去。
       // 失败静默：本地通知发不出来不该在界面上留下任何痕迹。
-      if (update.updateAvailable && update.availableVersion) {
-        void invokeCommand("notify_update", { version: update.availableVersion }).catch(() => {});
+      if (policy.updateAvailable && policy.targetVersion) {
+        void invokeCommand("notify_update", { version: policy.targetVersion }).catch(() => {});
       }
       // -CheckOnly 不下载，但仍然会剪枝缓存目录（脚本按「保留最近两个」剪），
       // 所以缓存清单可能真的变了 —— 不刷，「版本历史」卡片列的就是已经不在磁盘上的包。
@@ -554,6 +587,128 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
+  refreshGithub: async (force = false) => {
+    set({ githubLoading: true });
+    try {
+      const github = await invokeCommand<GithubUpdates>("get_github_updates", { force });
+      set({ github, githubLoading: false });
+    } catch (error) {
+      // 命令本身不抛网络错误（主进程会带 error 返回），走到这里说明 IPC/主进程出了问题。
+      set({ github: { updater: null, announcements: [], error: describe(error), stale: true }, githubLoading: false });
+    }
+  },
+
+  checkAppUpdate: async () => {
+    set((state) => ({ appUpdate: { ...state.appUpdate, phase: "checking", error: null } }));
+    await get().refreshGithub(true);
+    const github = get().github;
+    if (github?.error) {
+      // 更新器的检查失败留在「关于」卡片里，不污染全局 error —— 那是 Codex 安装链路的报错位。
+      set((state) => ({
+        appUpdate: { ...state.appUpdate, phase: "error", error: github.error, checkedAt: Date.now() },
+      }));
+      return;
+    }
+    const updater = github?.updater ?? null;
+    set((state) => ({
+      appUpdate: {
+        ...state.appUpdate,
+        // 没有新版本时回 idle：界面靠 checkedAt 区分「没查过」和「查过、已是最新」。
+        phase: updater ? "ready" : "idle",
+        version: updater?.version ?? null,
+        received: 0,
+        total: 0,
+        path: null,
+        error: null,
+        checkedAt: Date.now(),
+      },
+    }));
+  },
+
+  downloadAppUpdate: async () => {
+    const updater = get().github?.updater;
+    const asset = (updater?.assets ?? []).find((candidate) => candidate.name.toLowerCase().endsWith(".exe"));
+    if (!updater || !asset) {
+      set((state) => ({
+        appUpdate: { ...state.appUpdate, phase: "error", error: "这个 Release 没有可下载的 .exe 安装包" },
+      }));
+      return;
+    }
+    set((state) => ({
+      appUpdate: {
+        ...state.appUpdate,
+        phase: "downloading",
+        version: updater.version,
+        received: 0,
+        total: asset.size,
+        path: null,
+        error: null,
+      },
+    }));
+    try {
+      const result = await invokeCommand<{ path: string; size: number; sha256: string }>("download_app_update", {
+        url: asset.url,
+      });
+      set((state) => ({
+        appUpdate: {
+          ...state.appUpdate,
+          phase: "ready",
+          path: result.path,
+          received: result.size,
+          total: result.size,
+        },
+      }));
+    } catch (error) {
+      set((state) => ({ appUpdate: { ...state.appUpdate, phase: "error", error: describe(error) } }));
+    }
+  },
+
+  installAppUpdate: async () => {
+    const path = get().appUpdate.path;
+    if (!path) return;
+    set((state) => ({ appUpdate: { ...state.appUpdate, phase: "installing", error: null } }));
+    try {
+      // 主进程启动安装器后会退出应用，这条 invoke 往往来不及返回 —— 但失败路径
+      // （路径不对、文件被删）仍然要能显示出来，所以照样 await。
+      await invokeCommand("install_app_update", { path });
+    } catch (error) {
+      set((state) => ({ appUpdate: { ...state.appUpdate, phase: "error", error: describe(error) } }));
+    }
+  },
+
+  applyAppUpdateProgress: (event) =>
+    set((state) =>
+      state.appUpdate.phase === "downloading"
+        ? {
+            appUpdate: {
+              ...state.appUpdate,
+              received: Number(event.received) || 0,
+              total: Number(event.total) || state.appUpdate.total,
+            },
+          }
+        : {},
+    ),
+
+  dismissTip: async (id) => {
+    try {
+      const dismissed = get().settings?.dismissedTips ?? [];
+      const dismissedTips = [...dismissed.filter((item) => item !== id), id].slice(-20);
+      await invokeCommand("save_settings", { dismissedTips });
+      const settings = await invokeCommand<Settings>("get_settings");
+      set({ settings });
+    } catch (error) {
+      set({ error: describe(error) });
+    }
+  },
+
+  openRelease: async (url) => {
+    try {
+      await invokeCommand("open_release", { url });
+    } catch (error) {
+      set({ error: describe(error) });
+    }
+  },
+
   copyDiagnostics: async () => {
     try {
       const state = get();
@@ -663,6 +818,21 @@ export const useAppStore = create<AppState>((set, get) => ({
     }),
 }));
 
+/**
+ * 当前「该装哪个版本」的策略快照。
+ *
+ * 唯一入口：界面标题/按钮、oneClick、自动检查的通知判据都读它。同时负责
+ * 「缓存里有没有当前版本」这一件事，界面不该自己再算一遍。
+ */
+export function currentUpdatePolicy(state = useAppStore.getState()): UpdatePolicy {
+  return resolveUpdatePolicy({
+    installedVersion: state.status?.version ?? null,
+    storeVersion: state.update?.availableVersion ?? null,
+    storeUpdateAvailable: state.update?.updateAvailable ?? null,
+    cachedVersions: (state.cachedPackages?.packages ?? []).map((pkg) => pkg.version),
+  });
+}
+
 function describe(error: unknown): string {
   if (error instanceof Error) return error.message;
   return String(error);
@@ -685,6 +855,11 @@ function describeSignature(signature: SignatureReport): string {
 /** 在应用启动时订阅一次主进程进度推送。 */
 export function connectProgress(): () => void {
   return subscribeProgress((event) => useAppStore.getState().applyProgress(event));
+}
+
+/** 更新器自身安装包的下载进度。 */
+export function connectAppUpdateProgress(): () => void {
+  return subscribeAppUpdate((event) => useAppStore.getState().applyAppUpdateProgress(event));
 }
 
 /**

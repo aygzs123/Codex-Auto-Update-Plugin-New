@@ -11,6 +11,8 @@ declare global {
       invoke<T>(command: string, args?: Record<string, unknown>): Promise<T>;
       onMenuAction(callback: (action: string) => void): () => void;
       onProgress(callback: (payload: ProgressEvent) => void): () => void;
+      /** 更新器自身安装包的下载进度（独立于 Codex 安装链路）。 */
+      onAppUpdateProgress(callback: (payload: { received: number; total: number }) => void): () => void;
       /** 后台模式下主进程每 6 小时敲一次，界面据此重跑一次静默检查。 */
       onBackgroundCheck(callback: () => void): () => void;
       window: {

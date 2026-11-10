@@ -113,6 +113,13 @@ Copy the plugin directory to
   by hand (see [`docs/rollback.md`](docs/rollback.md)).
 - **Plugin self-update**: compares local and remote `plugin.json` versions and updates
   the plugin from GitHub when the remote is newer.
+- **Updater self-update (desktop app)**: "Settings → About" checks this repository's
+  `desktop-v*` Releases, downloads a newer build in-app, verifies it against the
+  SHA-256 published by GitHub, installs it silently and restarts.
+- **Release announcements**: [`desktop/CHANGELOG.md`](desktop/CHANGELOG.md) is the single
+  source — the release workflow uses the matching section as the Release body and the
+  in-app bell shows the timeline of past releases (see
+  [`desktop/README.md`](desktop/README.md)).
 - **Web UI**: local, button-driven, with logs streaming over SSE.
 - **Health check + window probe**: detects "process running but no main window" and
   states the verdict the evidence supports (still preparing / the official
@@ -367,7 +374,7 @@ checks: [`docs/development.md`](docs/development.md).
 ```powershell
 cd desktop
 npm test                 # unit tests, no network
-npm run verify:render    # loads dist/ into Electron and runs thirteen UI scenarios
+npm run verify:render    # loads dist/ into Electron and runs fourteen UI scenarios
 npm run verify:simulate  # simulates the install pipeline, no download, no install
 npm run electron:dev     # development run
 npm run electron:build   # package a Windows x64 NSIS .exe

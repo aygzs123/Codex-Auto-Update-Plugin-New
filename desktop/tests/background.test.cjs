@@ -103,12 +103,14 @@ test("通知只在弹出成功之后才记账，且点开只是显示窗口", ()
 });
 
 test("只有发现新版本才提醒，且提醒失败不留痕迹", () => {
+  // 提醒哪个版本不直接读 update：要提醒的是 policy 给出的目标版本 ——
+  // 这样「商店说能更新、但策略认为没必要」时不会误报。
   assert.match(
     app,
-    /if \(update\.updateAvailable && update\.availableVersion\) \{[\s\S]*?notify_update/,
-    "应当只在「可更新且有版本号」时调 notify_update",
+    /if \(policy\.updateAvailable && policy\.targetVersion\) \{[\s\S]*?notify_update/,
+    "应当只在「策略认为可更新、且有目标版本」时调 notify_update",
   );
-  assert.match(app, /notify_update", \{ version: update\.availableVersion \}\)\.catch\(\(\) => \{\}\)/, "通知发不出去不该在界面上留下错误");
+  assert.match(app, /notify_update", \{ version: policy\.targetVersion \}\)\.catch\(\(\) => \{\}\)/, "通知发不出去不该在界面上留下错误");
 });
 
 test("Windows 上要先设 AUMID，否则通知根本不显示", () => {
