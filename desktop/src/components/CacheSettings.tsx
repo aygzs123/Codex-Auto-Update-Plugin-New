@@ -22,8 +22,8 @@ import { Icon } from "./Icons";
  *   2. **一个写明后果的清空入口**。它是用户唯一的回收手段，所以不能藏在「打开缓存目录、
  *      自己去挑着删」后面（那正是版本历史卡片刻意不做删除按钮的原因：逐行删除太容易误点）。
  *      清空走主进程的原生确认框，默认按钮是「取消」。
- *   3. **换目录是一步到位的**。选一个文件夹，缓存固定落在它的 `Codex Updater\downloads`
- *      子目录里；旧安装包是「要不要一起搬」的可选项 —— 不搬就只切设置，搬就一次做完
+ *   3. **换目录是一步到位的**。缓存直接放在所选文件夹里；旧安装包是可选项，
+ *      不搬就只切设置，搬就一次做完
  *      「复制 → 校验 → 切换 → 清理」。失败或取消时源目录与设置都不动。
  *
  * 读取失败时不再显示上一轮的文件列表：那份列表可能已经指向不存在的文件。摘要改成
@@ -93,7 +93,7 @@ export function CacheSettings({
   // 每次新的预检结果都把勾选拨回默认值，避免上一轮的选择莫名延续。
   useEffect(() => {
     if (!migrationPlan) return;
-    setCarryOver(true);
+    setCarryOver(migrationPlan.files.length > 0);
     cancelRef.current?.focus();
   }, [migrationPlan]);
 
@@ -146,8 +146,7 @@ export function CacheSettings({
             <span className="aside">{usageText}</span>
           </div>
           <p>
-            下载的安装包放在这里。换位置时会在所选文件夹下新建{" "}
-            <code>Codex Updater\downloads</code>。
+            可选择任意盘符下的文件夹，安装包直接保存到所选位置。
           </p>
           <div className="path-row">
             <input
@@ -164,7 +163,7 @@ export function CacheSettings({
               title={
                 busy || migrationRunning
                   ? "有命令正在执行，等它结束再换目录"
-                  : "选一个文件夹，缓存会放在它下面的 Codex Updater\\downloads"
+                  : "选择安装包保存位置，不会自动添加子目录"
               }
               onClick={onPick}
             >
@@ -182,7 +181,7 @@ export function CacheSettings({
             )}
           </div>
           <p className="field-help">
-            默认在用户 AppData（C 盘），几次更新后会占几个 GB。
+            建议选择空间充足的磁盘和专用文件夹。
             {storage?.download
               ? ` 当前磁盘剩余 ${formatBytes(storage.download.freeBytes)} / ${formatBytes(storage.download.totalBytes)}。`
               : ""}
@@ -285,16 +284,21 @@ export function CacheSettings({
               </label>
             )}
             <p className="field-help">
-              迁移期间请不要关闭更新器；复制并校验通过后才会切换设置。
+              {migrationPlan.files.length === 0
+                ? "当前没有安装包，确认后新下载将保存到此位置。"
+                : "复制并校验通过后才切换目录；仅切换时，旧安装包保留在原处。"}
             </p>
             <div className="dash-actions">
               <button ref={cancelRef} type="button" className="button" onClick={onDismissMigration}>
                 取消
               </button>
+              <button type="button" className="button" onClick={onPick} disabled={busy}>
+                重新选择文件夹…
+              </button>
               <button
                 type="button"
                 className="button primary"
-                disabled={carryOver && migrationPlan.totalBytes > migrationPlan.freeBytes}
+                disabled={busy || (carryOver && migrationPlan.totalBytes > migrationPlan.freeBytes)}
                 onClick={() => onApply(carryOver)}
               >
                 {carryOver ? "迁移并切换" : "只切换目录"}

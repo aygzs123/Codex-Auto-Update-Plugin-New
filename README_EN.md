@@ -8,6 +8,12 @@ Keep the **Microsoft Store / MSIX build of Codex Desktop** up to date on Windows
 deal with the potholes on the way: packages that need administrator rights, an update
 that leaves no window behind, and wanting the previous version back.
 
+**Desktop 0.5.2** saves the cache directly in your chosen folder and adds a folder
+picker with an explicit Windows storage-location preview for app migration. It also
+fixes empty-cache switching, migration file protection and elevation cancellation.
+[Download 0.5.2](https://github.com/aygzs123/Codex-Auto-Update-Plugin-New/releases/tag/desktop-v0.5.2)
+· [Release notes](desktop/CHANGELOG.md)
+
 ![Codex Updater UI](docs/images/app-ready.png)
 
 | Diagnostics and repair | Dark theme settings |
@@ -48,9 +54,9 @@ in this repository (the Web UI calls exactly the plugin's scripts).
 ## Requirements
 
 - **Windows 10 / 11**, x64.
-- **Codex Desktop must be the Microsoft Store / MSIX build.** A non-Store build (a
-  self-downloaded installer, a third-party distribution) has no Store entry, and the
-  whole chain is a no-op for it.
+- **Codex Desktop must be a Microsoft Store / MSIX package registered with Windows.**
+  Support depends on package type and registration, not where it was downloaded.
+  Portable and other non-MSIX installations are outside the supported scope.
 - **Windows PowerShell 5.1** (`powershell.exe`). The scripts deliberately do not
   support PowerShell 7 / `pwsh` — see
   [Three implementation constraints](#three-implementation-constraints).
@@ -126,8 +132,9 @@ Copy the plugin directory to
   packages from the version history (see [`docs/rollback.md`](docs/rollback.md)). The
   cache can be migrated to another drive: precheck the target, copy each file while
   comparing SHA-256, switch the setting only after every file verifies, then clean up
-  the source. A failed or cancelled migration leaves both the source and the setting
-  untouched.
+  the source. Failure or cancellation before committing leaves the source and setting
+  untouched. Cancellation after committing only stops further cleanup; changed source
+  files are retained and reported.
 - **Plugin self-update**: compares local and remote `plugin.json` versions and updates
   the plugin from GitHub when the remote is newer.
 - **Updater self-update (desktop app)**: "Settings → About" checks this repository's
@@ -141,13 +148,14 @@ Copy the plugin directory to
   free space and treats the installer cache, the Codex app package and user data
   separately.
 - **Storage management (desktop app)**: the cache directory can be changed, cleared or
-  moved. Pick any folder: the cache lives in its `Codex Updater\downloads` subfolder, and
+  moved. Pick any folder: the cache lives directly in that folder, with no added suffix, and
   a checkbox decides whether existing installers come along (if so, every file is copied
   and verified by SHA-256 before the setting is switched). The Codex app package is first
-  checked read-only (package identity, current AppxVolume, Windows-recognised target
-  volumes); after confirmation it is moved with Windows' own `Move-AppxPackage`. Nothing
-  copies WindowsApps, changes ownership or creates junctions. Config, sessions, logs and
-  projects are explicitly **not** migrated with the app.
+  checked read-only. A folder picker then identifies the target application volume and
+  shows both the selected folder and Windows' actual app storage location. MSIX packages
+  cannot be installed into arbitrary subfolders. After confirmation, migration uses
+  `Move-AppxPackage`; projects and data outside Windows package management are not moved
+  by this tool. Windows handles package-managed application data.
 - **Update announcements**: [`desktop/CHANGELOG.md`](desktop/CHANGELOG.md) is the single
   source — the in-app bell lists what changed in each version (version, date, items),
   with no publishing-platform jargon and no external links (see
@@ -170,16 +178,17 @@ no main window" bug and offers the repair entry point, and a failed signature ch
 **aborts the install**.
 
 The "installer cache" card shows how many packages the cache holds and how much space
-they take, next to "open cache directory" and "clear cache" — that directory holds both
-the downloaded installers and the install logs. Changing the location takes one folder
-pick: the cache lands in its `Codex Updater\downloads` subfolder, and existing installers
+they take, next to "open cache directory" and "clear cache". Runtime logs have a separate
+"open logs directory" entry. Changing the location takes one folder
+pick: the cache uses that exact folder, and existing installers
 move only if you tick the checkbox; migrating copies and verifies every file by SHA-256
 before switching the setting. The "Version History" card
 provides the rollback entry point and can be hidden by anyone who does not need it
 (it only hides the card — it changes no behaviour). Settings → Storage also separates
 the "Codex app package" from "user data": the former is checked read-only and can be
-moved only to a Windows-recognised AppxVolume (not an arbitrary folder); the latter is
-explicitly not offered for migration and is never moved along by accident. "Keep running in the tray" and
+moved only to a mounted Windows-recognised AppxVolume. The folder picker previews the
+actual WindowsApps location before confirmation. Projects and data outside package
+management require separate handling. "Keep running in the tray" and
 "Start with Windows" are **optional and off by default**; when enabled they only check
 once and post a system notification for a new version — they **never install
 automatically**, because an install requiring administrator rights is always started by

@@ -13,7 +13,10 @@ const {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   rmSync,
+  rmdirSync,
+  symlinkSync,
   writeFileSync,
 } = require("node:fs");
 const { tmpdir } = require("node:os");
@@ -187,7 +190,7 @@ test("迁移：目标同名但内容不同时中止，不覆盖、不切换、�
     assert.equal(switched, false, "校验失败时绝不能切换设置");
     assert.equal(readFileSync(join(space.target, PKG_A), "utf8"), "different!", "已有文件不能被覆盖");
     assert.equal(readFileSync(join(space.source, PKG_A), "utf8"), "source-content", "源文件必须保留");
-    assert.ok(!existsSync(join(space.target, `.${PKG_A}.codex-migrating`)), "临时文件要清理");
+    assert.ok(!readdirSync(space.target).some((name) => name.endsWith(".codex-migrating")), "临时文件要清理");
   } finally {
     space.cleanup();
   }
@@ -215,10 +218,100 @@ test("迁移：取消发生在复制阶段时，源目录与设置都不动，�
     assert.equal(switched, false, "取消后不能切换设置");
     assert.ok(existsSync(join(space.source, PKG_A)), "源文件必须保留");
     assert.ok(existsSync(join(space.source, PKG_B)), "源文件必须保留");
-    assert.ok(!existsSync(join(space.target, `.${PKG_A}.codex-migrating`)), "临时文件要清理");
+    assert.ok(!readdirSync(space.target).some((name) => name.endsWith(".codex-migrating")), "临时文件要清理");
   } finally {
     space.cleanup();
   }
+});
+
+test("空缓存及尚未创建的缓存目录均可预检，目标就是所选文件夹", async () => {
+  const space = workspace();
+  try {
+    for (const source of [space.source, join(space.root, "missing")]) {
+      const plan = await migration.precheck({ sourceDirectory: source, targetDirectory: space.target });
+      assert.deepEqual(plan.files, []);
+      assert.equal(plan.totalBytes, 0);
+      assert.equal(plan.targetDirectory, space.target);
+      assert.deepEqual(readdirSync(space.target), []);
+    }
+  } finally { space.cleanup(); }
+});
+
+test("非法路径不会锁死后续迁移", async () => {
+  const space = workspace();
+  try {
+    await assert.rejects(migration.migrate({ sourceDirectory: "relative", targetDirectory: space.target }), /绝对路径/);
+    const result = await migration.migrate({ sourceDirectory: space.source, targetDirectory: space.target, switchDirectory() {} });
+    assert.equal(result.ok, true);
+  } finally { space.cleanup(); }
+});
+
+test("目录联接指向源目录时拒绝迁移，保留源文件", async () => {
+  const space = workspace();
+  try {
+    space.write(space.source, PKG_A, "original");
+    symlinkSync(space.source, space.target, process.platform === "win32" ? "junction" : "dir");
+    await assert.rejects(migration.precheck({ sourceDirectory: space.source, targetDirectory: space.target }), /相同/);
+    assert.equal(readFileSync(join(space.source, PKG_A), "utf8"), "original");
+  } finally {
+    // 先解除本测试创建的目录联接，避免 Windows 下递归清理遇到悬空联接。
+    if (existsSync(space.target)) rmdirSync(space.target);
+    space.cleanup();
+  }
+});
+
+test("源文件被同大小内容替换时保留，不误报已释放空间", async () => {
+  for (const alreadyPresent of [false, true]) {
+    const space = workspace();
+    try {
+      space.write(space.source, PKG_A, "original");
+      if (alreadyPresent) {
+        mkdirSync(space.target);
+        space.write(space.target, PKG_A, "original");
+      }
+      const result = await migration.migrate({
+        sourceDirectory: space.source, targetDirectory: space.target,
+        switchDirectory() { space.write(space.source, PKG_A, "replaced"); },
+      });
+      assert.equal(result.ok, true);
+      assert.equal(result.cleanedCount, 0);
+      assert.equal(result.cleanupFailures.length, 1);
+      assert.equal(readFileSync(join(space.source, PKG_A), "utf8"), "replaced");
+      assert.equal(readFileSync(join(space.target, PKG_A), "utf8"), "original");
+    } finally { space.cleanup(); }
+  }
+});
+
+test("预检后新出现的同名文件不会被覆盖，设置不会切换", async () => {
+  const space = workspace();
+  try {
+    space.write(space.source, PKG_A, "original");
+    let switched = false;
+    let injected = false;
+    await assert.rejects(migration.migrate({
+      sourceDirectory: space.source, targetDirectory: space.target,
+      onProgress() {
+        if (!injected) { injected = true; space.write(space.target, PKG_A, "external"); }
+      },
+      switchDirectory() { switched = true; },
+    }), /exist/i);
+    assert.equal(switched, false);
+    assert.equal(readFileSync(join(space.target, PKG_A), "utf8"), "external");
+    assert.equal(readFileSync(join(space.source, PKG_A), "utf8"), "original");
+    assert.deepEqual(readdirSync(space.target), [PKG_A]);
+  } finally { space.cleanup(); }
+});
+
+test("设置保存失败时保留源文件", async () => {
+  const space = workspace();
+  try {
+    space.write(space.source, PKG_A, "original");
+    await assert.rejects(migration.migrate({
+      sourceDirectory: space.source, targetDirectory: space.target,
+      switchDirectory() { throw new Error("设置不可写"); },
+    }), /设置不可写/);
+    assert.equal(readFileSync(join(space.source, PKG_A), "utf8"), "original");
+  } finally { space.cleanup(); }
 });
 
 // ---------- runner ----------

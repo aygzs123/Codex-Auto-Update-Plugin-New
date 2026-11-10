@@ -78,11 +78,13 @@ function Write-Result {
         [bool]$Ok,
         $InstallLocation,
         $Version,
-        [string]$Message
+        [string]$Message,
+        [bool]$Cancelled = $false
     )
 
     $json = ([ordered]@{
             ok              = $Ok
+            cancelled       = $Cancelled
             installLocation = $InstallLocation
             version         = $Version
             message         = $Message
@@ -112,7 +114,7 @@ catch {
 }
 
 $targetVolume = $volumes |
-    Where-Object { [string]$_.PackageStorePath -ieq $Volume } |
+    Where-Object { [string]$_.PackageStorePath -ieq $Volume -and -not $_.IsOffline } |
     Select-Object -First 1
 
 if (-not $targetVolume) {
@@ -165,8 +167,18 @@ if (-not (Test-Elevated) -and -not $ElevatedWorker) {
         try { $null = $child.ExitCode } catch { }
     }
     catch {
+        # 只有 Win32 ERROR_CANCELLED 才属于用户取消，其他提权错误仍应显示为失败。
+        $cause = $_.Exception
+        $cancelled = $false
+        while ($null -ne $cause) {
+            if ($cause -is [System.ComponentModel.Win32Exception] -and $cause.NativeErrorCode -eq 1223) {
+                $cancelled = $true
+                break
+            }
+            $cause = $cause.InnerException
+        }
         Write-Result -Ok $false -InstallLocation $package.InstallLocation -Version ([string]$package.Version) `
-            -Message "已取消或无法请求管理员权限，Codex 没有被迁移。"
+            -Cancelled $cancelled -Message $(if ($cancelled) { "已取消管理员授权，Codex 没有被迁移。" } else { "无法请求管理员权限，Codex 没有被迁移。" })
         exit 3
     }
 
@@ -220,7 +232,7 @@ try {
     }
 
     Write-Result -Ok $true -InstallLocation $newLocation -Version ([string]$moved.Version) `
-        -Message ("Codex 已迁移到 {0}。配置、会话与项目目录仍在原来的用户目录。" -f $newLocation)
+        -Message ("Codex 已迁移到 {0}。项目与包管理范围外的用户数据需单独管理。" -f $newLocation)
     exit 0
 }
 catch {

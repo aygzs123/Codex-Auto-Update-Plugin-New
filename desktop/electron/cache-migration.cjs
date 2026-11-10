@@ -7,13 +7,13 @@
 // 几条硬约束，都是「宁可什么都不做，也不能把用户回退用的安装包弄丢」：
 //   - 预检与执行各枚举一次源目录，执行时不复用界面拿到的清单（那是可以过期的数据）；
 //   - 目标目录已有同名文件时先比大小、再比 SHA-256：内容相同才跳过，不同立即中止，绝不覆盖；
-//   - 每个文件先写到临时名，校验通过后才改名为正式文件名 —— 中途失败不会留下一个
+//   - 每个文件先写到临时名，校验通过后才排他发布为正式文件名 —— 复制失败不会留下一个
 //     看起来完整、实际缺半截的安装包；
 //   - 复制与校验全部通过后才切换设置；设置写失败时源目录原样保留；
 //   - 源文件清理失败逐个报告，界面据此提示「原目录仍有文件」，不虚报已释放空间。
 
-const { createHash } = require("node:crypto");
-const { createReadStream } = require("node:fs");
+const { createHash, randomUUID } = require("node:crypto");
+const { createReadStream, constants } = require("node:fs");
 const fsp = require("node:fs/promises");
 const { dirname, isAbsolute, join, resolve, sep } = require("node:path");
 
@@ -67,6 +67,7 @@ async function listMigratableFiles(directory) {
   try {
     entries = await fsp.readdir(directory, { withFileTypes: true });
   } catch (error) {
+    if (error.code === "ENOENT") return [];
     throw new Error(describeStatFailure(error, directory));
   }
 
@@ -139,7 +140,7 @@ function assertAbsoluteDirectory(value, label) {
 }
 
 /**
- * 预检：只读，除了在目标目录写一个探针文件。返回给界面确认用的摘要。
+ * 预检：可创建目标目录并写入探针，不迁移源文件、不修改设置。返回界面确认用的摘要。
  * 这个结果**不是**执行授权，migrate 会重新枚举一次。
  */
 async function precheck({ sourceDirectory, targetDirectory }) {
@@ -148,13 +149,17 @@ async function precheck({ sourceDirectory, targetDirectory }) {
   assertDistinctDirectories(source, target);
 
   const files = await listMigratableFiles(source);
-  if (files.length === 0) throw new Error("当前缓存目录里没有可迁移的安装包。");
 
   try {
     await fsp.mkdir(target, { recursive: true });
   } catch (error) {
     throw new Error(`无法创建目标目录：${error?.message || error}`);
   }
+  const realSource = await fsp.realpath(source).catch((error) => {
+    if (error.code === "ENOENT") return source;
+    throw error;
+  });
+  assertDistinctDirectories(realSource, await fsp.realpath(target));
   await assertWritable(target);
 
   const space = await freeSpaceFor(target);
@@ -193,8 +198,9 @@ async function hashFile(path) {
  */
 async function copyFile(sourcePath, targetPath, onBytes) {
   const source = await fsp.open(sourcePath, "r");
-  const target = await fsp.open(targetPath, "w");
+  let target;
   try {
+    target = await fsp.open(targetPath, "wx");
     const hash = createHash("sha256");
     const buffer = Buffer.allocUnsafe(COPY_CHUNK);
     let position = 0;
@@ -203,7 +209,12 @@ async function copyFile(sourcePath, targetPath, onBytes) {
       const { bytesRead } = await source.read(buffer, 0, buffer.length, position);
       if (bytesRead === 0) break;
       hash.update(buffer.subarray(0, bytesRead));
-      await target.write(buffer, 0, bytesRead, position);
+      let written = 0;
+      while (written < bytesRead) {
+        const { bytesWritten } = await target.write(buffer, written, bytesRead - written, position + written);
+        if (bytesWritten === 0) throw new Error("写入目标文件失败，源文件已保留。");
+        written += bytesWritten;
+      }
       position += bytesRead;
       onBytes(bytesRead);
     }
@@ -212,12 +223,24 @@ async function copyFile(sourcePath, targetPath, onBytes) {
     return { sha256: hash.digest("hex"), sizeBytes: position };
   } finally {
     await source.close().catch(() => {});
-    await target.close().catch(() => {});
+    await target?.close().catch(() => {});
   }
 }
 
 async function partPathFor(directory, name) {
-  return join(directory, `.${name}${PART_SUFFIX}`);
+  return join(directory, `.${name}.${randomUUID()}${PART_SUFFIX}`);
+}
+
+async function publishFile(partPath, targetPath) {
+  try {
+    // 硬链接发布不会覆盖预检后新出现的同名文件，且无需额外复制大包。
+    await fsp.link(partPath, targetPath);
+  } catch (error) {
+    if (!["ENOTSUP", "EOPNOTSUPP", "EPERM", "ENOSYS"].includes(error.code)) throw error;
+    // 不支持硬链接的文件系统仍坚持排他创建；失败时源缓存与设置保留。
+    await fsp.copyFile(partPath, targetPath, constants.COPYFILE_EXCL);
+  }
+  await fsp.unlink(partPath);
 }
 
 /**
@@ -232,11 +255,11 @@ async function partPathFor(directory, name) {
  */
 async function migrate({ sourceDirectory, targetDirectory, switchDirectory, onProgress }) {
   if (migrationActive) throw new Error("已有一次缓存迁移在进行中。");
+  const source = assertAbsoluteDirectory(sourceDirectory, "源目录");
+  const target = assertAbsoluteDirectory(targetDirectory, "目标目录");
   migrationActive = true;
   cancelRequested = false;
 
-  const source = assertAbsoluteDirectory(sourceDirectory, "源目录");
-  const target = assertAbsoluteDirectory(targetDirectory, "目标目录");
   const result = {
     ok: false,
     cancelled: false,
@@ -298,8 +321,11 @@ async function migrate({ sourceDirectory, targetDirectory, switchDirectory, onPr
       result.skippedCount += 1;
       copiedFiles += 1;
       processedBytes += file.sizeBytes;
-      pending.push({ ...file, alreadyPresent: true });
+      pending.push({ ...file, alreadyPresent: true, sha256: sourceHash });
     }
+
+    const requiredBytes = pending.reduce((sum, file) => sum + (file.alreadyPresent ? 0 : file.sizeBytes), 0);
+    if (requiredBytes > plan.freeBytes) throw new Error("目标磁盘空间不足或无法确认可用空间，请更换目录后重试。");
 
     // 复制。单个文件失败（含取消）会抛出，下面的 catch 会清掉本轮的临时文件。
     const createdParts = new Set();
@@ -309,8 +335,6 @@ async function migrate({ sourceDirectory, targetDirectory, switchDirectory, onPr
         if (isCancelled()) throw cancelledError();
         const partPath = await partPathFor(target, file.name);
         createdParts.add(partPath);
-        // 上一次中断留下的临时文件没有价值，直接覆盖。
-        await fsp.unlink(partPath).catch(() => {});
         emitProgress(file.name, true);
         const copied = await copyFile(join(source, file.name), partPath, (bytes) => {
           result.copiedBytes += bytes;
@@ -322,7 +346,8 @@ async function migrate({ sourceDirectory, targetDirectory, switchDirectory, onPr
         if (targetHash !== copied.sha256) {
           throw new Error(`文件校验失败：${file.name}。目标副本已删除，源文件未改动。`);
         }
-        await fsp.rename(partPath, join(target, file.name));
+        file.sha256 = copied.sha256;
+        await publishFile(partPath, join(target, file.name));
         createdParts.delete(partPath);
         result.copiedCount += 1;
         copiedFiles += 1;
@@ -349,14 +374,22 @@ async function migrate({ sourceDirectory, targetDirectory, switchDirectory, onPr
       try {
         // 复制期间源文件若被替换/追加，就不再删它 —— 删掉的可能不是我们校验过的那份。
         const current = await fsp.stat(sourcePath);
-        if (!current.isFile() || current.size !== file.sizeBytes) {
+        if (!current.isFile() || current.size !== file.sizeBytes ||
+            await hashFile(sourcePath) !== file.sha256 ||
+            await hashFile(join(target, file.name)) !== file.sha256) {
           result.cleanupFailures.push({ name: file.name, message: "文件在迁移期间发生变化，已保留" });
+          continue;
+        }
+        const afterHash = await fsp.stat(sourcePath);
+        if (afterHash.mtimeMs !== current.mtimeMs || afterHash.ino !== current.ino || afterHash.size !== current.size) {
+          result.cleanupFailures.push({ name: file.name, message: "文件在校验期间发生变化，已保留" });
           continue;
         }
         await fsp.unlink(sourcePath);
         result.cleanedCount += 1;
       } catch (error) {
-        if (error && error.code === "ENOENT") {
+        if (error && error.code === "ENOENT" &&
+            await fsp.lstat(sourcePath).then(() => false, (cause) => cause.code === "ENOENT")) {
           result.cleanedCount += 1;
           continue;
         }

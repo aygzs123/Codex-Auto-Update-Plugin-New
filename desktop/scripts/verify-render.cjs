@@ -292,10 +292,12 @@ const STUB_STORAGE = {
   download: { path: CACHE_DIRECTORY, totalBytes: 512_000_000_000, freeBytes: 238_000_000_000 },
   install: { path: INSTALL_LOCATION, totalBytes: 512_000_000_000, freeBytes: 238_000_000_000 },
 };
-// 用户选的是普通文件夹；真正的缓存目录是它下面的 Codex Updater\downloads，
-// 由界面前缀拼接后交给 precheck_cache_migration。
+// 缓存目录必须等于用户选择，不允许再追加固定子目录。
 const MIGRATION_FOLDER = "E:\\Codex 缓存";
-const MIGRATION_TARGET = `${MIGRATION_FOLDER}\\Codex Updater\\downloads`;
+const MIGRATION_TARGET = MIGRATION_FOLDER;
+let cachePickerPath = MIGRATION_FOLDER;
+let emptyMigration = false;
+let cancelCachePick = false;
 const STUB_APP_CAPABILITY = {
   installed: true,
   version: "26.901.6511.0",
@@ -444,7 +446,7 @@ function registerStubHandlers() {
         // 预检只读；返回一份与缓存夹具一致的清单。注意这里**不是**授权：
         // 真正的 migrate_cache 桩永远不会被调用（场景断言它的调用次数是 0）。
         const target = String(args?.targetDirectory ?? MIGRATION_TARGET);
-        const files = STUB_CACHED_PACKAGES.packages.map((pkg) => ({
+        const files = (emptyMigration ? [] : STUB_CACHED_PACKAGES.packages).map((pkg) => ({
           name: pkg.path.split("\\").pop(),
           sizeBytes: pkg.sizeBytes,
         }));
@@ -458,7 +460,13 @@ function registerStubHandlers() {
         };
       }
       case "pick_directory":
-        return storageScenario ? { canceled: false, path: MIGRATION_FOLDER } : { canceled: true };
+        return storageScenario && !cancelCachePick ? { canceled: false, path: cachePickerPath } : { canceled: true };
+      case "pick_app_migration_directory":
+        return {
+          selectedDirectory: "F:\\团队工具\\Codex",
+          volumePath: "F:\\WindowsApps",
+          reason: "应用由 Windows 安装在此卷的 WindowsApps 下。",
+        };
       case "migrate_cache":
         // 场景里只走到确认块就取消。真的被调用说明「确认前不许动」这条被破坏了，
         // 场景断言会失败；这里仍然给一个诚实的取消结果，别让流程卡死。
@@ -1890,7 +1898,7 @@ async function main() {
       problems.push(`选「跟随系统」后偏好没有回到 system：${JSON.stringify(systemTheme)}`);
     }
 
-    // 2) 缓存换目录：选一个普通文件夹 → 自动落到 <所选>\Codex Updater\downloads →
+    // 2) 缓存换目录：选一个普通文件夹 → 直接使用所选路径 →
     //    确认块（默认勾选「一起搬旧安装包」）→ 先取消，确认什么也没改；
     //    再选一次、取消勾选 → 「只切换目录」真的只写设置，migrate_cache 一次都不发。
     await clickTab("storage");
@@ -1916,8 +1924,8 @@ async function main() {
     if (!confirm) {
       problems.push("点了「更改位置」之后没有出现确认块");
     } else {
-      // 目标路径必须是「所选文件夹 + Codex Updater\downloads」，不能把安装包直接铺在所选文件夹里。
-      if (!confirm.title.includes(MIGRATION_TARGET)) {
+      // 目标必须完全等于所选文件夹，不能偷偷拼接后缀。
+      if (confirm.title !== `缓存目录改为 ${MIGRATION_TARGET}`) {
         problems.push(`确认块没有说清缓存会落在哪里：${confirm.title}`);
       }
       if (confirm.groupLabel !== "确认迁移缓存") problems.push(`确认块缺少无障碍分组名：${confirm.groupLabel}`);
@@ -1995,7 +2003,34 @@ async function main() {
       problems.push(`切换目录后输入框没有显示新目录：${switched.input || "(空)"}`);
     }
 
-    // 3) 应用本体：只读检测 → 候选卷 → 执行。执行桩回「已取消」，界面必须是提示而非错误。
+    // 2c) 空缓存也必须先确认；取消原生文件夹选择不能改目录。
+    await run(`document.querySelector(".modal-dialog button")?.click()`);
+    cachePickerPath = "E:\\团队工具\\空缓存";
+    emptyMigration = true;
+    await clickButton("更改位置");
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    const emptyConfirm = await run(`(() => ({
+      title: document.querySelector('.confirm-block strong')?.textContent,
+      button: document.querySelector('.confirm-block .button.primary')?.textContent.trim(),
+      checkbox: !!document.querySelector('.confirm-check'),
+    }))()`);
+    if (emptyConfirm.title !== `缓存目录改为 ${cachePickerPath}` || emptyConfirm.button !== "只切换目录" || emptyConfirm.checkbox) {
+      problems.push(`空缓存确认状态不正确：${JSON.stringify(emptyConfirm)}`);
+    }
+    if (commandArgs.save_settings?.downloadDirectory !== MIGRATION_TARGET) problems.push("空缓存未经确认就切换目录");
+    await clickButton("只切换目录", ".confirm-block");
+    await new Promise((resolve) => setTimeout(resolve, 450));
+    if (commandArgs.save_settings?.downloadDirectory !== cachePickerPath) problems.push("空缓存确认后未保存所选文件夹");
+    if ((commandCalls.migrate_cache || 0) !== 0) problems.push("空缓存不应该发起文件迁移");
+    await run(`document.querySelector(".modal-dialog button")?.click()`);
+    cancelCachePick = true;
+    const savesBeforeCancel = commandCalls.save_settings || 0;
+    await clickButton("更改位置");
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    if ((commandCalls.save_settings || 0) !== savesBeforeCancel) problems.push("取消选目录后仍保存了设置");
+    if (await run(`!!document.querySelector('.confirm-block')`)) problems.push("取消选目录后不应出现迁移确认");
+
+    // 3) 应用本体：只读检测 → 选择文件夹 → 执行。桩回「已取消」，界面必须是提示而非错误。
     const stateBeforeDetect = await run(
       `(() => document.querySelector(".detect-state")?.textContent.trim() ?? "")()`,
     );
@@ -2006,15 +2041,14 @@ async function main() {
     await new Promise((resolve) => setTimeout(resolve, 500));
     const capability = await run(`(() => {
       const block = document.querySelector(".capability-block");
-      const select = document.getElementById("app-target-volume");
+      const picker = document.getElementById("pick-app-directory");
       return {
         present: !!block,
         text: block?.textContent.trim() ?? "",
         state: document.querySelector(".detect-state")?.textContent.trim() ?? "",
-        hasSelect: !!select,
-        options: select ? [...select.options].map((option) => option.value) : [],
+        hasPicker: !!picker,
         hasMoveButton: [...document.querySelectorAll("button")].some((button) =>
-          button.textContent.includes("迁移到所选卷"),
+          button.textContent.includes("确认迁移应用"),
         ),
       };
     })()`);
@@ -2026,29 +2060,24 @@ async function main() {
     if (!capability.state.includes("检测完成")) {
       problems.push(`检测之后状态行没有更新：${capability.state || "(没有状态行)"}`);
     }
-    if (
-      !capability.hasSelect ||
-      capability.options.length !== 2 ||
-      capability.options[0] !== "E:\\WindowsApps" ||
-      capability.options[1] !== "F:\\WindowsApps"
-    ) {
-      problems.push(`候选目标卷不对：${capability.options.join(" / ") || "(没有下拉框)"}`);
-    }
-    if (!capability.hasMoveButton) problems.push("检测通过后没有出现「迁移到所选卷」按钮");
+    if (!capability.hasPicker) problems.push("检测后没有出现目标文件夹选择入口");
+    if (!capability.hasMoveButton) problems.push("检测通过后没有出现「确认迁移应用」按钮");
 
-    // 选第二个候选卷：下拉框必须是受控的，重测之后不会留着旧值。
+    // 通过目录选择器指定目标，同时展示系统真实应用存储位置。
+    await clickButton("选择目标文件夹");
+    await new Promise((resolve) => setTimeout(resolve, 400));
     const selectedVolume = await run(`(() => {
-      const select = document.getElementById("app-target-volume");
-      if (!select) return null;
-      select.selectedIndex = select.options.length - 1;
-      select.dispatchEvent(new Event("change", { bubbles: true }));
-      return select.value;
+      return {
+        folder: document.getElementById("app-selected-directory")?.textContent,
+        volume: document.getElementById("app-target-volume")?.textContent,
+      };
     })()`);
-    if (selectedVolume !== "F:\\WindowsApps") {
-      problems.push(`候选卷下拉框选不中第二项：${selectedVolume || "(空)"}`);
+    if (selectedVolume.volume !== "F:\\WindowsApps" || selectedVolume.folder !== "F:\\团队工具\\Codex") {
+      problems.push(`文件夹与实际安装位置展示不正确：${JSON.stringify(selectedVolume)}`);
     }
+    if ((commandCalls.move_codex_app || 0) !== 0) problems.push("选择文件夹后未经确认就迁移了应用");
 
-    await clickButton("迁移到所选卷");
+    await clickButton("确认迁移应用");
     await new Promise((resolve) => setTimeout(resolve, 600));
     const moveCalls = commandCalls.move_codex_app || 0;
     const moveVolume = String(commandArgs.move_codex_app?.volume ?? "");
@@ -2056,8 +2085,11 @@ async function main() {
       dialog: document.querySelector(".modal-dialog")?.textContent.trim() ?? "",
       error: document.querySelector(".error-text:not(.soft)")?.textContent.trim() ?? "",
     }))()`);
-    if (moveCalls !== 1) problems.push(`「迁移到所选卷」应发出 1 次 move_codex_app，实际 ${moveCalls} 次`);
+    if (moveCalls !== 1) problems.push(`「确认迁移应用」应发出 1 次 move_codex_app，实际 ${moveCalls} 次`);
     if (moveVolume !== "F:\\WindowsApps") problems.push(`迁移目标卷没有按所选值传下去：${moveVolume || "(空)"}`);
+    if (commandArgs.move_codex_app?.selectedDirectory !== "F:\\团队工具\\Codex") {
+      problems.push("执行迁移未传递所选文件夹，主进程无法重新验证映射");
+    }
     if (!moveState.dialog.includes("已取消迁移")) {
       problems.push(`取消迁移后应给出提示对话框，实际：${moveState.dialog || "(没有对话框)"}`);
     }

@@ -1,5 +1,6 @@
 import type {
   AppMigrationCapability,
+  AppMigrationTarget,
   CacheMigrationPlan,
   CacheMigrationProgress,
   CacheScanStatus,
@@ -53,6 +54,7 @@ export function StorageSettings({
   onApplyMigration,
   onCancelMigration,
   onDetectApp,
+  onPickApp,
   onMoveApp,
   onOpenInstallLocation,
   onOpenStorageSettings,
@@ -88,7 +90,8 @@ export function StorageSettings({
   onApplyMigration: (carryOver: boolean) => void;
   onCancelMigration: () => void;
   onDetectApp: () => void;
-  onMoveApp: (volume: string) => void;
+  onPickApp: () => Promise<AppMigrationTarget | null>;
+  onMoveApp: (target: AppMigrationTarget) => void;
   onOpenInstallLocation: () => void;
   onOpenStorageSettings: () => void;
   onCopyDiagnostics: () => void;
@@ -180,6 +183,7 @@ export function StorageSettings({
         capabilityCheckedAt={capabilityCheckedAt}
         appMigrating={appMigrating}
         onDetect={onDetectApp}
+        onPick={onPickApp}
         onMove={onMoveApp}
         onOpen={onOpen}
         onOpenInstallLocation={onOpenInstallLocation}
@@ -192,10 +196,10 @@ export function StorageSettings({
         <div className="set-block">
           <div className="line">
             <strong>用户数据</strong>
-            <span className="aside">不随应用迁移</span>
+            <span className="aside">单独管理</span>
           </div>
           <p className="field-help">
-            配置、会话、日志与项目目录由 Codex 自己管理，迁移应用或缓存都不会动它们。
+            本工具不迁移项目和包管理范围外的配置、会话及日志；Windows 管理的应用数据由系统处理。
           </p>
         </div>
       </section>

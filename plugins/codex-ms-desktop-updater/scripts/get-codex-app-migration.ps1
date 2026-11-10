@@ -57,7 +57,7 @@ function Get-AppxVolumeList {
     # Get-AppxVolume is missing on some older builds; treat that as "no known
     # secondary volumes" instead of failing the whole check.
     try {
-        return @(Get-AppxVolume -ErrorAction Stop)
+        return @(Get-AppxVolume -ErrorAction Stop | Where-Object { -not $_.IsOffline })
     }
     catch {
         return @()

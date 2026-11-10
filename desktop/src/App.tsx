@@ -23,7 +23,7 @@ import {
 } from "./lib/bridge";
 import { changelogAnnouncements, mergeAnnouncements } from "./lib/announcements";
 import { diagnosisCopy } from "./lib/diagnosis";
-import { cacheDirectoryUnder, samePath } from "./lib/paths";
+import { samePath } from "./lib/paths";
 import {
   formatBytes,
   formatClock,
@@ -733,6 +733,7 @@ export default function App() {
     refreshStorage,
     refreshCachedPackages,
     pickCacheFolder,
+    pickAppMigrationFolder,
     precheckCacheMigration,
     migrateCache,
     cancelCacheMigration,
@@ -1348,19 +1349,14 @@ export default function App() {
                         void (async () => {
                           const folder = await pickCacheFolder();
                           if (!folder) return;
-                          // 用户选的是「放在哪个文件夹」，真实缓存目录固定落在它下面的
-                          // Codex Updater\downloads，不把安装包直接铺在所选文件夹里。
-                          const target = cacheDirectoryUnder(folder);
+                          const target = folder;
                           if (!target) return;
                           if (samePath(target, cacheDirectory)) {
                             useAppStore.setState({ notice: "缓存目录已经在这个位置了，不需要更改。" });
                             return;
                           }
-                          // 预检会校验目标目录、建出子目录，并列出要搬的文件。
-                          const plan = await precheckCacheMigration(target);
-                          if (!plan) return;
-                          // 没有旧安装包就没什么可确认的，直接切过去。
-                          if (plan.files.length === 0) await saveDownloadDirectory(plan.targetDirectory);
+                          // 空缓存也先展示目标目录，确认后才修改设置。
+                          await precheckCacheMigration(target);
                         })();
                       }}
                       onDismissMigration={() => {
@@ -1380,14 +1376,15 @@ export default function App() {
                           const switched = await saveDownloadDirectory(target);
                           if (switched) {
                             useAppStore.setState({
-                              notice: `缓存目录已切换到 ${target}；原有安装包留在原目录，需要时可在「版本与缓存」里删除。`,
+                              notice: `缓存目录已切换到 ${target}；原有安装包仍在原目录，可通过资源管理器管理。`,
                             });
                           }
                         })();
                       }}
                       onCancelMigration={() => void cancelCacheMigration()}
                       onDetectApp={() => void detectAppMigration()}
-                      onMoveApp={(volume) => void moveCodexApp(volume)}
+                      onPickApp={pickAppMigrationFolder}
+                      onMoveApp={(target) => void moveCodexApp(target)}
                       onOpenInstallLocation={() => void openInstallLocation()}
                       onOpenStorageSettings={() => void invokeCommand("open_storage_settings").catch((cause) => {
                         useAppStore.setState({ error: cause instanceof Error ? cause.message : String(cause) });

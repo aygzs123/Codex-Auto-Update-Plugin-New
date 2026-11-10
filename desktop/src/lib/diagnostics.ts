@@ -67,8 +67,13 @@ export function diagnosticsText(input: DiagnosticsInput): string {
       cachedPackages ? `${cachedPackages.packages.length} 个，共 ${formatBytes(cachedBytes)}` : "未枚举"
     }`,
   );
-  // 缓存保留策略也要写：看到这份文本的人得知道「不清理」是当前的设计，不是出了故障。
-  lines.push("缓存保留策略：不自动清理（由用户在「安装包缓存」卡片里手动清空）");
+  const keepCount = settings?.cacheKeepCount ?? 0;
+  const retention = !settings
+    ? "未知（设置尚未读取）"
+    : keepCount > 0
+      ? `自动保留最近 ${keepCount} 个，已固定的安装包不参与清理`
+      : "不自动清理";
+  lines.push(`缓存保留策略：${retention}`);
   lines.push(`自定义缓存目录：${(settings?.downloadDirectory ?? "").trim() || "（未设置，用默认）"}`);
   lines.push(`最近一次安装日志：${installLogPath || "本次运行还没有安装记录"}`);
 

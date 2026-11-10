@@ -123,10 +123,9 @@ test("界面：安装位置原样放进只读输入框，不拼接也不截断",
   // 唯一允许的加工是「没有值时的占位文案」。
   assert.match(settingsSource, /value=\{installLocation \?\? "/, "有值时必须是原样的 installLocation");
   assert.match(settingsSource, /readOnly/);
-  // 说明文字必须点破「哪来的」和「迁移怎么动包」，否则用户会以为我们在自己猜路径。
-  assert.match(settingsSource, /Get-AppxPackage/);
-  assert.match(settingsSource, /不会复制 WindowsApps/);
-  assert.match(settingsSource, /真实安装位置为准/);
+  // 界面说明真实位置来源及系统限制，无需向普通用户展示命令名称。
+  assert.match(settingsSource, /Windows 报告的实际安装位置/);
+  assert.match(settingsSource, /MSIX 应用由系统存放在该卷的 WindowsApps/);
   // 应用本体迁移是真实能力，但前提是 Windows 认识那个卷；说明里不能承诺「一定能搬」。
   assert.match(settingsSource, /Move-AppxPackage|迁移条件/);
   // 按钮做它字面上说的事：打开安装目录。用户原话：「打开 window 存储位置为什么不是
@@ -139,12 +138,10 @@ test("界面：安装位置原样放进只读输入框，不拼接也不截断",
   assert.match(settingsSource, /打开 Windows 存储设置/);
   assert.match(settingsSource, /onOpenStorageSettings: \(\) => void;/);
 
-  // 候选卷下拉框必须是受控的：重新检测后候选集合可能变了，非受控的 defaultValue
-  // 只在挂载时生效，旧值会留下来 —— 界面看着选了第一项，实际提交空字符串，点「迁移」没反应。
-  assert.match(settingsSource, /value=\{targetVolume\}/, "目标卷下拉框必须是受控值");
-  assert.match(settingsSource, /onChange=\{(?:\(event\)|event) => setTargetVolume/, "目标卷下拉框必须写回 state");
-  assert.doesNotMatch(settingsSource, /defaultValue=\{targets\[0\]\.path\}/, "不许再用非受控的 defaultValue");
-  assert.match(settingsSource, /if \(targetVolume\) onMove\(targetVolume\)/, "迁移用的必须是下拉框当前选中的值");
+  // 目标来自用户选择的文件夹，重新检测后清空旧目标，执行时传递完整选择供主进程复核。
+  assert.match(settingsSource, /id="pick-app-directory"/);
+  assert.match(settingsSource, /setSelection\(null\)/);
+  assert.match(settingsSource, /if \(selection\?\.volumePath\) onMove\(selection\)/);
   // 点完「检测迁移条件」要有一处立刻换字，不能只把结果堆在下方区块里。
   assert.match(settingsSource, /detect-state/);
   assert.match(settingsSource, /检测完成/);

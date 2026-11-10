@@ -174,6 +174,13 @@ export interface AppVolume {
   totalBytes: number;
 }
 
+export interface AppMigrationTarget {
+  selectedDirectory: string;
+  /** 所选文件夹所在卷的 Windows 应用存储位置；无法迁移时为空。 */
+  volumePath: string | null;
+  reason: string;
+}
+
 export interface AppMigrationCapability {
   installed: boolean;
   version: string | null;

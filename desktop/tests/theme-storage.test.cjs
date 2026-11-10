@@ -153,9 +153,9 @@ test("存储：白名单、长命令与空间读取都接上了", () => {
   assert.match(main, /ms-settings:savelocations/);
 });
 
-test("缓存迁移：选文件夹 → 子目录 → 预检 → 复制 → SHA-256 校验 → 切换 → 清理，失败保留源", () => {
-  // 用户选的是普通文件夹，缓存固定落在它下面的 Codex Updater\downloads。
-  assert.match(app, /cacheDirectoryUnder\(folder\)/);
+test("缓存迁移：所选文件夹 → 预检 → 复制 → SHA-256 校验 → 切换 → 清理，失败保留源", () => {
+  assert.match(app, /const target = folder/);
+  assert.doesNotMatch(app, /cacheDirectoryUnder/);
   assert.match(app, /precheckCacheMigration\(target\)/);
   // 旧安装包是可选项：勾选才搬，不勾只切设置。
   assert.match(app, /onApplyMigration/);
@@ -199,8 +199,13 @@ test("应用迁移：只读能力检测 + 只对已识别 AppxVolume 执行 + �
   // 目标卷必须来自本次检测结果，不接受任意字符串。
   assert.match(main, /目标卷不在 Windows 已识别的 AppxVolume 列表里/);
   // 能力限制要说在前面：Windows 只认应用卷，不能让用户以为可以像缓存那样选任意文件夹。
-  assert.match(advancedSettings, /不能像缓存那样选任意文件夹/);
-  assert.match(advancedSettings, /迁移不会带走配置、会话、日志与项目目录/);
+  assert.match(advancedSettings, /不能直接装进自定义子目录/);
+  assert.match(advancedSettings, /所选文件夹/);
+  assert.match(advancedSettings, /Windows 应用存储位置/);
+  assert.match(main, /resolveAppMigrationTarget\(args\?\.selectedDirectory, capability\)/);
+  assert.match(advancedSettings, /包管理范围外的用户数据需单独管理/);
+  assert.match(move, /NativeErrorCode -eq 1223/);
+  assert.match(main, /cancelled: Boolean\(parsed.cancelled\)/);
 });
 
 test("缓存迁移进度有独立通道，不和安装进度混用", () => {

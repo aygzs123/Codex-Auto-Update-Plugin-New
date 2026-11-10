@@ -8,6 +8,7 @@ import type {
   Activity,
   ActivityId,
   AppMigrationCapability,
+  AppMigrationTarget,
   AppUpdateState,
   CacheMigrationPlan,
   CacheMigrationProgress,
@@ -145,10 +146,11 @@ interface AppState {
   setTheme: (theme: ThemePreference) => Promise<void>;
   /** 读取缓存目录与 Codex 应用卷的剩余空间。 */
   refreshStorage: () => Promise<void>;
-  /** 迁移预检：只读，不改任何文件。返回 null 表示失败（错误已写进全局 error）。 */
+  /** 迁移预检：检查目录和可写性，不迁移文件或切换设置。失败返回 null。 */
   precheckCacheMigration: (targetDirectory: string) => Promise<CacheMigrationPlan | null>;
   /** 打开系统目录选择器，只返回目标路径，不改设置（迁移用）。取消返回 null。 */
   pickCacheFolder: () => Promise<string | null>;
+  pickAppMigrationFolder: () => Promise<AppMigrationTarget | null>;
   /** 执行迁移。必须由界面在用户确认预检结果之后调用。 */
   migrateCache: (targetDirectory: string) => Promise<CacheMigrationResult | null>;
   cancelCacheMigration: () => Promise<void>;
@@ -156,7 +158,7 @@ interface AppState {
   /** 检测 Codex 应用本体是否可以迁到另一个 Windows 应用卷。 */
   detectAppMigration: () => Promise<AppMigrationCapability | null>;
   /** 把 Codex 应用本体迁到指定应用卷（用户确认后由主进程再确认并执行）。 */
-  moveCodexApp: (volume: string) => Promise<void>;
+  moveCodexApp: (target: AppMigrationTarget) => Promise<void>;
   /** 回退到指定的旧版本安装包。走的是和安装同一条链路，只是允许降级。 */
   rollback: (pkg: CachedPackage) => Promise<void>;
   /**
@@ -528,7 +530,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   precheckCacheMigration: async (targetDirectory) => {
-    set({ error: null, notice: null });
+    set({ error: null, notice: null, migrationPlan: null });
     try {
       const migrationPlan = await invokeCommand<CacheMigrationPlan>("precheck_cache_migration", {
         targetDirectory,
@@ -546,6 +548,15 @@ export const useAppStore = create<AppState>((set, get) => ({
       const result = await invokeCommand<{ canceled: boolean; path?: string }>("pick_directory");
       if (result.canceled || !result.path) return null;
       return result.path;
+    } catch (error) {
+      set({ error: describe(error) });
+      return null;
+    }
+  },
+
+  pickAppMigrationFolder: async () => {
+    try {
+      return await invokeCommand<AppMigrationTarget | null>("pick_app_migration_directory");
     } catch (error) {
       set({ error: describe(error) });
       return null;
@@ -625,7 +636,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
-  moveCodexApp: async (volume) => {
+  moveCodexApp: async (target) => {
+    const volume = target.volumePath;
+    if (!volume) return;
     if (isCommandRunning(get())) return;
     set({ appMigrating: true, error: null, notice: null });
     try {
@@ -634,7 +647,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         cancelled?: boolean;
         installLocation: string | null;
         message: string;
-      }>("move_codex_app", { volume });
+      }>("move_codex_app", { volume, selectedDirectory: target.selectedDirectory });
       const status = await invokeCommand<HealthReport>("get_status").catch(() => get().status);
       set({ status, healthDetail: null });
       await get().detectAppMigration();

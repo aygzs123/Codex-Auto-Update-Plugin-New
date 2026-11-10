@@ -40,6 +40,7 @@ const codex = require("./codex.cjs");
 const github = require("./github.cjs");
 const ps = require("./ps.cjs");
 const cacheMigration = require("./cache-migration.cjs");
+const { resolveAppMigrationTarget } = require("./app-migration-target.cjs");
 
 // 在 whenReady 之前设置，userData 才会落在 %APPDATA%\Codex Updater 而不是
 // 由包名推导出的 codex-updater-desktop。
@@ -77,6 +78,7 @@ const allowedCommands = new Set([
   "get_settings",
   "save_settings",
   "pick_directory",
+  "pick_app_migration_directory",
   "open_path",
   "notify_update",
   "copy_text",
@@ -424,14 +426,15 @@ async function getAppMigrationCapability() {
   };
 }
 
-async function confirmMoveApp(capability, target) {
+async function confirmMoveApp(capability, target, selectedDirectory) {
   const options = {
     type: "warning",
     title: "迁移 Codex",
     message: `要把 Codex 迁移到 ${target.path} 吗？`,
     detail:
+      `所选文件夹：${selectedDirectory}\nWindows 应用存储位置：${target.path}\n应用不会安装进所选子文件夹。\n\n` +
       "迁移使用 Windows 包部署服务。迁移期间 Codex 会被关闭，并会弹出一次管理员授权（UAC）。" +
-      "配置、会话、日志与项目目录不会一起迁移，它们仍留在原来的用户目录。" +
+      "请先保存工作。项目与包管理范围外的配置、会话和日志需单独管理。" +
       "迁移完成后会重新读取安装位置，更新、修复、启动与回退都按新位置工作。",
     buttons: ["取消", "迁移"],
     defaultId: 0,
@@ -466,7 +469,13 @@ async function moveCodexApp(args) {
     throw new Error("目标卷就是 Codex 当前所在的卷，不需要迁移。");
   }
 
-  if (!(await confirmMoveApp(capability, target))) {
+  const selection = await resolveAppMigrationTarget(args?.selectedDirectory, capability);
+  if (!selection.volumePath) throw new Error(selection.reason);
+  if (selection.volumePath.toLowerCase() !== target.path.toLowerCase()) {
+    throw new Error("所选文件夹对应的应用卷已变化，请重新选择后迁移。");
+  }
+
+  if (!(await confirmMoveApp(capability, target, selection.selectedDirectory))) {
     return { ok: false, cancelled: true, installLocation: capability.installLocation, message: "已取消迁移，Codex 没有被移动。" };
   }
 
@@ -497,7 +506,7 @@ async function moveCodexApp(args) {
 
     return {
       ok: Boolean(parsed.ok),
-      cancelled: false,
+      cancelled: Boolean(parsed.cancelled),
       installLocation: parsed.installLocation ? String(parsed.installLocation) : lastInstallLocation,
       message: String(parsed.message || (parsed.ok ? "迁移完成。" : "迁移没有完成。")),
     };
@@ -1449,9 +1458,7 @@ async function executeCommand(event, command, args = {}) {
     }
     case "pick_directory": {
       const window = BrowserWindow.fromWebContents(event.sender);
-      // 选的是「缓存放在哪个文件夹」。真实缓存目录固定落在它下面的
-      // Codex Updater\downloads，由渲染层拼接后交给 precheck_cache_migration；
-      // 这里只返回用户选中的文件夹，不保存任何东西。
+      // 原样返回选中目录，预检和用户确认完成前不修改设置。
       const result = await dialog.showOpenDialog(window, {
         title: "选择缓存文件夹",
         buttonLabel: "选择此文件夹",
@@ -1460,6 +1467,16 @@ async function executeCommand(event, command, args = {}) {
       });
       if (result.canceled || result.filePaths.length === 0) return { canceled: true };
       return { canceled: false, path: result.filePaths[0] };
+    }
+    case "pick_app_migration_directory": {
+      const window = BrowserWindow.fromWebContents(event.sender);
+      const result = await dialog.showOpenDialog(window, {
+        title: "选择 Codex 迁移目标所在的文件夹",
+        buttonLabel: "选择此文件夹",
+        properties: ["openDirectory", "createDirectory"],
+      });
+      if (result.canceled || result.filePaths.length === 0) return null;
+      return resolveAppMigrationTarget(result.filePaths[0], await getAppMigrationCapability());
     }
     case "open_path": {
       // 只允许打开本应用自己的目录，不接受任意路径。每一项都来自主进程自己或设置里的
@@ -1501,7 +1518,7 @@ async function executeCommand(event, command, args = {}) {
     case "get_storage_info":
       return getStorageInfo();
     case "precheck_cache_migration":
-      // 预检只读。执行时会重新枚举一次，界面拿到的这份摘要不是授权。
+      // 预检仅准备目标目录并检查可写性。执行时重新枚举，界面摘要不是授权。
       return cacheMigration.precheck({
         sourceDirectory: currentCacheDirectory(),
         targetDirectory: args.targetDirectory,
