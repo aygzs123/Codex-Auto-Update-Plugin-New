@@ -10,6 +10,18 @@ that leaves no window behind, and wanting the previous version back.
 
 ![Codex Updater UI](docs/images/app-ready.png)
 
+| Diagnostics and repair | Dark theme settings |
+| --- | --- |
+| ![Diagnostics](docs/images/app-diagnostics.png) | ![Dark settings](docs/images/app-dark.png) |
+
+| Storage (cache / app / user data kept separate) | Cache migration confirmation |
+| --- | --- |
+| ![Storage](docs/images/app-storage.png) | ![Migration confirmation](docs/images/app-migration-confirm.png) |
+
+> Screenshots are rendered from the real `dist/` build by
+> `desktop/scripts/verify-render.cjs` with stubbed data; they never read or modify your
+> real cache.
+
 ## What this is
 
 It solves one problem: **updating the Store build of Codex Desktop is awkward to
@@ -111,19 +123,34 @@ Copy the plugin directory to
 - **Cache retention + rollback**: the cache keeps the two most recent Codex installers
   (~1.67 GB) as rollback targets; the desktop app keeps everything by default and lets
   you choose how many to keep, clear the cache, and pin / verify / delete individual
-  packages from the version history (see [`docs/rollback.md`](docs/rollback.md)).
+  packages from the version history (see [`docs/rollback.md`](docs/rollback.md)). The
+  cache can be migrated to another drive: precheck the target, copy each file while
+  comparing SHA-256, switch the setting only after every file verifies, then clean up
+  the source. A failed or cancelled migration leaves both the source and the setting
+  untouched.
 - **Plugin self-update**: compares local and remote `plugin.json` versions and updates
   the plugin from GitHub when the remote is newer.
 - **Updater self-update (desktop app)**: "Settings → About" checks this repository's
   `desktop-v*` Releases and downloads a newer build in-app (automatic retry and resume,
   with size / speed / ETA shown in the UI), verifies it against the
   SHA-256 published by GitHub, installs it silently and restarts.
-- **Desktop settings**: updates and notifications (auto-check / auto-download / notify /
-  interval), theme (system / light / dark), network diagnostics (three endpoints plus
-  the proxy rule), and cache retention.
-- **Release announcements**: [`desktop/CHANGELOG.md`](desktop/CHANGELOG.md) is the single
-  source — the release workflow uses the matching section as the Release body and the
-  in-app bell shows the timeline of past releases (see
+- **Desktop settings**: organised into General / Appearance / Storage / About. General
+  holds updates and notifications (auto-check / auto-download / notify / interval) plus
+  network diagnostics (three endpoints and the proxy rule); Appearance holds the theme
+  (system / light / dark, applied immediately and persisted); Storage shows the real
+  free space and treats the installer cache, the Codex app package and user data
+  separately.
+- **Storage management (desktop app)**: the cache directory can be changed, cleared or
+  moved. Pick any folder: the cache lives in its `Codex Updater\downloads` subfolder, and
+  a checkbox decides whether existing installers come along (if so, every file is copied
+  and verified by SHA-256 before the setting is switched). The Codex app package is first
+  checked read-only (package identity, current AppxVolume, Windows-recognised target
+  volumes); after confirmation it is moved with Windows' own `Move-AppxPackage`. Nothing
+  copies WindowsApps, changes ownership or creates junctions. Config, sessions, logs and
+  projects are explicitly **not** migrated with the app.
+- **Update announcements**: [`desktop/CHANGELOG.md`](desktop/CHANGELOG.md) is the single
+  source — the in-app bell lists what changed in each version (version, date, items),
+  with no publishing-platform jargon and no external links (see
   [`desktop/README.md`](desktop/README.md)).
 - **Web UI**: local, button-driven, with logs streaming over SSE.
 - **Health check + window probe**: detects "process running but no main window" and
@@ -144,9 +171,15 @@ no main window" bug and offers the repair entry point, and a failed signature ch
 
 The "installer cache" card shows how many packages the cache holds and how much space
 they take, next to "open cache directory" and "clear cache" — that directory holds both
-the downloaded installers and the install logs. The "Version History" card
+the downloaded installers and the install logs. Changing the location takes one folder
+pick: the cache lands in its `Codex Updater\downloads` subfolder, and existing installers
+move only if you tick the checkbox; migrating copies and verifies every file by SHA-256
+before switching the setting. The "Version History" card
 provides the rollback entry point and can be hidden by anyone who does not need it
-(it only hides the card — it changes no behaviour). "Keep running in the tray" and
+(it only hides the card — it changes no behaviour). Settings → Storage also separates
+the "Codex app package" from "user data": the former is checked read-only and can be
+moved only to a Windows-recognised AppxVolume (not an arbitrary folder); the latter is
+explicitly not offered for migration and is never moved along by accident. "Keep running in the tray" and
 "Start with Windows" are **optional and off by default**; when enabled they only check
 once and post a system notification for a new version — they **never install
 automatically**, because an install requiring administrator rights is always started by
@@ -284,12 +317,16 @@ Run the health check with `-Probe` and read the `STARTUP_DIAGNOSIS=` verdict. On
 `still-preparing` means the runtime is still being materialized — wait.
 
 **Can I choose which drive Codex installs to?**
-No. Which volume an MSIX lands on is decided by the Windows deployment service, not by
-the installer. What the desktop app does is show the **real path** reported by
-`Get-AppxPackage` and give you an "open install directory" button. To change the default
-drive, use Windows Settings → System → Storage → Advanced storage settings → "Where new
-content is saved". The only directory the tool really chooses for you is the **installer
-cache**.
+Not at install time: which volume an MSIX lands on is decided by the Windows deployment
+service, not by the installer. The desktop app shows the **real path** reported by
+`Get-AppxPackage`, gives you an "open install directory" button, and offers
+**condition check + move** under Settings → Storage → Codex app package. It only calls
+`Move-AppxPackage` after you confirm, and only when Windows recognises another AppxVolume
+and the package itself is movable. Nothing copies WindowsApps, changes ownership or
+creates junctions, and no reinstall is involved; the resulting location is read back from
+the deployment service. Config, sessions, logs and projects are not moved with the app.
+You can still change Windows' default save drive under Settings → System → Storage →
+Advanced storage settings → "Where new content is saved".
 
 **Codex is installed on the D: drive — will it still be found?**
 Yes. The package is located with `Get-AppxPackage -Name OpenAI.Codex`, which enumerates

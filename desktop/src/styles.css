@@ -68,8 +68,10 @@
   --danger: var(--red);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
+/* 深色变量只认根节点上解析后的 data-theme。偏好是 system 时由 JS 解析成
+   light / dark 再写进来，CSS 不再直接读 prefers-color-scheme —— 那条隐式链路
+   在部分真实安装环境下没有生效，用户看到的就是「切换主题没反应」。 */
+:root[data-theme="dark"] {
     --accent: #0a84ff;
     --accent-strong: #3d9bff;
     --accent-soft: rgba(10, 132, 255, .17);
@@ -114,7 +116,6 @@
     --pop-shadow: 0 20px 60px -12px rgba(0, 0, 0, .72), 0 0 0 1px rgba(255, 255, 255, .10);
     --hero-glow: rgba(10, 132, 255, .22);
     --track: rgba(255, 255, 255, .10);
-  }
 }
 
 * { box-sizing: border-box; }
@@ -150,9 +151,7 @@ h1, h2, h3, p { margin: 0; }
 .app-scroll::-webkit-scrollbar { width: 12px; }
 .app-scroll::-webkit-scrollbar-thumb { border: 3px solid transparent; border-radius: 99px; background: transparent; background-clip: content-box; }
 .app-scroll:hover::-webkit-scrollbar-thumb { background: rgba(0, 0, 0, .18); background-clip: content-box; }
-@media (prefers-color-scheme: dark) {
-  .app-scroll:hover::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, .18); background-clip: content-box; }
-}
+:root[data-theme="dark"] .app-scroll:hover::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, .18); background-clip: content-box; }
 
 .content-inner { max-width: 1180px; margin: 0 auto; }
 .page { animation: pagein .24s cubic-bezier(.2, .8, .2, 1) both; }
@@ -168,9 +167,11 @@ h1, h2, h3, p { margin: 0; }
   z-index: 30;
   flex: 0 0 auto;
   height: 46px;
-  display: flex;
+  display: grid;
+  /* 左 / 中 / 右三列等权：两侧各 1fr、中间 auto，应用名永远落在窗口正中，
+     不会因为左边圆点比右边少而偏。 */
+  grid-template-columns: 1fr auto 1fr;
   align-items: center;
-  justify-content: space-between;
   padding: 0 10px;
   border-bottom: 1px solid var(--hairline-soft);
   background: linear-gradient(180deg, rgba(255, 255, 255, .28), transparent), var(--window-bg);
@@ -178,14 +179,32 @@ h1, h2, h3, p { margin: 0; }
   -webkit-app-region: drag;
   user-select: none;
 }
-@media (prefers-color-scheme: dark) {
-  .topbar { background: linear-gradient(180deg, rgba(255, 255, 255, .035), transparent), var(--window-bg); }
-}
+:root[data-theme="dark"] .topbar { background: linear-gradient(180deg, rgba(255, 255, 255, .035), transparent), var(--window-bg); }
 /* 顶栏左侧：三颗 mac 圆点，仅作装饰；真正的窗口按钮在最右边。 */
 .topbar-left {
   display: flex;
   align-items: center;
+  justify-self: start;
   -webkit-app-region: no-drag;
+}
+/* 顶栏中间：应用名。纯文本、不可点，双击与拖动仍由 .topbar 统一处理。 */
+.topbar-brand {
+  justify-self: center;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: -.01em;
+  color: var(--text-2);
+  pointer-events: none;
+}
+.topbar-brand .brand-mark {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
 }
 .traffic {
   display: flex;
@@ -207,6 +226,7 @@ h1, h2, h3, p { margin: 0; }
 .topbar-actions {
   display: flex;
   align-items: center;
+  justify-self: end;
   gap: 10px;
   -webkit-app-region: no-drag;
 }
@@ -267,8 +287,8 @@ h1, h2, h3, p { margin: 0; }
   top: calc(100% + 10px);
   right: 0;
   z-index: 70;
-  width: 384px;
-  max-height: min(460px, calc(100vh - 90px));
+  width: 420px;
+  max-height: min(520px, calc(100vh - 90px));
   overflow-y: auto;
   padding: 14px 15px 6px;
   border: 1px solid var(--hairline);
@@ -343,6 +363,19 @@ h1, h2, h3, p { margin: 0; }
   font-variant-numeric: tabular-nums;
 }
 .timeline-body p { margin-top: 4px; font-size: 11.5px; line-height: 1.6; color: var(--text-2); }
+/* 更新说明按条列出来：一段摞在一起的文字读不出「这次改了几件事」。 */
+.timeline-notes { list-style: none; margin: 5px 0 0; padding: 0; display: grid; gap: 3px; }
+.timeline-notes li { position: relative; padding-left: 12px; font-size: 11.5px; line-height: 1.58; color: var(--text-2); }
+.timeline-notes li::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: .62em;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--text-3);
+}
 .timeline-actions { display: flex; align-items: center; gap: 14px; margin-top: 6px; }
 .pill.compact { height: 18px; padding: 0 7px; font-size: 10px; }
 .link.subtle { color: var(--text-3); }
@@ -495,9 +528,7 @@ h1, h2, h3, p { margin: 0; }
   background: linear-gradient(180deg, rgba(255, 255, 255, .55), rgba(255, 255, 255, .18));
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, .5);
 }
-@media (prefers-color-scheme: dark) {
-  .instrument { background: linear-gradient(180deg, rgba(255, 255, 255, .055), rgba(255, 255, 255, .015)); box-shadow: inset 0 1px 0 rgba(255, 255, 255, .05); }
-}
+:root[data-theme="dark"] .instrument { background: linear-gradient(180deg, rgba(255, 255, 255, .055), rgba(255, 255, 255, .015)); box-shadow: inset 0 1px 0 rgba(255, 255, 255, .05); }
 .inst-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 13px; }
 .inst-title { font-size: 10px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--text-3); }
 .inst-flow { flex: 1; display: flex; align-items: center; gap: 8px; }
@@ -993,10 +1024,35 @@ h1, h2, h3, p { margin: 0; }
 }
 .settings-card:not([open]) > summary { border-bottom-color: transparent; }
 .settings-card:not([open]) > summary::after { transform: rotate(0deg); }
+
+/* 存储页的每块设置各是一张独立子卡片，而不是一串贴着卡片边缘的分隔线。
+   settings-body 垫一层浅色底，卡片之间的空隙才看得出来。
+   只作用于 storage-card：通用 / 外观 / 关于 的排布保持原样。 */
+.storage-card > .settings-body {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border-radius: 0 0 12px 12px;
+  background: var(--tile);
+}
+.storage-card .settings-body > .set-row,
+.storage-card .settings-body > .set-block {
+  border: 1px solid var(--hairline-soft);
+  border-radius: 10px;
+  background: var(--card);
+  box-shadow: 0 1px 1px rgba(15, 23, 42, .03);
+}
+.storage-card .settings-body > .migration-progress,
+.storage-card .settings-body > .confirm-block,
+.storage-card .settings-body > .capability-block,
+.storage-card .settings-body > .inline-alert {
+  margin: 0;
+}
 .set-row { display: flex; align-items: center; gap: 18px; padding: 14px 16px; border-top: 1px solid var(--hairline-soft); }
 .set-row:first-child { border-top: 0; }
 .set-row .label { flex: 1; min-width: 0; }
-.set-row .label strong { display: block; font-size: 13px; font-weight: 500; }
+/* 只给标题行加粗：label 说明文字里的 <strong> 是句内强调，不能变成独立一行。 */
+.set-row .label > strong { display: block; font-size: 13px; font-weight: 500; }
 .set-row .label p { margin-top: 3px; font-size: 11.5px; line-height: 1.58; color: var(--text-3); }
 .set-row .label code, .set-block code { padding: 1px 4px; border-radius: 4px; background: var(--tile); font-family: var(--mono); font-size: 10.5px; }
 .set-block { padding: 15px 16px; border-top: 1px solid var(--hairline-soft); }
@@ -1024,24 +1080,32 @@ h1, h2, h3, p { margin: 0; }
 .field-select {
   flex: 0 0 auto;
   height: 30px;
-  padding: 0 26px 0 10px;
+  padding: 0 28px 0 10px;
   border: 1px solid var(--btn-border);
   border-radius: 7px;
-  background: var(--btn-bg);
+  background-color: var(--btn-bg);
   color: var(--text-2);
   font-size: 11.5px;
   font-family: inherit;
   outline: none;
   cursor: pointer;
   appearance: none;
-  background-image: linear-gradient(45deg, transparent 50%, var(--text-3) 50%),
-    linear-gradient(135deg, var(--text-3) 50%, transparent 50%);
-  background-position: calc(100% - 13px) 13px, calc(100% - 9px) 13px;
-  background-size: 4px 4px, 4px 4px;
+  /* 用一笔 SVG 折线画箭头。以前是两个 4×4 的渐变方块拼的 V，缩放和深色下
+     边缘会发虚、看着像两个点。 */
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%238a8f98' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
+  background-position: right 10px center;
+  background-size: 10px 6px;
 }
+.field-select:hover:not(:disabled) { border-color: var(--text-3); }
 .field-select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 .field-select:disabled { opacity: .5; cursor: not-allowed; }
+/* 「迁移到所选卷」那一行的选择器：和旁边的 36px 按钮同高，占满剩余宽度。
+   路径加容量比设置行里的短语长得多，不能沿用 field-select 的自适应宽度。 */
+.path-row .volume-select { flex: 1 1 auto; width: auto; min-width: 0; height: 36px; font-size: 12px; }
+/* 检测完成 / 尚未检测：点完「检测迁移条件」立刻在这里换字，不必滚动到结果块。 */
+.detect-state { margin-top: 6px; font-size: 11px; color: var(--text-3); }
+.detect-state.is-error { color: var(--red); }
 
 /* ---------- 外观：主题选择 ---------- */
 /* 三张并排的卡，不是单选圆点：主题需要「看得见长什么样」，色块比文字快。 */
@@ -1156,6 +1220,91 @@ h1, h2, h3, p { margin: 0; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 19px; }
 @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
 @keyframes pop { from { opacity: 0; transform: scale(.94) translateY(7px); } to { opacity: 1; transform: none; } }
+
+/* ---------- 设置分类 ---------- */
+.settings-tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 18px;
+  padding: 4px;
+  border: 1px solid var(--hairline-soft);
+  border-radius: 10px;
+  background: var(--tile);
+  width: fit-content;
+  max-width: 100%;
+  overflow-x: auto;
+}
+.settings-tab {
+  padding: 6px 14px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 550;
+  white-space: nowrap;
+  transition: background .12s ease, color .12s ease;
+}
+.settings-tab:hover { color: var(--text); background: var(--nav-hover); }
+.settings-tab[data-active="true"] { background: var(--card); color: var(--text); box-shadow: var(--btn-shadow); }
+.settings-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+/* ---------- 存储 ---------- */
+.storage-summary { padding: 0; }
+.storage-locations { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.storage-location { display: flex; align-items: flex-start; gap: 11px; padding: 15px 18px; min-width: 0; }
+.storage-location + .storage-location { border-left: 1px solid var(--hairline-soft); }
+.storage-location .v { display: block; margin-top: 2px; font: 11.5px/1.5 var(--mono); overflow-wrap: anywhere; }
+.storage-location .sub { display: block; margin-top: 4px; font-size: 10.5px; color: var(--text-3); }
+
+.migration-progress,
+.confirm-block,
+.capability-block,
+.inline-alert {
+  margin: 12px 0;
+  padding: 13px 14px;
+  border: 1px solid var(--hairline-soft);
+  border-radius: 10px;
+  background: var(--tile);
+}
+.confirm-block { border-color: var(--accent-line); background: var(--accent-soft); }
+.confirm-block > strong { display: block; font-size: 12.5px; }
+/* 确认块里的「要不要一起搬旧安装包」：勾选框和说明文字同一行，说明折行时对齐文字。 */
+.confirm-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 11px;
+  font-size: 11.5px;
+  line-height: 1.58;
+  color: var(--text-2);
+  cursor: pointer;
+}
+.confirm-check input { margin-top: 2px; flex: 0 0 auto; accent-color: var(--accent); }
+.capability-block .line { display: flex; align-items: baseline; gap: 10px; }
+.capability-block .line .aside { margin-left: auto; font-size: 11px; color: var(--text-3); font-variant-numeric: tabular-nums; }
+/* 确认块与能力结论都用两列网格：左边标签、右边值。三行信息挤成一行读不出来。 */
+.confirm-block .confirm-grid,
+.capability-block .confirm-grid {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 6px 14px;
+  margin: 11px 0;
+  font-size: 11.5px;
+}
+.confirm-grid span { color: var(--text-3); }
+.confirm-grid code, .confirm-grid strong { overflow-wrap: anywhere; font-weight: 500; }
+.confirm-grid code { font-family: var(--mono); font-size: 11px; }
+.confirm-block .dash-actions, .capability-block .dash-actions { margin-top: 12px; }
+.migration-progress .line { margin-bottom: 9px; }
+.migration-progress .progress-track { margin: 4px 0 9px; }
+.inline-alert { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; border-color: var(--orange-line); background: var(--orange-soft); }
+.inline-alert strong { font-size: 12.5px; color: var(--orange); }
+
+@media (max-width: 930px) {
+  .storage-locations { grid-template-columns: 1fr; }
+  .storage-location + .storage-location { border-left: 0; border-top: 1px solid var(--hairline-soft); }
+}
 
 /* ---------- 自适应 ---------- */
 @media (max-width: 1040px) {

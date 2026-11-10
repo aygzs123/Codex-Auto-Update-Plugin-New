@@ -83,11 +83,13 @@ test("主进程：安装目录由主进程自己解析，不给渲染进程传�
   // 「打开 window 存储位置为什么不是打开路径的」—— 他问得对：那颗按钮的字面意思、
   // 以及这张卡片上显示的那个路径，都指向「打开这个目录」，它却把人送去别处。
   //
-  // 顺带记一笔那次错：改之前 URI 写的是 ms-settings:storagesense，那是「存储感知」，
-  // 一个自动删旧文件的开关，跟装到哪个盘毫无关系 —— 注释、界面说明、README 三处都写着
-  // 「新的应用将保存到」，只有真正打开的那一页不是。现在整条 ms-settings 都不用了，
-  // 所以这里直接钉「一个都不许有」，而不是钉「必须是对的那一个」。
-  assert.doesNotMatch(mainSource, /ms-settings:/, "不该再打开 Windows 设置页");
+  // 现在「打开安装目录」确实打开目录；Windows 设置只保留一个入口 —— 应用迁移能力检测
+  // 发现「尚未安装」时，界面才给一颗「打开 Windows 存储设置」的按钮，URI 写死在主进程里，
+  // 而且只能是「新内容的保存位置」这一页（ms-settings:storagesense 是存储感知，会删旧文件，
+  // 跟装到哪个盘毫无关系）。
+  const settingsUris = mainSource.match(/ms-settings:[a-z]+/g) || [];
+  assert.deepEqual([...new Set(settingsUris)], ["ms-settings:savelocations"], "只许打开「新内容的保存位置」");
+  assert.equal(settingsUris.length, 1, "ms-settings 只应出现在唯一的命令分支里");
   assert.doesNotMatch(mainSource, /openExternal\(args\./, "不许把渲染进程传来的参数直接交给 openExternal");
 
   // 路径必须来自主进程：安装位置随版本变化（目录名里带版本号），写不进下面那个静态白名单，
@@ -121,18 +123,31 @@ test("界面：安装位置原样放进只读输入框，不拼接也不截断",
   // 唯一允许的加工是「没有值时的占位文案」。
   assert.match(settingsSource, /value=\{installLocation \?\? "/, "有值时必须是原样的 installLocation");
   assert.match(settingsSource, /readOnly/);
-  // 说明文字必须点破「改不了」和「去哪改」，否则用户会以为是我们漏做了。
-  // 改默认盘的办法仍然写在说明里 —— 那颗按钮现在干别的去了（打开目录），
-  // 这条路不能因此从界面上消失，否则「C 盘满了想换盘」的人无处可去。
-  assert.match(settingsSource, /由 Windows 决定/);
-  assert.match(settingsSource, /新的应用将保存到/);
-  assert.match(settingsSource, /高级存储设置/);
+  // 说明文字必须点破「哪来的」和「迁移怎么动包」，否则用户会以为我们在自己猜路径。
+  assert.match(settingsSource, /Get-AppxPackage/);
+  assert.match(settingsSource, /不会复制 WindowsApps/);
+  assert.match(settingsSource, /真实安装位置为准/);
+  // 应用本体迁移是真实能力，但前提是 Windows 认识那个卷；说明里不能承诺「一定能搬」。
+  assert.match(settingsSource, /Move-AppxPackage|迁移条件/);
   // 按钮做它字面上说的事：打开安装目录。用户原话：「打开 window 存储位置为什么不是
   // 打开路径的」—— 那颗按钮以前打开的是 Windows 设置页，跟这一行显示的路径没关系。
   assert.match(settingsSource, /打开安装目录/);
   assert.match(settingsSource, /onClick=\{onOpenInstallLocation\}/);
   // 它不接收路径参数：路径由主进程解析（见上面那条）。组件这一侧也只能是「空手」回调。
   assert.match(settingsSource, /onOpenInstallLocation: \(\) => void;/);
+  // 未安装时才出现的 Windows 设置入口，同样不带参数，URI 由主进程写死。
+  assert.match(settingsSource, /打开 Windows 存储设置/);
+  assert.match(settingsSource, /onOpenStorageSettings: \(\) => void;/);
+
+  // 候选卷下拉框必须是受控的：重新检测后候选集合可能变了，非受控的 defaultValue
+  // 只在挂载时生效，旧值会留下来 —— 界面看着选了第一项，实际提交空字符串，点「迁移」没反应。
+  assert.match(settingsSource, /value=\{targetVolume\}/, "目标卷下拉框必须是受控值");
+  assert.match(settingsSource, /onChange=\{(?:\(event\)|event) => setTargetVolume/, "目标卷下拉框必须写回 state");
+  assert.doesNotMatch(settingsSource, /defaultValue=\{targets\[0\]\.path\}/, "不许再用非受控的 defaultValue");
+  assert.match(settingsSource, /if \(targetVolume\) onMove\(targetVolume\)/, "迁移用的必须是下拉框当前选中的值");
+  // 点完「检测迁移条件」要有一处立刻换字，不能只把结果堆在下方区块里。
+  assert.match(settingsSource, /detect-state/);
+  assert.match(settingsSource, /检测完成/);
 });
 
 // ---------- 「打开缓存目录」打开的必须是真实的那个目录 ----------
@@ -200,21 +215,25 @@ test("缓存目录：优先级是「枚举解析结果 > 设置原始值 > 默�
 
 test("缓存目录：三个入口都用共享判据，组件不许自己去解析", () => {
   const app = read("src", "App.tsx");
+  // 三处入口：菜单动作的打开缓存目录、VersionHistory 的回退卡片、StorageSettings
+  // （它再把同一个值传给 AdvancedSettings / CacheSettings 的「打开缓存目录」链接）。
+  // App 里只算一次，多张卡片共用同一个值，避免同一件事在不同卡片上给出两种答案。
+  assert.match(
+    app,
+    /const cacheDirectory = effectiveDownloadDirectory\(\{ settings, cachedPackages \}\)/,
+    "App 里应当只算一次共享判据",
+  );
   const uses = app.match(/effectiveDownloadDirectory\(/g) || [];
-  // 三处：菜单动作的打开缓存目录 + 两张卡片各一处 cacheDirectory。
-  assert.ok(uses.length >= 3, `App.tsx 里应有三处使用共享判据，实际 ${uses.length} 处`);
-  // 卡片必须拿到算好的路径（props 传进去），而不是自己读设置。
-  // 注意：CacheSettings 里出现 settings.defaultDownloadDirectory 是**正当的** ——
-  // 那是输入框的占位提示（「不填就用这个」），不是打开的目标。所以这里不禁止这个标识符，
-  // 只钉「由 App 传进来」这条。
-  assert.match(app, /cacheDirectory=\{effectiveDownloadDirectory\(/, "卡片的 cacheDirectory 必须由 App 算好传进去");
+  assert.equal(uses.length, 2, `App.tsx 应只有「打开缓存目录」动作与共享变量两处，实际 ${uses.length} 处`);
+  assert.match(app, /cacheDirectory=\{cacheDirectory\}/, "卡片必须拿到 App 算好的 cacheDirectory");
   // 必须剥掉注释再查：两个组件的文档注释里都写着「由 App 按 effectiveDownloadDirectory
   // 算好传进来」这句话本身 —— 不剥注释，负向断言就会因为注释而恒假（正向断言则会恒真）。
   const stripComments = (source) =>
     source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1");
   // 缓存目录那一行搬去了 CacheSettings（它和「占了多少」是同一个问题的两半），
-  // AdvancedSettings 仍然有「打开缓存目录」的链接，所以两者都得继续接收这个 prop。
-  for (const name of ["CacheSettings.tsx", "AdvancedSettings.tsx", "VersionHistory.tsx"]) {
+  // AdvancedSettings 与 VersionHistory 仍然有「打开缓存目录」的链接，StorageSettings
+  // 负责把同一个值继续往下传，所以四者都得继续接收这个 prop、都不许自己解析。
+  for (const name of ["CacheSettings.tsx", "AdvancedSettings.tsx", "VersionHistory.tsx", "StorageSettings.tsx"]) {
     const text = stripComments(read("src", "components", name));
     assert.ok(
       !/effectiveDownloadDirectory/.test(text),

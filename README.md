@@ -10,6 +10,17 @@
 
 ![Codex Updater 界面](docs/images/app-ready.png)
 
+| 诊断与常驻修复 | 深色设置 |
+| --- | --- |
+| ![诊断](docs/images/app-diagnostics.png) | ![深色设置](docs/images/app-dark.png) |
+
+| 存储管理（缓存 / 应用本体 / 用户数据分开说明） | 缓存迁移确认 |
+| --- | --- |
+| ![存储](docs/images/app-storage.png) | ![迁移确认](docs/images/app-migration-confirm.png) |
+
+> 截图来自 `desktop/scripts/verify-render.cjs` 的真实构建产物，使用桩数据渲染，
+> 不读取也不修改本机真实缓存。
+
 ## 这是什么
 
 它解决一个问题：**Codex Desktop 的商店版更新，在无人值守或新机器场景下不好使。**
@@ -97,15 +108,23 @@ powershell -NoProfile -ExecutionPolicy Bypass -File install\install.ps1
   默认**关闭**，没有 `-AllowElevation` 就如实拒绝（见[常见问题](#常见问题)）。
 - **保缓存 + 版本回退**：缓存保留最近 2 个 Codex 安装包（约 1.67 GB）供回退；桌面应用默认
   一个都不删、由用户决定保留几份或何时清空，版本历史里还能逐个固定、校验签名、删除
-  （见 [`docs/rollback.md`](docs/rollback.md)）。
+  （见 [`docs/rollback.md`](docs/rollback.md)）。缓存可以换到任意文件夹：新位置固定是所选文件夹
+  下的 `Codex Updater\downloads`，旧安装包要不要一起搬在确认块里勾选；搬就逐个复制并比对
+  SHA-256，全部通过才切换设置；不搬就只切目录。失败或取消时源目录与设置都不动。
 - **插件自更新**：对比本机与远端 `plugin.json` 版本，自动从 GitHub 更新插件。
 - **更新器自身更新（桌面应用）**：「设置 → 关于」直接检查本仓库的 `desktop-v*` Release，
   发现新版本后在应用内下载（失败自动重试、断点续传，界面显示大小 / 速度 / 剩余时间）、
   按 GitHub 给出的 SHA-256 校验再静默安装，装完自动重启。
-- **桌面端设置**：更新与通知（自动检查 / 自动下载 / 通知 / 复查间隔）、主题颜色
-  （跟随系统 / 浅色 / 深色）、网络诊断（三条路径的连通性与代理规则）、缓存保留份数。
-- **更新公告**：以 [`desktop/CHANGELOG.md`](desktop/CHANGELOG.md) 为唯一来源 —— 发版 CI
-  用对应小节当 Release 正文，应用内铃铛按时间线展示历次发布说明；见
+- **桌面端设置**：设置按「通用 / 外观 / 存储 / 关于」四类组织。通用是更新与通知
+  （自动检查 / 自动下载 / 通知 / 复查间隔）与网络诊断（三条路径的连通性与代理规则）；
+  外观是主题颜色（跟随系统 / 浅色 / 深色，立即生效并写进设置）；存储给出真实磁盘剩余，
+  并分别处理安装包缓存、Codex 应用本体与用户数据。
+- **存储管理（桌面应用）**：缓存目录可换、可清空、可整体迁移；Codex 应用本体先做只读条件
+  检测（包身份、当前 AppxVolume、Windows 已识别且可用的目标卷），确认后才调用 Windows
+  部署服务 `Move-AppxPackage` 迁移，不复制 WindowsApps、不改所有权、不建目录联接。
+  配置 / 会话 / 日志 / 项目目录明确说明**不随应用迁移**。
+- **更新公告**：以 [`desktop/CHANGELOG.md`](desktop/CHANGELOG.md) 为唯一来源 —— 应用内铃铛
+  按版本倒序列出每版改了什么（版本、日期、条目），不出现发布平台术语，也不放外链；见
   [`desktop/README.md`](desktop/README.md#应用自身更新与公告)。
 - **Web 界面**：本地可视化操作，按钮即命令，日志 SSE 实时滚动。
 - **健康自检 + 窗口探测**：检测「进程在跑但主窗口不出现」，并按证据给出判定
@@ -121,8 +140,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File install\install.ps1
 会**中止安装**。
 
 「安装包缓存」卡片显示缓存里有几个包、共占多少，旁边就是「打开缓存目录」和「清空缓存」
-—— 下载的安装包和安装日志都放在这个目录里。
+—— 下载的安装包和安装日志都放在这个目录里。换目录只需选一个文件夹：缓存落在它下面的
+`Codex Updater\downloads`，旧安装包是否一起搬可以勾选；搬的话复制并逐个校验 SHA-256
+通过后才切换设置。
 「版本历史」卡片给回退入口，对不需要它的人可以关掉显示（只隐藏卡片，不改任何行为）。
+设置 → 存储还把「Codex 应用本体」和「用户数据」分开说：前者先只读检测，条件满足才允许按
+Windows 已识别的 AppxVolume 迁移（不能指定任意文件夹）；后者明确不提供迁移，也不会被顺手搬走。
 「关窗后留在托盘里」和「开机自动启动」是**可选项、默认关闭**，打开后也只是起来查一次、
 发现新版本弹一条系统通知，**绝不自动安装** —— 需要管理员授权的安装永远由人点。
 更新器自己也有更新入口（设置 → 关于），但它只更新这个安装工具，和上面的 Codex 更新是两条链路。
@@ -240,10 +263,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -File docs\codex-desktop-encrypted
 等一会儿即可。
 
 **Q：Codex 能装到我指定的盘吗？**
-不能。MSIX 应用落在哪个盘由 Windows 的部署服务决定，安装器说了不算。桌面应用只做了一件事：
-把 `Get-AppxPackage` 报回来的**真实路径原样显示**，并给一个「打开安装目录」按钮。
-想改默认盘要在 Windows「设置 → 系统 → 存储 → 高级存储设置 → 新的应用将保存到」里改。
-工具真正能替你选的只有**安装包缓存目录**。
+安装那一刻不行：MSIX 应用落在哪个卷由 Windows 的部署服务决定，安装器说了不算。桌面应用做了三件事：
+把 `Get-AppxPackage` 报回来的**真实路径原样显示**、给一个「打开安装目录」按钮，以及在
+「设置 → 存储 → Codex 应用本体」里提供**条件检测 + 迁移**：只有 Windows 已识别另一个
+AppxVolume、且包本身允许移动时，才在用户确认后调用 `Move-AppxPackage` 迁移。
+迁移不会复制 WindowsApps、不会改所有权、不会建目录联接，也不需要重装；结果以部署服务
+回读的真实安装位置为准。配置、会话、日志与项目目录不随应用迁移。
+改 Windows 的默认保存盘仍可走「设置 → 系统 → 存储 → 高级存储设置 → 新的应用将保存到」。
 
 **Q：Codex 装在 D 盘还识别得到吗？**
 识别得到。包通过 `Get-AppxPackage -Name OpenAI.Codex` 跨所有卷枚举，安装位置、进程归属、
@@ -323,7 +349,7 @@ tools/Test-PluginVersionBump.ps1    CI 版本校验脚本
 ```powershell
 cd desktop
 npm test                 # 单元测试，不联网
-npm run verify:render    # 把 dist/ 加载进 Electron 跑十四个界面场景
+npm run verify:render    # 把 dist/ 加载进 Electron 跑十五个界面场景
 npm run verify:simulate  # 模拟安装流程，不下载不安装
 npm run electron:dev     # 开发态启动
 npm run electron:build   # 打包 Windows x64 NSIS .exe

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { CachedPackage, CachedPackageList, SignatureReport } from "../types";
+import type { CacheScanStatus, CachedPackage, CachedPackageList, SignatureReport } from "../types";
 import { invokeCommand } from "../lib/bridge";
 import { formatBytes } from "../lib/format";
 import { Icon } from "./Icons";
@@ -34,6 +34,8 @@ type Verification =
 export function VersionHistory({
   cachedPackages,
   cacheDirectory,
+  cacheStatus,
+  cacheError,
   keepCount,
   busy,
   rollingBack,
@@ -41,25 +43,20 @@ export function VersionHistory({
   onDelete,
   onPin,
   onOpenDirectory,
+  onRetry,
 }: {
   cachedPackages: CachedPackageList | null;
-  /**
-   * 缓存目录，由 App 按 effectiveDownloadDirectory 算好传进来 —— 与「高级设置」里那颗
-   * 链接、以及 worker 剪枝用的是同一个值。
-   *
-   * 以前这里读 cachedPackages.downloadDirectory，值是对的，但枚举脚本一失败
-   * （cachedPackages 为 null）整颗按钮就消失，连「去哪个目录看看」都做不到。
-   */
   cacheDirectory: string;
-  /** 自动剪枝保留份数（0 = 不自动清理）。只用于把实况写清楚，不影响这里的动作。 */
+  cacheStatus: CacheScanStatus;
+  cacheError: string | null;
   keepCount: number;
-  /** 「有命令在跑」。回退 / 删除 / 固定按钮置灰用共享判据，不只是本地的 rollingBack。 */
   busy: boolean;
   rollingBack: boolean;
   onRollback: (pkg: CachedPackage) => void;
   onDelete: (pkg: CachedPackage) => void;
   onPin: (pkg: CachedPackage, pinned: boolean) => void;
   onOpenDirectory: (path: string) => void;
+  onRetry: () => void;
 }) {
   const packages = cachedPackages?.packages ?? [];
   const installedVersion = cachedPackages?.installedVersion ?? null;
@@ -119,18 +116,41 @@ export function VersionHistory({
         {installedVersion && <span className="rollback-current">当前 {installedVersion}</span>}
       </div>
 
-      {packages.length === 0 ? (
+      {cacheStatus === "error" ? (
+        <div className="empty-state" role="alert">
+          <span className="empty-icon">
+            <Icon name="alert" size={22} />
+          </span>
+          <strong>无法读取缓存目录</strong>
+          <p className="field-help">
+            没有展示上一轮的文件列表，因为其中可能有已经不存在或无法访问的安装包。
+            {cacheError ? ` 原因：${cacheError}` : ""}
+          </p>
+          <div className="dash-actions">
+            <button type="button" className="button" onClick={onRetry}>
+              <Icon name="refresh" size={14} />
+              重试
+            </button>
+            <button type="button" className="button" onClick={() => onOpenDirectory(cacheDirectory)}>
+              <Icon name="folder" size={14} />
+              打开缓存目录
+            </button>
+          </div>
+        </div>
+      ) : packages.length === 0 ? (
         <div className="empty-state">
           <span className="empty-icon">
             <Icon name="clock" size={22} />
           </span>
-          <strong>还没有可回退的安装包</strong>
+          <strong>{cacheStatus === "scanning" ? "正在扫描缓存目录…" : "暂无安装包缓存"}</strong>
           <p className="field-help">
-            {installedVersion
-              ? "缓存里还没有可回退的旧版本安装包。回退依赖本应用自己保留下来的安装包，而保留下来的前提是" +
-                "「带着新版保留策略更新过一次」—— 之前更新时用过的安装包按旧策略已被清理，分发源也只提供最新版，" +
-                "所以它们找不回来了。下次更新之后再回到这里，就会看到上一版。"
-              : "尚未检测到已安装的 Codex Desktop。安装完成后，这里会列出保留下来的安装包。"}
+            {cacheStatus === "scanning"
+              ? "扫描完成后，这里会列出本机保留下来的安装包。"
+              : installedVersion
+                ? "缓存里还没有可回退的旧版本安装包。回退依赖本应用自己保留下来的安装包，而保留下来的前提是" +
+                  "「带着新版保留策略更新过一次」—— 之前更新时用过的安装包按旧策略已被清理，分发源也只提供最新版，" +
+                  "所以它们找不回来了。下次更新之后再回到这里，就会看到上一版。"
+                : "尚未检测到已安装的 Codex Desktop。安装完成后，这里会列出保留下来的安装包。"}
           </p>
         </div>
       ) : (

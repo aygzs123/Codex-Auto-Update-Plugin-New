@@ -38,19 +38,19 @@ export function UpdateSettings({
     {
       key: "autoCheck",
       title: "启动时自动检查更新",
-      detail: "每次打开更新器都问一次分发源，结论落在概览页，不弹窗。",
+      detail: "打开更新器时问一次分发源，结论落在概览页，不弹窗。",
       checked: autoCheck,
     },
     {
       key: "autoDownload",
       title: "发现新版本后自动下载安装包",
-      detail: "只下载到缓存，不安装。需要管理员权限的安装仍然由你点「一键更新」触发。",
+      detail: "只下载到缓存，不安装；安装仍然由你点。",
       checked: autoDownload,
     },
     {
       key: "notifyUpdates",
       title: "发现新版本时弹系统通知",
-      detail: "窗口不在前台时才提醒；同一个版本只提醒一次，点通知会打开更新器。",
+      detail: "窗口不在前台时提醒，同一版本只提醒一次。",
       checked: notifyUpdates,
     },
   ];
@@ -80,7 +80,7 @@ export function UpdateSettings({
         <div className="set-row">
           <div className="label">
             <strong>后台复查间隔</strong>
-            <p>开着托盘常驻或开机自启时，每隔这么久再查一次。只在后台模式下生效。</p>
+            <p>后台模式下每隔这么久复查一次。</p>
           </div>
           <select
             className="field-select"
@@ -99,8 +99,7 @@ export function UpdateSettings({
 
         <div className="set-block">
           <p className="field-help">
-            <strong>不会自动安装任何东西</strong>：自动检查只给结论，自动下载只把包放进缓存；
-            需要管理员授权的安装永远由你自己点。
+            <strong>不会自动安装任何东西</strong>：自动检查只给结论，自动下载只放进缓存。
           </p>
         </div>
       </div>

@@ -111,6 +111,86 @@ export interface CachedPackageList {
   packages: CachedPackage[];
 }
 
+/** 缓存快照的读取状态。ready 才代表「这份列表是这一轮真实读到的」。 */
+export type CacheScanStatus = "idle" | "scanning" | "ready" | "error";
+
+/** 一个磁盘位置的总量 / 剩余。由主进程用 fs.statfs 读取，缺路径时为 null。 */
+export interface StorageLocation {
+  path: string;
+  totalBytes: number;
+  freeBytes: number;
+}
+
+export interface StorageInfo {
+  download: StorageLocation | null;
+  /** Codex 应用本体所在卷；未安装时为 null。 */
+  install: StorageLocation | null;
+}
+
+export interface CacheMigrationFile {
+  name: string;
+  sizeBytes: number;
+}
+
+/** 迁移预检结果。真正执行前必须再跑一次，不能把这份结果当授权。 */
+export interface CacheMigrationPlan {
+  sourceDirectory: string;
+  targetDirectory: string;
+  files: CacheMigrationFile[];
+  totalBytes: number;
+  freeBytes: number;
+  /** 目标目录里已存在同名文件；执行时逐个校验，内容相同则跳过，不同则中止。 */
+  conflicts: string[];
+}
+
+export interface CacheMigrationProgress {
+  copiedFiles: number;
+  totalFiles: number;
+  copiedBytes: number;
+  totalBytes: number;
+  currentFile: string;
+}
+
+export interface CacheMigrationResult {
+  ok: boolean;
+  cancelled: boolean;
+  sourceDirectory: string;
+  targetDirectory: string;
+  copiedCount: number;
+  copiedBytes: number;
+  skippedCount: number;
+  /** 已切换设置但源目录仍有残留时如实列出，不虚报释放空间。 */
+  cleanedCount: number;
+  cleanupFailures: Array<{ name: string; message: string }>;
+}
+
+/** Codex 应用本体迁移能力检测结果。 */
+export interface AppVolume {
+  /** AppxVolume 的 PackageStorePath，例如 D:\WindowsApps。 */
+  path: string;
+  label: string;
+  isSystemVolume: boolean;
+  freeBytes: number;
+  totalBytes: number;
+}
+
+export interface AppMigrationCapability {
+  installed: boolean;
+  version: string | null;
+  installLocation: string | null;
+  packageVolume: string | null;
+  /** Windows 是否报告该包可移动。检测通过不等于执行一定成功，执行仍以部署服务结果为准。 */
+  movable: boolean;
+  reason: string;
+  volumes: AppVolume[];
+  /**
+   * 检测本身失败（脚本没跑起来、输出解析不了）。和「没装 Codex」是两件事：
+   * 两者都给 installed=false，但界面不能把执行失败说成「尚未安装」。
+   * 主进程正常返回时不带这个字段。
+   */
+  failed?: boolean;
+}
+
 /**
  * GitHub Release 里的一个资产（安装包）。
  *

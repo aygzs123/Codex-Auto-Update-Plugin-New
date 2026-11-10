@@ -94,7 +94,7 @@ Codex 能不能正常起来），degraded 时必须看得见，只是不再是�
 
 第一段的窗口只有一次 IPC 往返，快到几乎量不到，也是**唯一一个不挂住命令就观察不到的
 界面状态** —— `verify:render` 的 `--boot` 场景专门为此存在（见
-[`development.md`](development.md#verifyrender-的十四个场景)）。
+[`development.md`](development.md#verifyrender-的十五个场景)）。
 
 第二段那句是**有寿命的**：结论一旦回来还挂着「正在向…查询」，就是一句过期的谎话。
 所以别的场景会反向断言它不许出现。

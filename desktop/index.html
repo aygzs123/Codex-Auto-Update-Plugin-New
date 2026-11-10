@@ -5,6 +5,16 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#eef2f8" />
     <title>Codex Updater</title>
+    <script>
+      // 最后一道防闪白：preload 已经按落盘偏好写过 data-theme；万一它没跑（例如
+      // 在浏览器里预览构建产物），至少按系统配色先上一次色，别先渲染一帧纯白。
+      try {
+        if (!document.documentElement.dataset.theme) {
+          document.documentElement.dataset.theme =
+            window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        }
+      } catch (_) {}
+    </script>
   </head>
   <body>
     <div id="root"></div>

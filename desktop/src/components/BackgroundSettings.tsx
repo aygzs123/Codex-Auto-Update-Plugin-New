@@ -26,12 +26,12 @@ export function BackgroundSettings({
     {
       key: "minimizeToTray",
       title: "关窗后留在托盘里",
-      detail: "关掉窗口不退出，托盘图标里还能点「立即检查更新」。不想常驻就别开。",
+      detail: "关窗不退出，可从托盘「立即检查更新」。",
     },
     {
       key: "launchAtLogin",
       title: "开机自动启动",
-      detail: "开机后静默起来查一次，发现新版本弹一条系统通知；不会弹窗，也不会自动安装。",
+      detail: "开机后静默查一次，有新版本时弹通知，不弹窗、不安装。",
     },
   ];
 
@@ -62,12 +62,12 @@ export function BackgroundSettings({
 
         <div className="set-block">
           <p className="field-help">
-            两项都是可选的，默认关闭。打开之后也<strong>不会自动安装任何东西</strong>：需要管理员
-            授权的安装永远由你自己点。发现新版本只提醒一次（同一个版本不会反复提醒）。
+            默认关闭。打开后也<strong>不会自动安装任何东西</strong>：需要管理员权限的安装
+            永远由你自己点。
           </p>
           <p className="field-help">
-            提示：系统通知需要应用装了带 AppUserModelID 的快捷方式才会显示，所以用安装包装出来的
-            版本才能看到通知；直接跑源码（开发模式）时不一定弹得出来。
+            同一版本只提醒一次。系统通知要带 AppUserModelID 的快捷方式，安装包版才有；
+            直接跑源码不一定弹得出来。
           </p>
         </div>
       </div>

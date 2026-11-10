@@ -29,6 +29,10 @@ const sources = [
   join(pluginScripts, "list-cached-codex-packages.ps1"),
   // 「清空缓存」用它删掉缓存里的安装包。
   join(pluginScripts, "clear-cached-codex-packages.ps1"),
+  // 设置 → 存储：检测 Codex 本体能否迁移，以及真正执行 Move-AppxPackage。
+  // 两个脚本都在提权边界上，必须和模块一起打包，不能从 asar 里跑。
+  join(pluginScripts, "get-codex-app-migration.ps1"),
+  join(pluginScripts, "move-codex-app.ps1"),
   // 修复脚本不在插件 scripts/ 里，只存在于 docs/ 下（install/install.ps1 也是从那里
   // 把它拷进已安装插件的）。它零插件目录依赖，可以独立打包运行。
   join(repoRoot, "docs", "codex-desktop-encrypted-copy-fix", "repair-codex-desktop-bundles.ps1"),

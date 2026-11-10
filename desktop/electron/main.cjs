@@ -27,6 +27,7 @@ const {
   renameSync,
   statSync,
   unlinkSync,
+  watch,
   writeFileSync,
 } = require("node:fs");
 const { basename, join, resolve } = require("node:path");
@@ -37,6 +38,8 @@ const http = require("node:http");
 
 const codex = require("./codex.cjs");
 const github = require("./github.cjs");
+const ps = require("./ps.cjs");
+const cacheMigration = require("./cache-migration.cjs");
 
 // 在 whenReady 之前设置，userData 才会落在 %APPDATA%\Codex Updater 而不是
 // 由包名推导出的 codex-updater-desktop。
@@ -95,6 +98,18 @@ const allowedCommands = new Set([
   "check_network",
   // 托盘与任务栏的更新状态。只收版本号与一个布尔值，不落盘。
   "set_tray_status",
+  // 设置 → 存储：磁盘空间、缓存迁移与应用本体迁移。
+  //
+  // 迁移相关的命令都在主进程里重新校验路径/卷（不信任界面传值），并且只在
+  // 当前缓存目录与 Windows 已识别的 AppxVolume 上操作。open_storage_settings
+  // 只打开系统设置页，不接受参数。
+  "get_storage_info",
+  "precheck_cache_migration",
+  "migrate_cache",
+  "cancel_cache_migration",
+  "get_app_migration_capability",
+  "move_codex_app",
+  "open_storage_settings",
 ]);
 
 // 更新器自身版本与更新公告的唯一来源。仓库写死，不让渲染进程传 —— 那等于允许界面把
@@ -142,6 +157,10 @@ const LONG_COMMANDS = new Set([
   // 更新器自己的安装包也要算：下到一半退出会留下一个说不清是否完整的临时文件，
   // 而且用户多半以为「再点一次会接着下」。上次下载的残留会在下次下载前清掉，但它仍然是长命令。
   "download_app_update",
+  // 迁移会搬动几个 GB 并改设置/动应用卷：跑到一半关窗，用户会看到一个说不清的
+  // 「复制了几个、设置切没切」。这两条都不该被当成可以随手中断的命令。
+  "migrate_cache",
+  "move_codex_app",
 ]);
 
 // ---------- 设置 ----------
@@ -184,6 +203,14 @@ function normalizeTheme(value) {
  */
 function applyTheme(theme) {
   nativeTheme.themeSource = normalizeTheme(theme);
+}
+
+/** 当前偏好与解析结果。preload 在首帧前同步读取它，避免闪白。 */
+function currentThemeState() {
+  return {
+    preference: normalizeTheme(readSettings().theme),
+    resolved: nativeTheme.shouldUseDarkColors ? "dark" : "light",
+  };
 }
 
 function normalizeCheckInterval(value) {
@@ -229,6 +256,258 @@ function resolveCachedPackage(directory, value) {
   if (!/^OpenAI\.Codex_.+\.(msix|msixbundle)$/i.test(basename(target))) throw new Error("不是 Codex 安装包");
   if (!existsSync(target)) throw new Error("安装包不存在");
   return target;
+}
+
+// ---------- 缓存目录监听 ----------
+
+// 缓存目录里的文件变化（外部删除、下载完成、迁移清理）要能主动告诉界面。
+// 监听器只在当前目录上存在一份：目录切换时必须先关掉旧的，否则界面会同时收到
+// 两个目录的事件，而事件本身不带路径，界面无法分辨。
+let cacheWatcher = null;
+let cacheWatcherDirectory = null;
+let cacheWatchTimer = null;
+
+function closeCacheWatcher() {
+  if (cacheWatchTimer) {
+    clearTimeout(cacheWatchTimer);
+    cacheWatchTimer = null;
+  }
+  if (cacheWatcher) {
+    try {
+      cacheWatcher.close();
+    } catch {
+      // 已经失效的监听器关不掉也无所谓，置空即可。
+    }
+    cacheWatcher = null;
+  }
+  cacheWatcherDirectory = null;
+}
+
+function notifyCacheChanged() {
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (!window.isDestroyed()) window.webContents.send("desktop:cache-changed");
+  }
+}
+
+/**
+ * 确保监听的是当前缓存目录。
+ *
+ * 300–500ms 防抖：一次清除或一次下载会在目录里产生多个事件，逐个转发会让界面
+ * 连续重扫十几遍。事件里不带文件名 —— 只说明「变了」，内容仍由 list_cached_packages
+ * 读取，避免监听通道变成第二个数据来源。
+ */
+function ensureCacheWatcher() {
+  const directory = currentCacheDirectory();
+  if (cacheWatcher && cacheWatcherDirectory === directory) return;
+  closeCacheWatcher();
+  try {
+    cacheWatcher = watch(directory, { persistent: false }, () => {
+      if (cacheWatchTimer) clearTimeout(cacheWatchTimer);
+      cacheWatchTimer = setTimeout(() => {
+        cacheWatchTimer = null;
+        notifyCacheChanged();
+      }, 400);
+    });
+    cacheWatcherDirectory = directory;
+    cacheWatcher.on("error", () => closeCacheWatcher());
+  } catch {
+    // 目录还不存在（用户刚换到一个空文件夹）时监听会失败。等 list_cached_packages
+    // 或下一次下载把目录建出来再挂，不在这里替用户创建目录。
+    closeCacheWatcher();
+  }
+}
+
+/**
+ * 切换缓存目录。迁移与「保存设置」共用这一处，保证「落盘 → 重建监听 → 通知界面」
+ * 三步顺序一致；任何一步单独漏掉，界面都会显示旧目录的内容。
+ */
+function applyCacheDirectory(value) {
+  const saved = writeSettings({ downloadDirectory: String(value || "") });
+  ensureCacheWatcher();
+  notifyCacheChanged();
+  return saved;
+}
+
+// ---------- 磁盘空间 ----------
+
+/** 盘符标签只用于界面展示；不是盘符路径（例如 AppxVolume 的 UNC 形式）就原样显示。 */
+function volumeLabel(path) {
+  const match = /^([A-Za-z]):/.exec(String(path || ""));
+  return match ? `${match[1].toUpperCase()} 盘` : String(path || "");
+}
+
+async function getStorageInfo() {
+  // 安装位置优先用 get_status 记下来的那个值（bootstrap 时已经跑过一次）。
+  // 没跑过才现场读一次，避免每次打开设置页都多起一个 PowerShell。
+  if (!lastInstallLocation) {
+    try {
+      lastInstallLocation = (await codex.getStatus({ probe: false }))?.installLocation ?? null;
+    } catch {
+      lastInstallLocation = null;
+    }
+  }
+
+  const cacheDirectory = currentCacheDirectory();
+  const [downloadSpace, installSpace] = await Promise.all([
+    cacheMigration.freeSpaceFor(cacheDirectory),
+    lastInstallLocation ? cacheMigration.freeSpaceFor(lastInstallLocation) : Promise.resolve(null),
+  ]);
+
+  return {
+    download: downloadSpace
+      ? { path: cacheDirectory, totalBytes: downloadSpace.totalBytes, freeBytes: downloadSpace.freeBytes }
+      : null,
+    // Codex 未安装时这里是 null，界面显示「尚未安装」，不编一个 0。
+    install:
+      installSpace && lastInstallLocation
+        ? { path: lastInstallLocation, totalBytes: installSpace.totalBytes, freeBytes: installSpace.freeBytes }
+        : null,
+  };
+}
+
+// ---------- 应用本体迁移 ----------
+
+function parseJsonTail(text) {
+  const lines = String(text || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    if (!lines[index].startsWith("{")) continue;
+    try {
+      return JSON.parse(lines[index]);
+    } catch {
+      // 继续往前找：前面的行也可能是完整 JSON。
+    }
+  }
+  return null;
+}
+
+/**
+ * 读取 Codex 本体的迁移条件。
+ *
+ * 脚本只读（见 get-codex-app-migration.ps1）；这里再补上每个卷的真实剩余空间。
+ * `movable` 只是本地条件判断 —— 执行结果仍以 Move-AppxPackage 之后回读的位置为准。
+ */
+async function getAppMigrationCapability() {
+  const { stdout, stderr } = await ps.captureScript(codex.bundledScript("get-codex-app-migration.ps1"));
+  const parsed = parseJsonTail(stdout);
+  if (!parsed) {
+    const detail = String(stderr || stdout || "").trim().split(/\r?\n/).slice(-3).join(" / ");
+    throw new Error(detail || "迁移条件检测没有返回结果");
+  }
+
+  if (parsed.installLocation) lastInstallLocation = String(parsed.installLocation);
+
+  const volumes = [];
+  for (const volume of Array.isArray(parsed.volumes) ? parsed.volumes : []) {
+    const path = String(volume?.path || "");
+    if (!path) continue;
+    const space = await cacheMigration.freeSpaceFor(path);
+    volumes.push({
+      path,
+      label: volumeLabel(path),
+      isSystemVolume: Boolean(volume?.isSystemVolume),
+      freeBytes: space?.freeBytes ?? 0,
+      totalBytes: space?.totalBytes ?? 0,
+    });
+  }
+
+  return {
+    installed: Boolean(parsed.installed),
+    version: parsed.version ? String(parsed.version) : null,
+    installLocation: parsed.installLocation ? String(parsed.installLocation) : null,
+    packageVolume: parsed.packageVolume ? String(parsed.packageVolume) : null,
+    movable: Boolean(parsed.movable),
+    reason: String(parsed.reason || ""),
+    volumes,
+  };
+}
+
+async function confirmMoveApp(capability, target) {
+  const options = {
+    type: "warning",
+    title: "迁移 Codex",
+    message: `要把 Codex 迁移到 ${target.path} 吗？`,
+    detail:
+      "迁移使用 Windows 包部署服务。迁移期间 Codex 会被关闭，并会弹出一次管理员授权（UAC）。" +
+      "配置、会话、日志与项目目录不会一起迁移，它们仍留在原来的用户目录。" +
+      "迁移完成后会重新读取安装位置，更新、修复、启动与回退都按新位置工作。",
+    buttons: ["取消", "迁移"],
+    defaultId: 0,
+    cancelId: 0,
+    noLink: true,
+  };
+  const parent = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null;
+  const { response } = parent
+    ? await dialog.showMessageBox(parent, options)
+    : await dialog.showMessageBox(options);
+  return response === 1;
+}
+
+/**
+ * 执行应用本体迁移。
+ *
+ * 目标卷必须出现在当前检测结果里 —— 界面传什么就移动什么等于允许渲染进程把用户的
+ * Codex 扔到一个任意「卷」上。确认框在主进程里弹（默认取消），UAC 由脚本自行请求；
+ * 用户拒绝授权是正常结果，不是异常。
+ */
+async function moveCodexApp(args) {
+  const requested = String(args?.volume || "").trim();
+  if (!requested) throw new Error("没有指定目标应用卷");
+
+  const capability = await getAppMigrationCapability();
+  if (!capability.installed) throw new Error("没有检测到已安装的 Codex，无法迁移。");
+  if (!capability.movable) throw new Error(capability.reason || "当前包不满足迁移条件。");
+
+  const target = capability.volumes.find((volume) => volume.path.toLowerCase() === requested.toLowerCase());
+  if (!target) throw new Error("目标卷不在 Windows 已识别的 AppxVolume 列表里。");
+  if (capability.packageVolume && target.path.toLowerCase() === capability.packageVolume.toLowerCase()) {
+    throw new Error("目标卷就是 Codex 当前所在的卷，不需要迁移。");
+  }
+
+  if (!(await confirmMoveApp(capability, target))) {
+    return { ok: false, cancelled: true, installLocation: capability.installLocation, message: "已取消迁移，Codex 没有被移动。" };
+  }
+
+  const resultPath = join(app.getPath("temp"), `codex-app-move-${process.pid}-${Date.now()}.json`);
+  try {
+    const { stdout, stderr } = await ps.captureScript(codex.bundledScript("move-codex-app.ps1"), {
+      values: { "-Volume": target.path, "-ResultPath": resultPath },
+    });
+
+    // 提权子进程的 stdout 拿不到，结果以它写下的 JSON 文件为准；没有文件时退回
+    // 父进程 stdout（非提权路径或脚本提前失败时会有）。
+    const raw = existsSync(resultPath) ? readFileSync(resultPath, "utf8") : stdout;
+    const parsed = parseJsonTail(raw);
+    if (!parsed) {
+      const detail = String(stderr || stdout || "").trim().split(/\r?\n/).slice(-3).join(" / ");
+      throw new Error(detail || "迁移脚本没有返回可解析的结果");
+    }
+
+    if (parsed.installLocation) lastInstallLocation = String(parsed.installLocation);
+    else {
+      // 失败时也回读一次：脚本退出前可能已经把包移走了一半，界面必须以真实位置为准。
+      try {
+        lastInstallLocation = (await codex.getStatus({ probe: false }))?.installLocation ?? lastInstallLocation;
+      } catch {
+        // 读不到就保留旧值，界面上「检测迁移条件」会重新读。
+      }
+    }
+
+    return {
+      ok: Boolean(parsed.ok),
+      cancelled: false,
+      installLocation: parsed.installLocation ? String(parsed.installLocation) : lastInstallLocation,
+      message: String(parsed.message || (parsed.ok ? "迁移完成。" : "迁移没有完成。")),
+    };
+  } finally {
+    try {
+      unlinkSync(resultPath);
+    } catch {
+      // 临时结果文件删不掉不影响迁移本身。
+    }
+  }
 }
 
 // ---------- 托盘与任务栏状态 ----------
@@ -900,8 +1179,8 @@ function notifyUpdate(args) {
 // 只探这三个写死的地址，渲染进程传不进来 URL。它们正好覆盖应用要走的几条网络路径：
 // 读公告/版本（GitHub API）、下更新器安装包（Release 下载）、查 Codex 新版本（分发源）。
 const NETWORK_TARGETS = [
-  { id: "github-api", label: "GitHub API（版本与公告）", url: `https://api.github.com/repos/${GITHUB_REPO}` },
-  { id: "github-release", label: "GitHub Release 下载", url: `https://github.com/${GITHUB_REPO}/releases/latest` },
+  { id: "github-api", label: "GitHub API（版本与更新公告）", url: `https://api.github.com/repos/${GITHUB_REPO}` },
+  { id: "github-release", label: "GitHub 更新下载", url: `https://github.com/${GITHUB_REPO}/releases/latest` },
   { id: "store-index", label: "Microsoft 分发源索引", url: "https://store.rg-adguard.net/" },
 ];
 
@@ -1080,6 +1359,8 @@ async function executeCommand(event, command, args = {}) {
       const list = await codex.listCachedPackages(args);
       const directory = codex.resolveDownloadDirectory(args.downloadDirectory ?? readSettings().downloadDirectory);
       const pins = new Set(readCachePins(directory));
+      // 目录此时已经存在（脚本刚读过），是挂监听的时机。用户换目录后这里会重建。
+      ensureCacheWatcher();
       return {
         ...list,
         packages: list.packages.map((pkg) => ({ ...pkg, pinned: pins.has(basename(pkg.path)) })),
@@ -1148,6 +1429,12 @@ async function executeCommand(event, command, args = {}) {
         applyBackgroundTimer();
       }
       if ("theme" in patch) applyTheme(saved.theme);
+      // 缓存目录变了：监听器必须跟着换到新目录，否则「打开缓存目录」看到的是新目录、
+      // 自动刷新却还盯着旧目录。
+      if ("downloadDirectory" in patch) {
+        ensureCacheWatcher();
+        notifyCacheChanged();
+      }
       return saved;
     }
     case "notify_update":
@@ -1162,10 +1449,14 @@ async function executeCommand(event, command, args = {}) {
     }
     case "pick_directory": {
       const window = BrowserWindow.fromWebContents(event.sender);
+      // 选的是「缓存放在哪个文件夹」。真实缓存目录固定落在它下面的
+      // Codex Updater\downloads，由渲染层拼接后交给 precheck_cache_migration；
+      // 这里只返回用户选中的文件夹，不保存任何东西。
       const result = await dialog.showOpenDialog(window, {
-        title: "选择安装包缓存目录",
+        title: "选择缓存文件夹",
+        buttonLabel: "选择此文件夹",
         properties: ["openDirectory", "createDirectory"],
-        defaultPath: codex.resolveDownloadDirectory(readSettings().downloadDirectory),
+        defaultPath: currentCacheDirectory(),
       });
       if (result.canceled || result.filePaths.length === 0) return { canceled: true };
       return { canceled: false, path: result.filePaths[0] };
@@ -1207,6 +1498,39 @@ async function executeCommand(event, command, args = {}) {
       if (error) throw new Error(error);
       return { ok: true };
     }
+    case "get_storage_info":
+      return getStorageInfo();
+    case "precheck_cache_migration":
+      // 预检只读。执行时会重新枚举一次，界面拿到的这份摘要不是授权。
+      return cacheMigration.precheck({
+        sourceDirectory: currentCacheDirectory(),
+        targetDirectory: args.targetDirectory,
+      });
+    case "migrate_cache": {
+      const sendProgress = (payload) => {
+        if (!event.sender.isDestroyed()) event.sender.send("desktop:cache-migration", payload);
+      };
+      return cacheMigration.migrate({
+        sourceDirectory: currentCacheDirectory(),
+        targetDirectory: args.targetDirectory,
+        onProgress: sendProgress,
+        // 提交点：所有文件都已在目标目录且校验通过后才切设置。这里抛错时
+        // 源目录与设置保持原样（cache-migration.cjs 会原样抛出）。
+        switchDirectory: (target) => {
+          applyCacheDirectory(target);
+        },
+      });
+    }
+    case "cancel_cache_migration":
+      return cacheMigration.cancelMigration();
+    case "get_app_migration_capability":
+      return getAppMigrationCapability();
+    case "move_codex_app":
+      return moveCodexApp(args);
+    case "open_storage_settings":
+      // 「新内容的保存位置」页，而不是存储感知：用户来这里是为了换应用安装的盘。
+      await shell.openExternal("ms-settings:savelocations");
+      return { ok: true };
     case "get_github_updates":
       // 只读、失败不抛（结果里带 error 与上次成功的数据）。断网不该让公告整块消失，
       // 更不该让启动界面报错。
@@ -1524,6 +1848,12 @@ async function confirmClearCache() {
 
 // ---------- IPC ----------
 
+// 同步读取初始主题：preload 在页面脚本之前调用，晚一步就会先渲染出一帧浅色。
+// 只用 sendSync 读两个字符串，不涉及文件 IO 之外的任何事；设置文件很小。
+ipcMain.on("desktop:initial-theme", (event) => {
+  event.returnValue = currentThemeState();
+});
+
 ipcMain.handle("desktop:command", async (event, command, args) => {
   // 关窗保护只认这几条长命令，计数也就只在它们身上加减。
   const tracked = LONG_COMMANDS.has(command);
@@ -1604,6 +1934,9 @@ app.whenReady()
     }
     removeApplicationMenu();
     await createWindow();
+    // 缓存目录可能已经存在（用户以前下载过）。先挂上监听，界面首次扫描之后就能收到
+    // 外部删除/新增的通知；目录还不存在时 ensureCacheWatcher 会安静地跳过。
+    ensureCacheWatcher();
     applyBackgroundTimer();
   })
   .catch((error) => {
@@ -1618,9 +1951,16 @@ app.on("second-instance", () => {
 });
 
 // 系统主题切换时把窗口底色跟着换掉，否则深色下改主题再开窗口又会闪一下白。
+//
+// 同时把「解析后的主题」推给界面：偏好是「跟随系统」时，根节点的 data-theme 必须跟着
+// 系统走；显式浅色 / 深色时这条事件不改界面（渲染层按偏好自己判断），但窗口底色
+// 仍需按当前真实配色重算。
 nativeTheme.on("updated", () => {
+  const parsed = currentThemeState();
   for (const window of BrowserWindow.getAllWindows()) {
-    if (!window.isDestroyed()) window.setBackgroundColor(windowBackgroundColor());
+    if (window.isDestroyed()) continue;
+    window.setBackgroundColor(windowBackgroundColor());
+    window.webContents.send("desktop:theme-updated", parsed);
   }
 });
 

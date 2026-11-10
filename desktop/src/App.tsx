@@ -1,22 +1,29 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { AdvancedSettings } from "./components/AdvancedSettings";
 import { ActivityPanel } from "./components/ActivityPanel";
 import { AnnouncementBell } from "./components/AnnouncementBell";
 import { AppearanceSettings } from "./components/AppearanceSettings";
 import { BackgroundSettings } from "./components/BackgroundSettings";
-import { CacheSettings } from "./components/CacheSettings";
 import { HealthPanel } from "./components/HealthPanel";
 import { Icon, Logo } from "./components/Icons";
 import { NetworkDiagnostics } from "./components/NetworkDiagnostics";
 import { NoticeDialog } from "./components/NoticeDialog";
 import { RecentActivity } from "./components/RecentActivity";
 import { Sidebar, type ViewId } from "./components/Sidebar";
+import { StorageSettings } from "./components/StorageSettings";
 import { TitleBar } from "./components/TitleBar";
 import { UpdateSettings } from "./components/UpdateSettings";
 import { VersionHistory } from "./components/VersionHistory";
-import { invokeCommand, isElectronRuntime, subscribeMenuAction } from "./lib/bridge";
+import {
+  invokeCommand,
+  isElectronRuntime,
+  subscribeCacheChanged,
+  subscribeCacheMigration,
+  subscribeMenuAction,
+  subscribeThemeUpdated,
+} from "./lib/bridge";
 import { changelogAnnouncements, mergeAnnouncements } from "./lib/announcements";
 import { diagnosisCopy } from "./lib/diagnosis";
+import { cacheDirectoryUnder, samePath } from "./lib/paths";
 import {
   formatBytes,
   formatClock,
@@ -35,6 +42,15 @@ import {
   isCommandRunning,
   useAppStore,
 } from "./state/app";
+
+/** 设置页四个分类。标签用方向键可切换，面板只在当前分类渲染。 */
+type SettingsTab = "general" | "appearance" | "storage" | "about";
+const SETTINGS_TABS: Array<{ id: SettingsTab; label: string }> = [
+  { id: "general", label: "通用" },
+  { id: "appearance", label: "外观" },
+  { id: "storage", label: "存储" },
+  { id: "about", label: "关于" },
+];
 
 /** 会真正跑一条命令的动作。打开目录、复制诊断都不算 —— 它们瞬间返回，永远不冲突。 */
 const COMMAND_ACTIONS = new Set(["check", "install", "launch", "health", "repair"]);
@@ -475,7 +491,7 @@ function ResultBanners() {
  * 每一刻界面上只有一颗按钮可点，不给用户「下载和安装该点哪个」这种选择题。
  */
 function AboutUpdate() {
-  const { appUpdate, github, checkAppUpdate, downloadAppUpdate, installAppUpdate, openRelease } = useAppStore();
+  const { appUpdate, github, checkAppUpdate, downloadAppUpdate, installAppUpdate } = useAppStore();
   const { phase, version, received, total, path, error, checkedAt, startedAt } = appUpdate;
 
   const percent = total > 0 ? Math.min(100, Math.round((received / total) * 100)) : 0;
@@ -514,7 +530,7 @@ function AboutUpdate() {
                   : { tone: "gray", text: "尚未检查" };
 
   let status: ReactNode;
-  if (phase === "checking") status = "正在向 GitHub Releases 查询…";
+  if (phase === "checking") status = "正在检查新版本…";
   else if (phase === "downloading") {
     // 三个具体数字一次给全：百分比、已下载 / 总量、平均速度与剩余时间。
     // 不知道总量时（极少数代理会吃掉 Content-Length）至少也有已下载字节数。
@@ -542,7 +558,7 @@ function AboutUpdate() {
             <span className="ver">v{__APP_VERSION__}</span>
             <span className="pill" data-tone={badge.tone}>{badge.text}</span>
           </div>
-          <p className="about-update-note">从 GitHub Releases 检查更新器自身的新版本，下载后按 SHA-256 校验完整性再安装。</p>
+          <p className="about-update-note">检查新版本，下载后按 SHA-256 校验再安装。</p>
         </div>
         <div className="about-update-actions">
           {available && (
@@ -550,7 +566,7 @@ function AboutUpdate() {
               type="button"
               className="button primary"
               disabled={!hasAsset}
-              title={hasAsset ? undefined : "这个 Release 没有 .exe 安装包"}
+              title={hasAsset ? undefined : "这个版本没有提供 .exe 安装包"}
               onClick={() => void downloadAppUpdate()}
             >
               <Icon name="download" size={14} />
@@ -585,11 +601,6 @@ function AboutUpdate() {
               {phase === "checking" ? "正在检查…" : phase === "downloading" ? `正在下载 ${percent}%` : "正在安装…"}
             </button>
           )}
-          {(available || downloaded) && github?.updater?.url && (
-            <button type="button" className="button" onClick={() => void openRelease(github?.updater?.url ?? "")}>
-              查看 Release
-            </button>
-          )}
         </div>
       </div>
       <p className="about-update-status" data-tone={badge.tone}>
@@ -615,14 +626,66 @@ function AboutUpdate() {
   );
 }
 
+/**
+ * 设置分类标签。
+ *
+ * 设置页原先是一张从上滚到底的长页，缓存、安装位置、后台行为与关于混在一起，用户
+ * 找一个开关要滚很久。这里只做信息架构，不改任何设置的真实判据。
+ * 支持左右方向键与 Home / End，焦点始终停在当前标签上。
+ */
+function SettingsTabs({ value, onChange }: { value: SettingsTab; onChange: (next: SettingsTab) => void }) {
+  const move = (index: number) => {
+    const next = SETTINGS_TABS[(index + SETTINGS_TABS.length) % SETTINGS_TABS.length];
+    onChange(next.id);
+    document.getElementById(`settings-tab-${next.id}`)?.focus();
+  };
+  return (
+    <div className="settings-tabs" role="tablist" aria-label="设置分类">
+      {SETTINGS_TABS.map((tab, index) => (
+        <button
+          key={tab.id}
+          id={`settings-tab-${tab.id}`}
+          type="button"
+          role="tab"
+          aria-selected={value === tab.id}
+          aria-controls={`settings-panel-${tab.id}`}
+          tabIndex={value === tab.id ? 0 : -1}
+          className="settings-tab"
+          data-settings-tab={tab.id}
+          data-active={value === tab.id}
+          onClick={() => onChange(tab.id)}
+          onKeyDown={(event) => {
+            if (event.key === "ArrowRight") {
+              event.preventDefault();
+              move(index + 1);
+            } else if (event.key === "ArrowLeft") {
+              event.preventDefault();
+              move(index - 1);
+            } else if (event.key === "Home") {
+              event.preventDefault();
+              move(0);
+            } else if (event.key === "End") {
+              event.preventDefault();
+              move(SETTINGS_TABS.length - 1);
+            }
+          }}
+        >
+          {tab.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 export default function App() {
   const [view, setView] = useState<ViewId>("overview");
+  const [settingsTab, setSettingsTab] = useState<SettingsTab>("general");
   // 四页共用同一个滚动容器。切换页面时拉回顶部：否则从设置页底部点回概览，
   // 会停在新页面的半截上，看起来像少了一块内容。
   const scrollRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: 0 });
-  }, [view]);
+  }, [view, settingsTab]);
   const {
     phase,
     status,
@@ -638,6 +701,19 @@ export default function App() {
     notice,
     settings,
     cachedPackages,
+    cacheStatus,
+    cacheError,
+    cacheRefreshedAt,
+    themePending,
+    storageInfo,
+    storageLoading,
+    migrationPlan,
+    migrationRunning,
+    migrationProgress,
+    appCapability,
+    appCapabilityLoading,
+    appCapabilityCheckedAt,
+    appMigrating,
     github,
     appUpdate,
     network,
@@ -651,11 +727,19 @@ export default function App() {
     runHealthProbe,
     runRepair,
     launch,
-    pickDirectory,
     saveDownloadDirectory,
     saveOptions,
+    setTheme,
+    refreshStorage,
+    refreshCachedPackages,
+    pickCacheFolder,
+    precheckCacheMigration,
+    migrateCache,
+    cancelCacheMigration,
+    applyCacheMigrationProgress,
+    detectAppMigration,
+    moveCodexApp,
     dismissTip,
-    openRelease,
     clearCache,
     copyDiagnostics,
     openPath,
@@ -681,6 +765,58 @@ export default function App() {
       offBackground();
     };
   }, [bootstrap]);
+
+  // 主题：显式浅色 / 深色不跟系统走；只有「跟随系统」才接受主进程推来的解析结果。
+  // 根节点属性同时被 CSS 与原生 color-scheme 消费。
+  useEffect(() => {
+    return subscribeThemeUpdated((payload) => {
+      const preference = useAppStore.getState().settings?.theme ?? "system";
+      if (preference === "system") {
+        document.documentElement.dataset.theme = payload.resolved;
+        document.documentElement.dataset.themePreference = "system";
+        document.documentElement.style.colorScheme = payload.resolved;
+      }
+    });
+  }, []);
+
+  // 缓存目录监听 + 窗口激活补偿刷新。
+  //
+  // 监听器只发「变了」，这里统一防抖后重扫；焦点刷新是补偿通道 —— 某些网络盘 /
+  // 权限变化下 fs.watch 不一定会报，不能只依赖它。代次保护在 store 里。
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const schedule = () => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        timer = null;
+        void useAppStore.getState().refreshCachedPackages();
+      }, 400);
+    };
+    const offCache = subscribeCacheChanged(schedule);
+    window.addEventListener("focus", schedule);
+    return () => {
+      offCache();
+      window.removeEventListener("focus", schedule);
+      if (timer) clearTimeout(timer);
+    };
+  }, []);
+
+  // 缓存迁移的复制进度。与安装链路（desktop:progress）分开：迁移不关 Codex，
+  // 进度条的语义也不同，混在一起会让「正在安装」和「正在迁移」互相覆盖。
+  useEffect(() => {
+    return subscribeCacheMigration((event) => {
+      useAppStore.getState().applyCacheMigrationProgress(event);
+    });
+  }, []);
+
+  // 进入与缓存相关的页面时主动同步一次：用户从资源管理器回来，最想确认的就是清单。
+  useEffect(() => {
+    if (view === "history" || view === "settings") void refreshCachedPackages();
+  }, [view, refreshCachedPackages]);
+
+  useEffect(() => {
+    if (view === "settings" && settingsTab === "storage") void refreshStorage();
+  }, [view, settingsTab, refreshStorage]);
 
   // 桌面端的键盘滚动。内容区是 .app-scroll 这个独立滚动容器，body 本身是
   // overflow:hidden —— 默认的 PageDown / Home / End 滚的是文档，等于按了没反应。
@@ -766,6 +902,7 @@ export default function App() {
     ? Math.min(10, Math.round(Number(settings?.cacheKeepCount)))
     : 0;
   const lastCheckLabel = lastCheckClock ? `上次检查 ${lastCheckClock}` : "";
+  const refreshedClock = formatClock(cacheRefreshedAt);
 
   const onPrimary = () => {
     if (upToDate) void launch();
@@ -811,7 +948,6 @@ export default function App() {
             dismissedTips={settings?.dismissedTips ?? []}
             openRequest={announceRequest}
             onDismiss={(id) => void dismissTip(id)}
-            onOpenRelease={(url) => void openRelease(url)}
           />
         }
       />
@@ -978,14 +1114,32 @@ export default function App() {
               <div className="page">
                 <div className="page-head">
                   <div>
-                    <h1>版本历史</h1>
-                    <p>更新时保留下来的安装包。需要时可以从这里退回上一版。</p>
+                    <h1>版本与缓存</h1>
+                    <p>
+                      缓存里的安装包、占用与同步状态。需要时可以从这里退回上一版；
+                      外部删除或新增文件会自动同步，也可以手动刷新。
+                    </p>
                   </div>
                   <div className="head-aside">
-                    <span className="pill" data-tone="gray">
-                      <Icon name="shield" size={12} />
-                      回退前照样校验签名
+                    <span className="pill" data-tone={cacheStatus === "error" ? "orange" : "gray"}>
+                      <Icon name={cacheStatus === "scanning" ? "refresh" : "shield"} size={12} />
+                      {cacheStatus === "error"
+                        ? "缓存读取失败"
+                        : cacheStatus === "scanning"
+                          ? "正在扫描…"
+                          : refreshedClock
+                            ? `${refreshedClock} 同步`
+                            : "安装前校验签名"}
                     </span>
+                    <button
+                      type="button"
+                      className="button"
+                      disabled={cacheStatus === "scanning"}
+                      onClick={() => void refreshCachedPackages()}
+                    >
+                      <Icon name="refresh" size={14} />
+                      刷新
+                    </button>
                   </div>
                 </div>
 
@@ -996,7 +1150,9 @@ export default function App() {
                     </span>
                     <div>
                       <span className="k">缓存安装包</span>
-                      <span className="v">{cacheCount} 个</span>
+                      <span className="v">
+                        {cachedPackages ? `${cacheCount} 个` : cacheStatus === "error" ? "读取失败" : "正在扫描"}
+                      </span>
                     </div>
                   </div>
                   <div className="stat">
@@ -1005,7 +1161,9 @@ export default function App() {
                     </span>
                     <div>
                       <span className="k">占用空间</span>
-                      <span className="v">{cachedPackages ? formatBytes(cacheBytes) : "未知"}</span>
+                      <span className="v">
+                        {cachedPackages ? formatBytes(cacheBytes) : cacheStatus === "error" ? "未知" : "扫描中"}
+                      </span>
                     </div>
                   </div>
                   <div className="stat">
@@ -1014,7 +1172,7 @@ export default function App() {
                     </span>
                     <div>
                       <span className="k">可回退 · 重装</span>
-                      <span className="v">{rollbackCount} 个</span>
+                      <span className="v">{cachedPackages ? `${rollbackCount} 个` : "—"}</span>
                     </div>
                   </div>
                   <div className="stat">
@@ -1028,12 +1186,14 @@ export default function App() {
                   </div>
                 </section>
 
-                {/* 可以整张关掉（开关在「安装包缓存」里，默认显示）。关掉的只是这张卡片，
+                {/* 可以整张关掉（开关在「存储」里，默认显示）。关掉的只是这张卡片，
                     缓存里的安装包、以及失败告警里的回退入口都不受影响。 */}
                 {showVersionHistory && (
                   <VersionHistory
                     cachedPackages={cachedPackages}
                     cacheDirectory={cacheDirectory}
+                    cacheStatus={cacheStatus}
+                    cacheError={cacheError}
                     keepCount={cacheKeepCount}
                     busy={busy}
                     rollingBack={rollingBack}
@@ -1041,6 +1201,7 @@ export default function App() {
                     onDelete={(pkg) => void deleteCachedPackage(pkg.path)}
                     onPin={(pkg, pinned) => void pinCachedPackage(pkg.path, pinned)}
                     onOpenDirectory={(path) => void openPath(path)}
+                    onRetry={() => void refreshCachedPackages()}
                   />
                 )}
 
@@ -1050,7 +1211,7 @@ export default function App() {
                       <Icon name="clock" size={22} />
                     </span>
                     <strong>版本历史已隐藏</strong>
-                    <p>缓存里的安装包与失败告警里的回退入口都不受影响。可以在「设置 → 安装包缓存」里重新打开。</p>
+                    <p>缓存里的安装包与失败告警里的回退入口都不受影响。可以在「设置 → 存储」里重新打开。</p>
                   </section>
                 )}
 
@@ -1102,93 +1263,167 @@ export default function App() {
                 <div className="page-head">
                   <div>
                     <h1>设置</h1>
-                    <p>缓存、安装位置与后台行为。所有改动立即生效。</p>
+                    <p>更新、外观、存储与后台行为，改动自动保存。</p>
                   </div>
                   <div className="head-aside">
-                    <span className="pill" data-tone="gray">
-                      <Icon name="lock" size={12} />
-                      只写用户目录
+                    <span className="pill" data-tone={themePending ? "accent" : "gray"}>
+                      <Icon name={themePending ? "refresh" : "lock"} size={12} />
+                      {themePending ? "正在保存…" : "只写用户目录"}
                     </span>
                   </div>
                 </div>
 
-                <p className="group-title">更新与通知</p>
-                <UpdateSettings
-                  settings={settings}
-                  onToggle={(key, value) => void saveOptions({ [key]: value })}
-                  onIntervalChange={(hours) => void saveOptions({ checkIntervalHours: hours })}
-                />
+                <SettingsTabs value={settingsTab} onChange={setSettingsTab} />
 
-                <p className="group-title">外观</p>
-                <AppearanceSettings
-                  settings={settings}
-                  onTheme={(theme) => void saveOptions({ theme })}
-                />
+                {error && (
+                  <p className="error-text" role="alert">
+                    {error}
+                  </p>
+                )}
 
-                <p className="group-title">安装包缓存</p>
-                <CacheSettings
-                  settings={settings}
-                  cachedPackages={cachedPackages}
-                  // 和「版本历史」卡片、worker 剪枝用的是同一个目录，判据只在 store 里。
-                  cacheDirectory={effectiveDownloadDirectory({ settings, cachedPackages })}
-                  busy={busy}
-                  clearingCache={clearingCache}
-                  onPick={() => void pickDirectory()}
-                  onResetDirectory={() => void saveDownloadDirectory("")}
-                  onOpen={(path) => void openPath(path)}
-                  onToggleVersionHistory={(next) => void saveOptions({ showVersionHistory: next })}
-                  onKeepCountChange={(count) => void saveOptions({ cacheKeepCount: count })}
-                  onClearCache={() => void clearCache()}
-                />
+                {settingsTab === "general" && (
+                  <div id="settings-panel-general" role="tabpanel" aria-labelledby="settings-tab-general">
+                    <p className="group-title">更新与通知</p>
+                    <UpdateSettings
+                      settings={settings}
+                      onToggle={(key, value) => void saveOptions({ [key]: value })}
+                      onIntervalChange={(hours) => void saveOptions({ checkIntervalHours: hours })}
+                    />
 
-                <p className="group-title">网络诊断</p>
-                <NetworkDiagnostics
-                  report={network}
-                  checking={networkChecking}
-                  onCheck={() => void checkNetwork()}
-                />
+                    <p className="group-title">网络诊断</p>
+                    <NetworkDiagnostics
+                      report={network}
+                      checking={networkChecking}
+                      onCheck={() => void checkNetwork()}
+                    />
 
-                <p className="group-title">高级</p>
-                <AdvancedSettings
-                  settings={settings}
-                  // 安装位置取健康检查里那份真实路径（可能不在 C 盘）。健康自检刚跑过时
-                  // 以它为准，否则用启动时那份状态。
-                  installLocation={(healthDetail ?? status)?.installLocation ?? null}
-                  cacheDirectory={effectiveDownloadDirectory({ settings, cachedPackages })}
-                  onOpen={(path) => void openPath(path)}
-                  onOpenInstallLocation={() => void openInstallLocation()}
-                  onCopyDiagnostics={() => void copyDiagnostics()}
-                />
+                    <p className="group-title">后台与启动</p>
+                    <BackgroundSettings
+                      settings={settings}
+                      onToggle={(key, value) => void saveOptions({ [key]: value })}
+                    />
+                  </div>
+                )}
 
-                <p className="group-title">后台与启动</p>
-                <BackgroundSettings
-                  settings={settings}
-                  onToggle={(key, value) => void saveOptions({ [key]: value })}
-                />
+                {settingsTab === "appearance" && (
+                  <div id="settings-panel-appearance" role="tabpanel" aria-labelledby="settings-tab-appearance">
+                    <p className="group-title">外观</p>
+                    <AppearanceSettings
+                      settings={settings}
+                      pending={themePending}
+                      onTheme={(theme) => void setTheme(theme)}
+                    />
+                  </div>
+                )}
 
-                <p className="group-title">关于</p>
-                <section className="card">
-                  <div className="set-block">
-                    <div className="about-row">
-                      <Logo size={40} />
-                      <div className="info">
-                        <strong>Codex Updater</strong>
-                        <p>安装包来自 Microsoft Store · 安装前校验发布者签名</p>
+                {settingsTab === "storage" && (
+                  <div id="settings-panel-storage" role="tabpanel" aria-labelledby="settings-tab-storage">
+                    <StorageSettings
+                      settings={settings}
+                      cachedPackages={cachedPackages}
+                      cacheStatus={cacheStatus}
+                      cacheError={cacheError}
+                      cacheRefreshedAt={cacheRefreshedAt}
+                      cacheDirectory={cacheDirectory}
+                      storage={storageInfo}
+                      storageLoading={storageLoading}
+                      busy={busy}
+                      clearingCache={clearingCache}
+                      migrationPlan={migrationPlan}
+                      migrationRunning={migrationRunning}
+                      migrationProgress={migrationProgress}
+                      capability={appCapability}
+                      capabilityLoading={appCapabilityLoading}
+                      capabilityCheckedAt={appCapabilityCheckedAt}
+                      appMigrating={appMigrating}
+                      installLocation={installLocation}
+                      onRefreshCache={() => void refreshCachedPackages()}
+                      onRefreshStorage={() => void refreshStorage()}
+                      onResetDirectory={() => void saveDownloadDirectory("")}
+                      onOpen={(path) => void openPath(path)}
+                      onToggleVersionHistory={(next) => void saveOptions({ showVersionHistory: next })}
+                      onKeepCountChange={(count) => void saveOptions({ cacheKeepCount: count })}
+                      onClearCache={() => void clearCache()}
+                      onPick={() => {
+                        void (async () => {
+                          const folder = await pickCacheFolder();
+                          if (!folder) return;
+                          // 用户选的是「放在哪个文件夹」，真实缓存目录固定落在它下面的
+                          // Codex Updater\downloads，不把安装包直接铺在所选文件夹里。
+                          const target = cacheDirectoryUnder(folder);
+                          if (!target) return;
+                          if (samePath(target, cacheDirectory)) {
+                            useAppStore.setState({ notice: "缓存目录已经在这个位置了，不需要更改。" });
+                            return;
+                          }
+                          // 预检会校验目标目录、建出子目录，并列出要搬的文件。
+                          const plan = await precheckCacheMigration(target);
+                          if (!plan) return;
+                          // 没有旧安装包就没什么可确认的，直接切过去。
+                          if (plan.files.length === 0) await saveDownloadDirectory(plan.targetDirectory);
+                        })();
+                      }}
+                      onDismissMigration={() => {
+                        // 清掉预检结果只需要把 store 里的 plan 置空；这里没有单独的
+                        // action，重新扫描不会动 plan，所以用一次原地赋值。
+                        useAppStore.setState({ migrationPlan: null });
+                      }}
+                      onApplyMigration={(carryOver) => {
+                        const target = migrationPlan?.targetDirectory;
+                        if (!target) return;
+                        if (carryOver) {
+                          void migrateCache(target);
+                          return;
+                        }
+                        // 不搬旧安装包：只切设置，别假装搬过。
+                        void (async () => {
+                          const switched = await saveDownloadDirectory(target);
+                          if (switched) {
+                            useAppStore.setState({
+                              notice: `缓存目录已切换到 ${target}；原有安装包留在原目录，需要时可在「版本与缓存」里删除。`,
+                            });
+                          }
+                        })();
+                      }}
+                      onCancelMigration={() => void cancelCacheMigration()}
+                      onDetectApp={() => void detectAppMigration()}
+                      onMoveApp={(volume) => void moveCodexApp(volume)}
+                      onOpenInstallLocation={() => void openInstallLocation()}
+                      onOpenStorageSettings={() => void invokeCommand("open_storage_settings").catch((cause) => {
+                        useAppStore.setState({ error: cause instanceof Error ? cause.message : String(cause) });
+                      })}
+                      onCopyDiagnostics={() => void copyDiagnostics()}
+                    />
+                  </div>
+                )}
+
+                {settingsTab === "about" && (
+                  <div id="settings-panel-about" role="tabpanel" aria-labelledby="settings-tab-about">
+                    <p className="group-title">关于</p>
+                    <section className="card">
+                      <div className="set-block">
+                        <div className="about-row">
+                          <Logo size={40} />
+                          <div className="info">
+                            <strong>Codex Updater</strong>
+                            <p>安装包来自 Microsoft Store · 安装前校验发布者签名</p>
+                          </div>
+                        </div>
                       </div>
-                    </div>
+                      <AboutUpdate />
+                      <div className="set-row">
+                        <div className="label">
+                          <strong>退出更新器</strong>
+                          <p>安装与启动都已结束，可以关闭这个窗口。</p>
+                        </div>
+                        <button type="button" className="button" onClick={() => runAction("quit")}>
+                          <Icon name="power" size={14} />
+                          退出
+                        </button>
+                      </div>
+                    </section>
                   </div>
-                  <AboutUpdate />
-                  <div className="set-row">
-                    <div className="label">
-                      <strong>退出更新器</strong>
-                      <p>安装与启动都已结束，可以关闭这个窗口。</p>
-                    </div>
-                    <button type="button" className="button" onClick={() => runAction("quit")}>
-                      <Icon name="power" size={14} />
-                      退出
-                    </button>
-                  </div>
-                </section>
+                )}
 
                 <p className="content-foot">
                   安装前校验 OpenAI 签名 · 只写用户目录，不碰 WindowsApps

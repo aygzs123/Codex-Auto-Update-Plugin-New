@@ -15,6 +15,12 @@ declare global {
       onAppUpdateProgress(callback: (payload: { received: number; total: number }) => void): () => void;
       /** 后台模式下主进程每 6 小时敲一次，界面据此重跑一次静默检查。 */
       onBackgroundCheck(callback: () => void): () => void;
+      /** 系统配色变化时主进程推来的解析结果（light / dark）。 */
+      onThemeUpdated(callback: (payload: { resolved: "light" | "dark"; preference: string }) => void): () => void;
+      /** 当前缓存目录的文件发生变化。界面收到后重新扫描，不自带数据。 */
+      onCacheChanged(callback: () => void): () => void;
+      /** 缓存迁移的复制进度。 */
+      onCacheMigrationProgress(callback: (payload: import("./types").CacheMigrationProgress) => void): () => void;
       window: {
         minimize(): Promise<void>;
         maximize(): Promise<void>;

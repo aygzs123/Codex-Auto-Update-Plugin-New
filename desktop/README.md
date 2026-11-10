@@ -3,6 +3,20 @@
 Codex 的一键安装器：Electron + React + TypeScript + Vite，打包成单个 Windows
 NSIS `.exe`。不需要 Rust 或 Cargo，也不需要用户先装好插件。
 
+![概览](../docs/images/app-ready.png)
+
+| 诊断与修复 | 深色设置 |
+| --- | --- |
+| ![诊断](../docs/images/app-diagnostics.png) | ![深色设置](../docs/images/app-dark.png) |
+
+| 存储管理 | 缓存迁移确认 |
+| --- | --- |
+| ![存储](../docs/images/app-storage.png) | ![迁移确认](../docs/images/app-migration-confirm.png) |
+
+截图由 `npx electron scripts/verify-render.cjs --screenshot=release-verify/ui`（深色加
+`--dark`，存储与迁移确认加 `--storage`）渲染真实 `dist/` 产物生成，
+数据是桩数据，不读取也不修改本机真实缓存。
+
 ## 开发
 
 ```powershell
@@ -16,6 +30,18 @@ npm run electron:dev
 ```powershell
 npm run dev
 ```
+
+验证：
+
+```powershell
+npm test            # 单元 + 源码契约测试；缓存迁移用临时目录做真实文件操作
+npm run verify:render   # 15 个渲染场景，逐个启动 Electron 加载 dist/
+```
+
+`tests/cache-migration.test.cjs` 在临时目录里真实跑「预检 → 复制 → 校验 → 切换 → 清理」，
+覆盖同目录 / 嵌套拒绝、冲突不覆盖、取消后源文件保留；`tests/theme-storage.test.cjs`
+钉住主题链路、缓存读取状态、存储命令与迁移确认。渲染场景里的 `--storage` 会真的点
+「更改位置」和「迁移到所选卷」，但主进程是桩：**不执行任何真实迁移，也不弹 UAC**。
 
 ## 构建 Windows EXE
 
@@ -52,13 +78,15 @@ DIB 条目），改了 `scripts/make-icon.cjs` 之后跑 `npm run icon:make` 重
   `setProgressBar()`：阶段事件按百分比，下载字节数是不确定态（下载总量本就无从得知，
   不编造百分比）。命令结束在 `ipcMain.handle` 的 `finally` 里清成 `-1`。
 - **关窗保护。** 只拦**会改动系统的长命令**（`download_codex` / `install_codex` /
-  `repair_bundles` / `launch_codex` / `clear_cached_packages` / `download_app_update`）——
+  `repair_bundles` / `launch_codex` / `clear_cached_packages` / `download_app_update` /
+  `migrate_cache` / `move_codex_app`）——
   「检查更新」跑一半关掉完全无害，为它弹框是打扰。
   确认框默认按钮是「继续等待」，`app.quit()` 经 `before-quit` 置标志放行。
-- **跟随系统深浅色。** `styles.css` 的颜色全在 `:root` 变量里，深色只由一个
-  `@media (prefers-color-scheme: dark)` 重定义变量；窗口底色由 `nativeTheme` 决定，并订阅
-  `nativeTheme.on("updated")`，免得系统切主题后新窗口闪一下白。卡片上那三个 macOS 装饰
-  圆点保持字面量配色。
+- **主题三档。** 跟随系统 / 浅色 / 深色写在 `settings.json` 的 `theme`，主进程据此设置
+  `nativeTheme.themeSource`，preload 在首帧前用 `sendSync("desktop:initial-theme")`
+  拿到解析结果并写上 `data-theme`，所以不会先闪一帧白。CSS 只认 `data-theme` 一处，
+  不再自己吃 `prefers-color-scheme`；原生窗口底色、托盘菜单与系统通知一起变。
+  卡片上那三个 macOS 装饰圆点保持字面量配色。
 - **启动即查一次。** 界面就绪后异步跑一遍静默检查（不弹对话框），顶栏写出「上次检查
   HH:MM」。「诊断 → 复制诊断信息」把完整现场拼成一段文本写进剪贴板 —— 这是**即时动作**，
   界面忙的时候也必须能点，同事报障时正是安装刚失败的那一刻。
@@ -86,10 +114,10 @@ DIB 条目），改了 `scripts/make-icon.cjs` 之后跑 `npm run icon:make` 重
 
 **公告以 [`CHANGELOG.md`](CHANGELOG.md) 为唯一来源。** `npm run sync:changelog` 把它切成
 `src/lib/changelog.generated.json`（提交入库，漂移由 `tests/changelog.test.cjs` 比对），
-应用内「更新公告」铃铛把这份历史与 GitHub 上更新的 Release 合并展示：按 tag 去重、
-**本地优先**、发布时间倒序、最多 10 条。历史 Release 的正文是通用模板，版本说明以
-CHANGELOG 为准。铃铛有更新器新版本时亮红点，单条公告可按 tag 忽略（存在 `settings.json`
-的 `dismissedTips`）。
+应用内「更新公告」铃铛把这份历史与远端更新的版本合并展示：按 tag 去重、
+**本地优先**、发布时间倒序、最多 10 条。历史版本的远端正文是通用模板，版本说明以
+CHANGELOG 为准。公告只列版本、日期和条目，不出现发布平台术语，也不放外链；铃铛有更新器
+新版本时亮红点，单条公告可按 tag 忽略（存在 `settings.json` 的 `dismissedTips`）。
 
 概览页不再常驻「本次更新后无法退回当前版本」的告警：缓存保留份数已经做成设置项，
 「版本历史」里还能逐个固定或删除安装包，退路由那两处交代。
@@ -100,22 +128,49 @@ CHANGELOG 为准。铃铛有更新器新版本时亮红点，单条公告可按 
 
 ## 设置
 
-设置页按用途分组，所有改动立即生效并落盘到 `settings.json`：
+设置页按 **通用 / 外观 / 存储 / 关于** 四个标签组织（`role="tablist"`，方向键可切换），
+所有改动立即生效并落盘到 `settings.json`：
 
-- **更新与通知**：启动时自动检查（默认开）、发现新版本后自动下载安装包（默认关，
+- **通用**：更新与通知（启动时自动检查，默认开）、发现新版本后自动下载安装包（默认关，
   **只下载到缓存，不安装**）、系统通知（默认开）、后台复查间隔（1 / 3 / 6 / 12 / 24
-  小时，默认 6）。自动下载完成后会再弹一条通知说明包已就绪。
-- **外观**：主题颜色（跟随系统 / 浅色 / 深色）。值写进设置并设置
-  `nativeTheme.themeSource`，渲染层不做第二套 CSS，原生窗口底色、托盘菜单与系统通知
-  一起变。
-- **安装包缓存**：缓存目录、占用、清空、自动保留份数（不自动清理 / 保留 2、3、5、10
-  个）、是否显示「版本历史」卡片。
-- **网络诊断**：一次探测 GitHub API、Release 下载与分发源三条路径，显示当前代理规则
-  （`session.resolveProxy`）、延迟、HTTP 状态与失败原因。只探测，不改任何设置。
-- **后台与启动**、**高级**、**关于**：见下面各节。
+  小时，默认 6）；网络诊断一次探测 GitHub API、Release 下载与分发源三条路径，显示当前
+  代理规则（`session.resolveProxy`）、延迟、HTTP 状态与失败原因，只探测、不改设置；
+  「后台与启动（可选）」两个开关也在这里。
+- **外观**：主题颜色（跟随系统 / 浅色 / 深色），立即上屏并写进设置。保存失败会恢复上一个
+  已保存值并说明原因；连续快速切换时只认最后一次请求的结果。
+- **存储**：真实磁盘剩余 + 安装包缓存 + Codex 应用本体 + 用户数据，三块分开说明（见下一节）。
+- **关于**：更新器自身版本检查、下载与安装（见「应用自身更新与公告」），以及日志 / 诊断入口。
+
+「安装包缓存」卡片里可以改缓存目录（新位置自动落在所选文件夹的 `Codex Updater\downloads`，
+旧安装包可选一起搬）、清空缓存、选择自动保留份数（不自动清理 / 保留 2、3、5、10 个），
+并决定是否显示「版本历史」卡片。
 
 托盘的提示与任务栏角标跟着统一策略走：有可装的新版本时显示红点，正在下载安装包时提示
 「正在下载更新包」。托盘菜单的「查看更新公告」会把窗口叫出来并展开公告面板。
+
+## 存储管理
+
+存储页刻意把三件事分开，不混成一个「全部迁走」的承诺：
+
+- **安装包缓存**（本应用管理）：目录可换、可清空，也可以把旧安装包一起搬走。换目录只需
+  选一个文件夹，缓存固定落在它的 `Codex Updater\downloads` 子目录；确认块里勾选「一起搬」
+  才进入迁移流程：预检（绝对路径、拒绝同目录 / 互相嵌套、目标可写探针、`fs.statfs` 空间、
+  冲突枚举）→ 逐文件复制到临时文件并计算 SHA-256 → 目标文件再 hash 比对 → 原子改名 →
+  **全部通过后**才切换设置 → 清理源文件。不勾选就只切换设置，旧安装包留在原处。
+  目标已有同名但内容不同的文件时立即中止，绝不覆盖；取消或失败时
+  源目录与设置都不动，残留的临时文件会清理掉。中断的复制不会留下半个包。
+- **Codex 应用本体**（Windows 部署服务管理）：先「检测迁移条件」——包身份、当前卷、
+  Windows 已挂载的 AppxVolume、包的 `NonRemovable` / `IsFramework` 等标记；条件满足才出现
+  目标卷下拉框和「迁移到所选卷」。执行时主进程再弹一次原生确认框（默认「取消」），然后由
+  PowerShell 脚本调用 `Move-AppxPackage -Package <PackageFullName> -Volume <AppxVolume>`；
+  需要管理员权限时脚本用 `Start-Process -Verb RunAs` 拉起短命提权子进程，并把真实结果写进
+  结果文件回读。**不复制 `WindowsApps`、不改所有权、不建目录联接、不重装**；迁移后以部署
+  服务回读的安装位置为准。Windows 不认识第二个 AppxVolume 时如实说明「当前包不支持迁移」。
+- **用户数据**（配置 / 会话 / 日志 / 项目目录）：由 Codex 自己管理，**不随应用迁移**，
+  本期也不提供「迁移全部用户数据」入口。这条说明在按钮旁边，避免用户产生错误预期。
+
+设置 → 存储之外的路径显示仍然只有 `Get-AppxPackage` 报回来的真实值；没有任何一处按系统盘
+拼路径（`tests/install-location.test.cjs` 逐行扫描钉住）。
 
 ## 后台与启动（可选项，默认关）
 
@@ -148,7 +203,7 @@ AGENTS.md 那条「后台运行绝不弹 UAC」）。
   `app.asar` 里的 `.ps1`）。开发态则直接读 `desktop/resources/scripts/`。
   所以这个 exe 是自包含的：机器上没装过插件也能用，也不会去动
   `%USERPROFILE%\.codex` 下的任何东西。
-- Electron 主进程只接受 25 个固定白名单命令（见 `electron/main.cjs` 的
+- Electron 主进程只接受 32 个固定白名单命令（见 `electron/main.cjs` 的
   `allowedCommands`），不接受任意 shell 命令，也不接受渲染进程传脚本路径；
   每个命令对应的脚本名在主进程里写死。剪贴板只有**写**（`copy_text`）没有**读** ——
   一个能把用户剪贴板内容读走的接口没有任何存在的理由；要复制的文本由渲染进程拼
@@ -156,8 +211,11 @@ AGENTS.md 那条「后台运行绝不弹 UAC」）。
   也各是一个白名单命令：前者只读本项目仓库的公开 API，后者只接受
   `https://github.com/<repo>/releases/` 前缀，不接受任意 URL。
 - 渲染进程不启用 Node.js，使用 `contextIsolation` 和受控 preload IPC。
-- MSIX 本体装到哪个盘由 Windows 的部署服务决定，本应用改不了（界面上只如实显示）。
-  应用自己控制的是安装包缓存目录：安装包（几百 MB）和安装日志放在那里。
+- MSIX 本体**装在哪由 Windows 的部署服务决定**，安装那一刻本应用改不了（界面上只如实显示
+  `Get-AppxPackage` 报回来的路径）。装好之后可以申请迁移：只有 Windows 已识别另一个
+  AppxVolume、包自身允许移动、且用户在确认框里点「迁移」时，才调用 `Move-AppxPackage`；
+  结果同样以部署服务回读为准，不复制 `WindowsApps`、不改所有权、不建联接。
+  应用自己完全控制的是安装包缓存目录：安装包（几百 MB）和安装日志放在那里，也可以整体迁移。
 - 下载包检查 Authenticode 签名，并把签名者与**本机已安装的 Codex** 的发布者比对，
   再计算 SHA-256；没有远端摘要清单时不会把「已计算」误报成「摘要匹配」。
   期望发布者是现取的，不写死在代码里：Store 分发的包，发布者 DN 是 `CN=<GUID>` 形式

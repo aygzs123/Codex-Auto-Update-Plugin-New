@@ -143,7 +143,16 @@ test("只有会改动系统的长命令才拦关窗", () => {
   const names = [...longCommands[1].matchAll(/"([^"]+)"/g)].map((match) => match[1]);
   assert.deepEqual(
     names.sort(),
-    ["clear_cached_packages", "download_app_update", "download_codex", "install_codex", "launch_codex", "repair_bundles"],
+    [
+      "clear_cached_packages",
+      "download_app_update",
+      "download_codex",
+      "install_codex",
+      "launch_codex",
+      "migrate_cache",
+      "move_codex_app",
+      "repair_bundles",
+    ],
     "长命令清单变了：清单外的命令不会被拦，清单内的会被拦",
   );
   // 「检查更新」刻意不在里面：它不改动任何东西，跑到一半关窗完全无害。

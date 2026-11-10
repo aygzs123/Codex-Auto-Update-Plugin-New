@@ -142,8 +142,9 @@ function useWindowDrag() {
 /**
  * 标题栏。
  *
- * 整个窗口只有这一条可拖动。左侧是三颗 mac 圆点（装饰），右侧是最小化 / 最大化 /
- * 关闭，中间留白用于拖动 —— 视觉上保留 mac 的辨识度，操作习惯仍按 Windows 走。
+ * 整个窗口只有这一条可拖动。左、中、右三块各司其职：左边三颗 mac 圆点是装饰，
+ * 中间是应用名（不可点、不参与拖动排除，双击仍落到标题栏上），右边是公告铃铛与
+ * 最小化 / 最大化 / 关闭。三列用 grid 等权排布，应用名永远在窗口正中。
  */
 export function TitleBar({ actions }: { actions?: ReactNode }) {
   const dragHandlers = useWindowDrag();
@@ -152,6 +153,10 @@ export function TitleBar({ actions }: { actions?: ReactNode }) {
     <header className="topbar" {...dragHandlers}>
       <div className="topbar-left">
         <TrafficLights />
+      </div>
+      <div className="topbar-brand" aria-label="Codex Updater">
+        <span className="brand-mark" aria-hidden="true" />
+        <span>Codex Updater</span>
       </div>
       <div className="topbar-actions">
         {actions}

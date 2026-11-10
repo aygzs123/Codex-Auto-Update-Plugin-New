@@ -35,7 +35,7 @@ export function NetworkDiagnostics({
             {report && <span className="aside">上次诊断 {formatClock(report.checkedAt)}</span>}
           </div>
           <p>
-            检查应用实际用到的那几条网络路径。只探测，不改任何设置；结果不会上传到任何地方。
+            检查应用要走的几条网络路径，只探测、不改设置、不上传。
           </p>
 
           {proxy && (
@@ -68,7 +68,7 @@ export function NetworkDiagnostics({
             </div>
           ) : (
             <p className="field-help">
-              还没有诊断过。点下面的按钮会同时探测三个地址，最多等 8 秒。
+              尚未诊断。点按钮探测三个地址，最多 8 秒。
             </p>
           )}
 

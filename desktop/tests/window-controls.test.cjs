@@ -192,13 +192,17 @@ test("布局：窄窗口下也不许藏掉侧栏导航", () => {
   assert.doesNotMatch(narrow, /\.sidebar\s*\{[^}]*display:\s*none/);
 });
 
-test("布局：顶栏左彩点右按钮，不再重复主区的版本结论", () => {
-  // 顶栏原先塞了「红绿灯 + 居中品牌 + 状态胶囊 + 上次检查」，窗口一窄就互相挤，
-  // 胶囊里的版本号还会被截断。现在左边只剩装饰彩点、右边只剩公告铃铛与窗口按钮，
-  // 结论统一由主区给。两端分开靠 space-between 撑开。
+test("布局：顶栏左彩点、中间应用名、右按钮，不再重复主区的版本结论", () => {
+  // 顶栏原先塞了「红绿灯 + 状态胶囊 + 上次检查」，窗口一窄就互相挤，胶囊里的版本号
+  // 还会被截断。现在左边只剩装饰彩点、中间是应用名、右边只剩公告铃铛与窗口按钮，
+  // 结论统一由主区给。三列等权（1fr auto 1fr）才能让应用名落在窗口正中。
   const css = stylesSource.replace(/\/\*[\s\S]*?\*\//g, "");
-  assert.match(css, /\.topbar\s*\{[^}]*justify-content:\s*space-between/);
+  assert.match(css, /\.topbar\s*\{[^}]*display:\s*grid/);
+  assert.match(css, /\.topbar\s*\{[^}]*grid-template-columns:\s*1fr auto 1fr/);
+  assert.match(css, /\.topbar-brand\s*\{[^}]*justify-self:\s*center/);
+  assert.match(css, /\.topbar-left\s*\{[^}]*justify-self:\s*start/);
   assert.match(css, /\.topbar-actions\s*\{[^}]*display:\s*flex/);
+  assert.match(css, /\.topbar-actions\s*\{[^}]*justify-self:\s*end/);
   assert.match(css, /\.topbar-actions\s*\{[^}]*gap:/);
   // 状态胶囊整块删除：留着就还有第二处版本结论，迟早和主区分家。
   assert.doesNotMatch(css, /\.status-chip\s*\{/);

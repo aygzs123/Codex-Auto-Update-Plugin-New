@@ -34,3 +34,25 @@ export function subscribeBackgroundCheck(callback: () => void): () => void {
   const desktop = typeof window !== "undefined" ? window.desktop : undefined;
   return desktop ? desktop.onBackgroundCheck(callback) : () => {};
 }
+
+/** 系统配色变化（主进程推解析后的主题）。 */
+export function subscribeThemeUpdated(
+  callback: (payload: { resolved: "light" | "dark"; preference: string }) => void,
+): () => void {
+  const desktop = typeof window !== "undefined" ? window.desktop : undefined;
+  return desktop ? desktop.onThemeUpdated(callback) : () => {};
+}
+
+/** 缓存目录的文件变化。只通知「变了」，内容由 store 重新扫描。 */
+export function subscribeCacheChanged(callback: () => void): () => void {
+  const desktop = typeof window !== "undefined" ? window.desktop : undefined;
+  return desktop ? desktop.onCacheChanged(callback) : () => {};
+}
+
+/** 缓存迁移的复制进度。 */
+export function subscribeCacheMigration(
+  callback: (event: import("../types").CacheMigrationProgress) => void,
+): () => void {
+  const desktop = typeof window !== "undefined" ? window.desktop : undefined;
+  return desktop ? desktop.onCacheMigrationProgress(callback) : () => {};
+}

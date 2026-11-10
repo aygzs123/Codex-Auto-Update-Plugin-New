@@ -1,0 +1,618 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%230878f9'/%3E%3Cpath d='m8 7-5 5 5 5m8-10 5 5-5 5m-3-13-2 16' fill='none' stroke='white' stroke-width='1.5'/%3E%3C/svg%3E">
+  <title>Codex Updater · 桌面端交互原型</title>
+  <style>
+    :root {
+      --blue:#0878f9; --blue-hover:#0067de; --blue-soft:#eaf3ff; --blue-line:#caddfb;
+      --text:#1c2738; --sub:#667184; --muted:#7a8493; --line:#e8ecf2; --card:#fff;
+      --canvas:#f5f7fa; --sidebar:#f0f3f8; --tile:#f6f8fb; --green:#188453; --green-soft:#eaf7f0;
+      --amber:#a8650b; --amber-soft:#fff5e4; --red:#c23843; --red-soft:#fff0f1;
+      --shadow:0 2px 5px #21314f03,0 8px 26px #21314f04; --scrim:#15233b66;
+      --font:"SF Pro Text","Segoe UI Variable Text","Segoe UI","PingFang SC","Microsoft YaHei UI",sans-serif;
+      --mono:"Cascadia Code","SF Mono",Consolas,monospace;
+      font-family:var(--font); color:var(--text); background:var(--canvas); font-synthesis:none;
+    }
+    :root[data-theme="dark"] {
+      --blue:#65aaff; --blue-hover:#87bdff; --blue-soft:#1b304d; --blue-line:#304e76;
+      --text:#e9edf5; --sub:#a7b2c4; --muted:#95a2b7; --line:#303b4b; --card:#202a38;
+      --canvas:#161f2c; --sidebar:#1a2433; --tile:#263242; --green:#6bd6a1; --green-soft:#1e3c33;
+      --amber:#edbc70; --amber-soft:#433724; --red:#ff98a0; --red-soft:#442c36;
+      --shadow:0 4px 24px #00000012; --scrim:#060d19aa; color-scheme:dark;
+    }
+    * { box-sizing:border-box; }
+    body { margin:0; font-size:13px; line-height:1.55; -webkit-font-smoothing:antialiased; }
+    button,input,select { font:inherit; }
+    button,a,input,select { -webkit-tap-highlight-color:transparent; }
+    button { cursor:pointer; color:inherit; }
+    button:disabled { cursor:not-allowed; opacity:.48; }
+    button { border:0; background:none; }
+    button:focus-visible,a:focus-visible,select:focus-visible,input:focus-visible,summary:focus-visible { outline:3px solid var(--blue); outline-offset:3px; }
+    a { color:var(--blue); }
+    h1,h2,h3,p { margin:0; }
+    h1 { font-size:25px; font-weight:650; letter-spacing:-.8px; }
+    h2 { font-size:15px; font-weight:650; }
+    h3 { font-size:13px; font-weight:600; }
+    small { font-size:11px; }
+    svg { width:18px; height:18px; fill:none; stroke:currentColor; stroke-width:1.65; stroke-linecap:round; stroke-linejoin:round; flex-shrink:0; vertical-align:middle; }
+    .mono { font-family:var(--mono); font-variant-numeric:tabular-nums; letter-spacing:-.35px; }
+    .sub { color:var(--sub); }
+    .muted { color:var(--muted); }
+    .blue { color:var(--blue); }
+    .green { color:var(--green); }
+    .row { display:flex; align-items:center; gap:10px; }
+    .between { justify-content:space-between; }
+    .wrap { flex-wrap:wrap; }
+    .grow { flex:1; min-width:0; }
+    .stack { display:grid; gap:18px; }
+    .app { height:calc(100dvh - 46px); min-height:570px; display:flex; flex-direction:column; overflow:hidden; background:var(--canvas); }
+    .topbar { height:44px; flex-shrink:0; display:flex; align-items:center; justify-content:center; border-bottom:1px solid var(--line); background:var(--card); position:relative; user-select:none; }
+    .traffic-lights { position:absolute; left:24px; display:flex; gap:10px; pointer-events:none; }
+    .traffic-lights span { width:11px; height:11px; border-radius:50%; box-shadow:inset 0 0 0 1px #0000000a; }
+    .traffic-lights span:nth-child(1) { background:#ff615b; }.traffic-lights span:nth-child(2) { background:#ffbd44; }.traffic-lights span:nth-child(3) { background:#28c840; }
+    .window-controls { position:absolute; right:8px; top:6px; display:flex; gap:2px; }
+    .window-control { width:36px; height:30px; display:grid; place-items:center; border-radius:5px; color:var(--sub); }
+    .window-control svg { width:12px; height:12px; stroke-width:1.4; }
+    .window-control:hover { background:var(--tile); }
+    .window-control.close:hover { background:#e5484d; color:#fff; }
+    .title-brand { gap:8px; font-size:12px; font-weight:600; color:var(--sub); }
+    .title-brand svg { color:var(--blue); width:16px; }
+    .prototype-label { position:absolute; right:138px; font-size:10px; color:var(--muted); border:1px solid var(--line); border-radius:5px; padding:1px 7px; letter-spacing:1px; }
+    .shell { display:flex; flex:1; min-height:0; }
+    .sidebar { width:214px; flex-shrink:0; background:linear-gradient(155deg,var(--sidebar),var(--canvas)); border-right:1px solid var(--line); padding:26px 14px 15px; display:flex; flex-direction:column; gap:30px; }
+    .brand { padding:0 9px; gap:11px; }
+    .logo { height:38px; width:38px; border-radius:11px; background:linear-gradient(145deg,#4aa5ff,#006cf0 75%); box-shadow:0 5px 12px #0878f92b,inset 0 1px 1px #ffffff66; color:#fff; display:grid; place-items:center; flex-shrink:0; }
+    .logo svg { width:22px; height:22px; stroke-width:1.9; }
+    .brand strong { font-size:13px; letter-spacing:-.2px; }.brand p { color:var(--muted); font-size:10px; margin-top:2px; letter-spacing:.4px; }
+    .nav-label { padding:0 13px 10px; color:var(--muted); font-size:10px; letter-spacing:1.3px; }
+    .nav { display:grid; gap:5px; }
+    .nav button { height:41px; padding:0 13px; text-align:left; display:flex; align-items:center; gap:12px; border-radius:8px; color:var(--sub); }
+    .nav button:hover { background:var(--line); }
+    .nav button.active { color:var(--blue); background:var(--blue-soft); font-weight:600; }
+    .nav-count { margin-left:auto; font-size:10px; color:var(--sub); background:var(--card); border:1px solid var(--line); border-radius:5px; padding:0 5px; }
+    .sidebar-bottom { margin-top:auto; display:grid; gap:16px; }
+    .help-link { display:flex; align-items:center; gap:11px; color:var(--sub); font-size:12px; padding:0 13px; text-align:left; }
+    .sidebar-status { border:1px solid var(--line); border-radius:9px; padding:12px; background:var(--card); }
+    .sidebar-status p { font-size:10px; color:var(--muted); margin:5px 0 0 14px; }
+    .dot { width:6px; height:6px; display:inline-block; border-radius:50%; background:currentColor; flex-shrink:0; }
+    .main { flex:1; min-width:0; overflow-y:auto; scrollbar-width:thin; scrollbar-color:var(--line) transparent; }
+    .content { max-width:1160px; margin:auto; padding:27px 34px 22px; }
+    .breadcrumb { color:var(--muted); font-size:11px; margin-bottom:27px; }
+    .breadcrumb .separator { margin:0 9px; color:var(--line); }
+    .breadcrumb strong { font-weight:500; color:var(--sub); }
+    .page-head { display:flex; justify-content:space-between; align-items:center; gap:16px; margin-bottom:22px; }
+    .page-head p { color:var(--sub); margin-top:5px; font-size:12px; }
+    .btn { min-height:35px; padding:7px 14px; border-radius:7px; border:1px solid var(--line); background:var(--card); display:inline-flex; align-items:center; justify-content:center; gap:7px; font-size:12px; font-weight:550; white-space:nowrap; box-shadow:0 1px 2px #172b4d04; }
+    .btn svg { width:15px; height:15px; }.btn:hover:not(:disabled) { background:var(--tile); border-color:var(--blue-line); }
+    .btn.primary { background:#0878f9; color:#fff; border-color:#0878f9; box-shadow:0 3px 7px #0878f91c; }.btn.primary:hover:not(:disabled) { background:#0067de; }
+    .btn.danger { color:var(--red); border-color:var(--line); }.btn.danger-solid { background:var(--red); color:var(--card); border-color:var(--red); }
+    .btn.quiet { background:transparent; box-shadow:none; border-color:transparent; color:var(--sub); }
+    .link { color:var(--blue); padding:3px 0; font-size:12px; display:inline-flex; align-items:center; gap:4px; }.link svg { width:13px; height:13px; }
+    .badge { display:inline-flex; align-items:center; gap:6px; padding:4px 9px; border-radius:6px; font-size:10px; white-space:nowrap; color:var(--sub); background:var(--tile); }
+    .badge.blue { color:var(--blue); background:var(--blue-soft); }.badge.green { color:var(--green); background:var(--green-soft); }.badge.amber { color:var(--amber); background:var(--amber-soft); }.badge.red { color:var(--red); background:var(--red-soft); }
+    .card { border:1px solid var(--line); border-radius:12px; background:var(--card); box-shadow:var(--shadow); overflow:hidden; }
+    .card-head { padding:19px 21px 15px; display:flex; align-items:center; justify-content:space-between; gap:12px; }
+    .card-head h2 { font-size:13px; }.card-head small { color:var(--muted); }
+    .hero { position:relative; background:radial-gradient(ellipse at 100% 0%,var(--blue-soft),transparent 67%),var(--card); }
+    .hero-main { display:grid; grid-template-columns:1fr 270px; align-items:center; gap:28px; padding:30px; }
+    .app-caption { gap:12px; margin-bottom:19px; }.app-caption .logo { width:43px; height:43px; border-radius:12px; }
+    .app-caption strong { font-size:13px; }.app-caption small { display:block; color:var(--muted); margin-top:2px; }
+    .hero h2 { font-size:31px; letter-spacing:-1px; font-weight:650; margin-bottom:8px; line-height:1.3; }
+    .hero-description { color:var(--sub); font-size:12px; min-height:20px; }
+    .hero-actions { display:flex; gap:9px; margin-top:23px; flex-wrap:wrap; }.hero-actions .btn { min-height:39px; padding:9px 17px; }
+    .version-compare { border:1px solid var(--blue-line); border-radius:10px; background:var(--card); padding:19px; box-shadow:0 5px 20px #0878f906; }
+    .version-caption { color:var(--sub); font-size:11px; margin-bottom:20px; }
+    .version-step { display:flex; gap:13px; align-items:flex-start; position:relative; }.version-step + .version-step { margin-top:25px; }
+    .version-step:not(.latest):after { content:""; position:absolute; height:25px; width:1px; background:var(--line); left:7px; top:24px; }
+    .version-node { width:15px; height:15px; border:4px solid var(--tile); outline:1px solid var(--line); background:var(--muted); border-radius:50%; margin-top:5px; }
+    .version-step.latest .version-node { background:var(--blue); border-color:var(--blue-soft); outline-color:var(--blue-line); }
+    .version-step small { color:var(--sub); font-size:10px; }.version-step strong { display:block; font-size:15px; font-weight:550; margin-top:2px; }
+    .version-size { border-top:1px solid var(--line); margin-top:18px; padding-top:11px; color:var(--muted); font-size:10px; }
+    .hero-foot { padding:12px 30px; border-top:1px solid var(--line); display:flex; justify-content:space-between; gap:10px; flex-wrap:wrap; color:var(--sub); font-size:10px; background:var(--card); }
+    .hero-foot svg { width:12px; height:12px; }
+    .progress-block { margin-top:19px; max-width:380px; }.progress-track { height:5px; border-radius:9px; background:var(--blue-soft); overflow:hidden; margin:9px 0; }.progress-track span { display:block; background:var(--blue); height:100%; border-radius:9px; transition:width .25s ease; }
+    .stat-strip { display:grid; grid-template-columns:repeat(3,1fr); margin-top:18px; }
+    .stat-item { display:flex; align-items:center; gap:11px; padding:19px 21px; text-align:left; min-width:0; }.stat-item + .stat-item { border-left:1px solid var(--line); }.stat-item:hover { background:var(--tile); }
+    .tile-icon { height:34px; width:34px; border-radius:9px; background:var(--tile); color:var(--sub); display:grid; place-items:center; flex-shrink:0; }.tile-icon svg { width:17px; }
+    .stat-item small { display:block; color:var(--sub); font-size:10px; margin-bottom:3px; }.stat-item strong { font-size:12px; font-weight:550; }.stat-item .chevron { margin-left:auto; color:var(--muted); width:12px; }
+    .columns { display:grid; grid-template-columns:1fr .92fr; gap:18px; margin-top:18px; }
+    .resource-list { padding:0 21px 12px; }.resource-row { display:flex; align-items:center; gap:10px; min-height:34px; font-size:11px; }.resource-row .state { margin-left:auto; font-size:10px; }
+    .card-foot { display:flex; align-items:center; justify-content:space-between; padding:11px 21px; border-top:1px solid var(--line); color:var(--muted); font-size:10px; }
+    .timeline { padding:2px 21px 17px; }.event { display:flex; gap:12px; padding:10px 0; }.event-icon { height:26px; width:26px; border-radius:50%; background:var(--tile); color:var(--sub); display:grid; place-items:center; flex-shrink:0; }.event-icon svg { width:13px; }.event p { font-size:11px; }.event small { color:var(--muted); font-size:10px; }.event time { margin-left:auto; font-size:10px; color:var(--muted); white-space:nowrap; padding-top:3px; }
+    .content-foot { text-align:center; font-size:10px; color:var(--muted); padding:20px 0 3px; }.content-foot svg { width:12px; height:12px; margin-right:4px; }
+    .notice { border:1px solid var(--blue-line); color:var(--blue); background:var(--blue-soft); border-radius:9px; padding:12px 15px; display:flex; gap:11px; align-items:center; font-size:12px; margin-bottom:18px; }
+    .notice.amber { background:var(--amber-soft); color:var(--amber); border-color:transparent; }.notice.red { background:var(--red-soft); color:var(--red); border-color:transparent; }
+    .notice p { font-size:11px; margin-top:2px; }.notice .btn { margin-left:auto; }
+    .tabs { display:flex; gap:24px; border-bottom:1px solid var(--line); margin-bottom:23px; overflow-x:auto; }.tabs button { padding:0 2px 12px; color:var(--sub); position:relative; white-space:nowrap; font-size:12px; }.tabs button.active { color:var(--blue); font-weight:600; }.tabs button.active:after { content:""; position:absolute; bottom:0; height:2px; background:var(--blue); left:0; right:0; }
+    .section-label { margin-bottom:11px; font-size:11px; color:var(--sub); }
+    .settings-row { display:flex; align-items:center; justify-content:space-between; gap:20px; padding:18px 21px; }.settings-row + .settings-row { border-top:1px solid var(--line); }.settings-row strong { font-size:12px; font-weight:550; }.settings-row p { font-size:11px; color:var(--sub); margin-top:4px; }
+    .switch { height:23px; width:41px; border-radius:20px; background:var(--muted); padding:3px; flex-shrink:0; transition:background .15s; }.switch:after { content:""; display:block; width:17px; height:17px; background:#fff; box-shadow:0 1px 3px #0002; border-radius:50%; transition:transform .15s; }.switch[aria-checked="true"] { background:#0878f9; }.switch[aria-checked="true"]:after { transform:translateX(18px); }
+    select { color:var(--text); background:var(--card); border:1px solid var(--line); padding:7px 28px 7px 10px; border-radius:6px; max-width:100%; }
+    .theme-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:16px; padding:3px 21px 22px; }.theme-choice { border:2px solid transparent; border-radius:10px; padding:6px; text-align:left; }.theme-choice[aria-checked="true"] { border-color:var(--blue); background:var(--blue-soft); }.theme-choice:hover { background:var(--tile); }
+    .theme-preview { height:120px; background:#f4f6fa; border:1px solid #e1e6ee; border-radius:6px; overflow:hidden; position:relative; display:flex; padding-top:16px; }.theme-preview:before { content:""; position:absolute; top:7px; left:9px; width:4px; height:4px; background:#ff665e; border-radius:50%; box-shadow:7px 0 #ffbd44,14px 0 #28c840; }.theme-preview aside { width:26%; border-right:1px solid #e1e6ee; background:#e9edf4; padding:10px 5px; }.theme-preview aside:after { content:""; display:block; height:7px; background:#c3dafa; border-radius:2px; }.theme-preview article { flex:1; padding:12px 9px; }.theme-preview article b { display:block; height:36px; border-radius:4px; background:#fff; border:1px solid #e1e6ee; margin-bottom:7px; }.theme-preview article i { display:block; height:21px; border-radius:4px; background:#fff; border:1px solid #e1e6ee; }
+    .theme-preview.dark { background:#17202d; border-color:#344054; }.theme-preview.dark aside { background:#202c3b; border-color:#344054; }.theme-preview.dark aside:after { background:#294e7d; }.theme-preview.dark article b,.theme-preview.dark article i { background:#2b3749; border-color:#344054; }.theme-preview.system { background:linear-gradient(115deg,#f4f6fa 50%,#17202d 50%); }.theme-preview.system article b,.theme-preview.system article i { background:linear-gradient(115deg,#fff 35%,#2b3749 35%); border-color:#a0a9b7; }
+    .theme-caption { display:flex; justify-content:space-between; align-items:center; padding:10px 3px 3px; font-size:12px; }.radio-dot { height:15px; width:15px; border:1px solid var(--line); background:var(--card); border-radius:50%; }.theme-choice[aria-checked="true"] .radio-dot { background:var(--blue); border:4px solid var(--card); outline:1px solid var(--blue); }
+    .settings-hint { display:flex; gap:8px; color:var(--muted); font-size:11px; margin-top:13px; }.settings-hint svg { width:14px; height:14px; }
+    .storage-summary { padding:23px; display:flex; align-items:center; gap:18px; }.storage-summary .tile-icon { width:48px; height:48px; background:var(--blue-soft); color:var(--blue); }.storage-summary h2 { font-size:23px; font-weight:600; }.storage-summary p { font-size:11px; color:var(--sub); margin-top:3px; }
+    .storage-bar { height:6px; background:var(--tile); margin:0 23px 23px; border-radius:6px; overflow:hidden; }.storage-bar span { display:block; height:100%; background:var(--blue); border-radius:6px; max-width:100%; }
+    .path { padding:10px 12px; background:var(--tile); border:1px solid var(--line); border-radius:6px; color:var(--sub); font-size:11px; overflow-wrap:anywhere; }
+    .cache-path { padding:0 21px 20px; }.cache-path .row { margin-top:10px; flex-wrap:wrap; }
+    .table-wrap { overflow-x:auto; }table { width:100%; border-collapse:collapse; text-align:left; font-size:11px; }th { color:var(--sub); font-weight:500; padding:11px 20px; background:var(--tile); white-space:nowrap; }td { padding:18px 20px; border-top:1px solid var(--line); white-space:nowrap; }td strong { font-size:12px; font-weight:550; }td p { font-size:10px; color:var(--muted); margin-top:4px; }td .btn { font-size:11px; min-height:30px; padding:5px 9px; }
+    .empty { display:grid; justify-items:center; padding:42px 20px; text-align:center; gap:10px; }.empty .tile-icon { width:49px; height:49px; border-radius:14px; }.empty h2 { font-size:14px; }.empty p { color:var(--sub); font-size:12px; max-width:370px; }
+    .diagnostic-grid { display:grid; grid-template-columns:1fr 1fr; gap:18px; }.diagnostic-item { padding:17px 21px; border-top:1px solid var(--line); }.diagnostic-item p { color:var(--sub); font-size:11px; margin:4px 0 0 28px; }
+    .about { padding:34px 25px; text-align:center; }.about .logo { margin:0 auto 14px; width:58px; height:58px; border-radius:16px; }.about .logo svg { width:31px; height:31px; }.about h2 { font-size:21px; }.about p { margin-top:6px; font-size:12px; color:var(--sub); }
+    .demo-bar { min-height:46px; display:flex; align-items:center; justify-content:center; flex-wrap:wrap; gap:10px; background:var(--card); border-top:1px solid var(--line); padding:7px 14px; font-size:10px; }.demo-bar strong { font-weight:550; color:var(--sub); }.demo-bar select { font-size:10px; padding:4px 22px 4px 8px; max-width:180px; }.demo-bar .btn { min-height:27px; padding:4px 9px; font-size:10px; }.demo-divider { width:1px; height:15px; background:var(--line); }.demo-note { color:var(--muted); }
+    dialog { border:1px solid var(--line); padding:0; border-radius:15px; width:min(460px,calc(100vw - 32px)); max-height:85dvh; overflow:auto; background:var(--card); color:var(--text); box-shadow:0 25px 100px #0003; }dialog::backdrop { background:var(--scrim); backdrop-filter:blur(4px); }.dialog-body { padding:26px; }.dialog-symbol { display:grid; place-items:center; width:43px; height:43px; border-radius:12px; background:var(--blue-soft); color:var(--blue); margin-bottom:17px; }.dialog-symbol.warn { color:var(--amber); background:var(--amber-soft); }dialog h2 { font-size:19px; margin-bottom:9px; }dialog p { font-size:12px; color:var(--sub); line-height:1.8; }dialog .detail-box { background:var(--tile); border:1px solid var(--line); border-radius:8px; padding:13px; margin-top:17px; font-size:11px; }dialog .detail-box p + p { margin-top:6px; }.dialog-footer { border-top:1px solid var(--line); padding:16px 24px; display:flex; justify-content:flex-end; gap:9px; background:var(--tile); }.dialog-close { position:absolute; right:13px; top:13px; color:var(--muted); padding:5px; }.dialog-close svg { width:16px; }
+    #toast { position:fixed; bottom:65px; left:calc(50% + 100px); transform:translate(-50%,10px); display:flex; align-items:center; gap:9px; padding:12px 17px; border:1px solid var(--line); border-radius:10px; background:var(--card); color:var(--text); box-shadow:0 8px 30px #182c4826; font-size:12px; z-index:10; opacity:0; pointer-events:none; transition:opacity .18s,transform .18s; max-width:calc(100vw - 28px); }#toast.visible { opacity:1; transform:translate(-50%,0); }#toast svg { color:var(--green); width:16px; }
+    .screen-paused { position:fixed; inset:0 0 46px; display:grid; place-content:center; text-align:center; background:var(--canvas); z-index:9; gap:16px; }.screen-paused[hidden] { display:none; }.screen-paused .logo { margin:auto; }.screen-paused p { color:var(--sub); font-size:12px; }
+    .spin { animation:spin 1s linear infinite; }@keyframes spin { to { transform:rotate(360deg); } }@keyframes reveal { from { opacity:0; transform:translateY(5px); } to { opacity:1; transform:translateY(0); } }.page-enter { animation:reveal .25s ease both; }
+    @media(min-width:1450px) { .content { padding-top:32px; }.hero-main { padding:36px; }.hero h2 { font-size:35px; }.hero-foot { padding-left:36px; padding-right:36px; }.columns { margin-top:22px; }.hero-main { grid-template-columns:1fr 310px; } }
+    @media(max-width:1100px) { .sidebar { width:190px; }.content { padding:22px; }.hero-main { padding:24px; gap:20px; grid-template-columns:1fr 234px; }.hero h2 { font-size:27px; }.stat-item { padding:16px; }.stat-item .chevron { display:none; }.columns { gap:14px; } }
+    @media(max-width:850px) { .sidebar { width:165px; padding-left:9px; padding-right:9px; }.brand { padding:0 5px; gap:8px; }.brand .logo { width:31px; height:31px; }.brand strong { font-size:11px; }.brand p { font-size:9px; }.content { padding:19px; }.hero-main { grid-template-columns:1fr; }.version-compare { display:none; }.hero h2 { font-size:28px; }.columns { grid-template-columns:1fr; }.stat-item { padding:14px 10px; gap:7px; }.stat-item .tile-icon { display:none; }.diagnostic-grid { grid-template-columns:1fr; }.theme-preview { height:88px; }.theme-grid { gap:7px; }.demo-note { display:none; } }
+    @media(max-width:600px) { .app { min-height:0; height:calc(100dvh - 82px); }.topbar { height:42px; }.title-brand { font-size:11px; }.prototype-label { right:10px; font-size:8px; }.window-controls { left:6px; gap:0; }.window-control { width:25px; }.sidebar { width:62px; padding:18px 7px 12px; gap:24px; }.brand { padding:0; justify-content:center; }.brand .brand-text,.nav-label,.nav .nav-text,.nav-count,.sidebar-status,.help-link span { display:none; }.nav button { padding:0; justify-content:center; height:42px; }.help-link { padding:0; justify-content:center; }.content { padding:17px 14px; }.breadcrumb { margin-bottom:18px; }.breadcrumb .row { display:none; }.page-head { margin-bottom:17px; align-items:flex-start; }.page-head h1 { font-size:22px; }.page-head p { font-size:11px; }.page-head>.btn { padding:7px 9px; }.hero-main { padding:22px 18px; }.hero h2 { font-size:25px; }.hero-foot { padding:11px 18px; }.hero-foot .source-label { display:none; }.hero-actions { gap:6px; }.hero-actions .btn { padding:8px 11px; font-size:11px; }.stat-strip { grid-template-columns:1fr; }.stat-item { padding:12px 16px; gap:11px; }.stat-item + .stat-item { border-left:0; border-top:1px solid var(--line); }.stat-item .tile-icon { display:grid; }.stat-item .chevron { display:block; }.stat-item .grow { display:flex; align-items:center; justify-content:space-between; gap:8px; }.stat-item small { margin-bottom:0; }.columns { gap:15px; }.card-head,.resource-list,.timeline { padding-left:16px; padding-right:16px; }.card-foot { padding-left:16px; padding-right:16px; }.theme-grid { grid-template-columns:1fr; padding:0 15px 16px; }.theme-choice { display:flex; gap:13px; align-items:center; }.theme-preview { width:93px; height:62px; flex-shrink:0; }.theme-preview article { padding:5px; }.theme-preview article b { height:20px; }.theme-preview article i { height:8px; }.theme-caption { flex:1; }.settings-row { padding:16px; gap:12px; }.settings-row p { font-size:10px; }.settings-row select { max-width:112px; font-size:11px; }.tabs { gap:21px; }.notice { flex-wrap:wrap; }.notice .btn { margin-left:0; }.storage-summary { padding:18px; gap:12px; }.storage-summary h2 { font-size:20px; }.storage-summary .row { flex-wrap:wrap; }.storage-summary>.btn { padding:7px; }.demo-bar { height:82px; gap:6px; justify-content:flex-start; padding:8px 12px; }.demo-divider { display:none; }.demo-bar strong { margin-right:5px; }#toast { left:50%; bottom:95px; width:max-content; }.screen-paused { bottom:82px; }.content-foot { font-size:9px; } }
+    @media(max-width:600px) { .traffic-lights { left:13px; gap:7px; }.traffic-lights span { width:9px; height:9px; }.window-controls { left:auto; right:4px; }.window-control { width:29px; }.prototype-label { display:none; } }
+    @media(prefers-reduced-motion:reduce) { *,*:before,*:after { animation:none!important; transition:none!important; scroll-behavior:auto!important; } }
+  </style>
+</head>
+<body>
+  <div class="app" id="app">
+    <header class="topbar" aria-label="应用标题栏">
+      <div class="traffic-lights" aria-hidden="true"><span></span><span></span><span></span></div>
+      <div class="window-controls" aria-label="窗口控制（原型演示）">
+        <button class="window-control min" data-action="window-min" aria-label="最小化" title="最小化"><svg viewBox="0 0 12 12"><path d="M2 6h8"/></svg></button>
+        <button class="window-control max" data-action="window-max" aria-label="最大化" title="最大化"><svg viewBox="0 0 12 12"><rect x="2" y="2" width="8" height="8" rx=".7"/></svg></button>
+        <button class="window-control close" data-action="window-close" aria-label="关闭窗口" title="关闭窗口"><svg viewBox="0 0 12 12"><path d="m2 2 8 8m0-8-8 8"/></svg></button>
+      </div>
+      <div class="row title-brand"><svg viewBox="0 0 24 24"><path d="m8 7-5 5 5 5m8-10 5 5-5 5m-3-13-2 16"/></svg>Codex Updater</div>
+      <span class="prototype-label">交互原型</span>
+    </header>
+    <div class="shell">
+      <aside class="sidebar">
+        <div class="brand row"><div class="logo" data-icon="code"></div><div class="brand-text"><strong>Codex Updater</strong><p>DESKTOP COMPANION</p></div></div>
+        <div><p class="nav-label">工作台</p><nav class="nav" aria-label="主导航">
+          <button data-page="overview" class="active"><span data-icon="grid"></span><span class="nav-text">概览</span></button>
+          <button data-page="diagnostics"><span data-icon="pulse"></span><span class="nav-text">诊断</span></button>
+          <button data-page="history"><span data-icon="history"></span><span class="nav-text">版本与缓存</span><span class="nav-count" id="nav-count">2</span></button>
+          <button data-page="settings"><span data-icon="settings"></span><span class="nav-text">设置</span></button>
+        </nav></div>
+        <div class="sidebar-bottom">
+          <button class="help-link" data-action="help" aria-label="使用帮助"><i data-icon="help"></i><span>使用帮助</span></button>
+          <div class="sidebar-status"><div class="row" style="gap:8px"><span class="dot green" id="health-dot"></span><strong style="font-size:11px" id="health-label">运行环境正常</strong></div><p>Windows 11 · x64</p></div>
+        </div>
+      </aside>
+      <main class="main" id="main" tabindex="-1"><div class="content" id="content"></div></main>
+    </div>
+  </div>
+  <footer class="demo-bar" aria-label="原型演示工具">
+    <strong>交互演示</strong>
+    <label for="scenario" class="muted">场景</label>
+    <select id="scenario" aria-label="演示场景">
+      <option value="update">发现更新</option><option value="latest">已是最新</option><option value="offline">检查失败</option><option value="not-installed">尚未安装</option><option value="resource">资源异常</option><option value="cache-error">缓存读取失败</option><option value="signature">签名校验失败</option><option value="uac">取消管理员授权</option><option value="move-blocked">不支持应用迁移</option>
+    </select>
+    <button class="btn" data-action="external-delete">模拟外部删除缓存</button>
+    <span class="demo-divider"></span><button class="btn quiet" data-action="reset">重置演示</button><button class="btn quiet" data-action="guide">交互说明</button>
+    <span class="demo-note">示例数据 · 不执行真实安装</span>
+  </footer>
+  <div id="toast" role="status" aria-live="polite"></div>
+  <dialog id="modal" aria-labelledby="dialog-title"></dialog>
+  <div id="paused" class="screen-paused" hidden></div>
+  <script>
+    // 原型只模拟业务状态，不连接 Electron、磁盘或真实安装服务。
+    const ICONS = {
+      code:'<path d="m8 7-5 5 5 5m8-10 5 5-5 5m-3-13-2 16"/>',
+      grid:'<rect x="3" y="3" width="7" height="7" rx="2"/><rect x="14" y="3" width="7" height="7" rx="2"/><rect x="3" y="14" width="7" height="7" rx="2"/><rect x="14" y="14" width="7" height="7" rx="2"/>',
+      pulse:'<path d="M2 12h4l3-8 5 16 3-8h5"/>',
+      history:'<path d="M3 11a9 9 0 1 1 2.5 7M3 5v6h6m3-4v6l4 2"/>',
+      settings:'<path d="m9 3 1-1h4l1 3 3 1 3 1v4l-2 2 1 3-2 3-3-1-2 2h-4l-1-3-3-1-2-2 1-4 2-1V6z"/><circle cx="12" cy="11" r="3"/>',
+      help:'<circle cx="12" cy="12" r="9"/><path d="M9 9a3 3 0 0 1 6 0c0 2-3 2-3 4m0 3v.1"/>',
+      refresh:'<path d="M20 7a9 9 0 0 0-15-2L3 8m0-5v5h5m-4 9a9 9 0 0 0 15 2l2-3m0 5v-5h-5"/>',
+      arrow:'<path d="m9 5 7 7-7 7"/>',
+      download:'<path d="M12 3v12m-5-5 5 5 5-5M4 16v4h16v-4"/>',
+      shield:'<path d="m12 3 8 3v6c0 5-8 9-8 9s-8-4-8-9V6z"/><path d="m8 12 3 3 5-6"/>',
+      check:'<path d="m5 12 4 4L19 6"/>',
+      clock:'<circle cx="12" cy="12" r="9"/><path d="M12 7v6l4 2"/>',
+      box:'<path d="m12 3 9 5v9l-9 5-9-5V8zm-9 5 9 5 9-5m-9 5v9M7 5l10 5v5"/>',
+      disk:'<rect x="3" y="5" width="18" height="14" rx="3"/><path d="M3 13h18m-4 3h.1m-4 0h.1"/>',
+      monitor:'<rect x="3" y="3" width="18" height="13" rx="2"/><path d="M8 21h8m-4-5v5"/>',
+      folder:'<path d="M3 7V5h6l2 3h10v12H3z"/>',
+      trash:'<path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7m4-7v7"/>',
+      info:'<circle cx="12" cy="12" r="9"/><path d="M12 11v6m0-10v.1"/>',
+      alert:'<path d="m12 3 10 18H2zm0 6v5m0 3v.1"/>',
+      close:'<path d="m6 6 12 12M6 18 18 6"/>',
+      play:'<path d="m8 4 12 8-12 8z"/>',
+      external:'<path d="M14 3h7v7m0-7L10 14M9 3H3v18h18v-6"/>',
+      network:'<path d="M3 8a15 15 0 0 1 18 0M6 12a10 10 0 0 1 12 0m-9 4a5 5 0 0 1 6 0m-3 4v.1"/>',
+      copy:'<rect x="8" y="8" width="13" height="13" rx="2"/><path d="M16 8V3H3v13h5"/>',
+      pin:'<path d="m15 3 6 6-4 1-4 6-2-2-7 7m3-14 6-4zm0 0-3 4 9 9 4-3"/>',
+      sun:'<circle cx="12" cy="12" r="4"/><path d="M12 1v2m0 18v2M1 12h2m18 0h2M4 4l2 2m12 12 2 2M4 20l2-2M18 6l2-2"/>',
+      bell:'<path d="M4 17h16l-2-4V8a6 6 0 0 0-12 0v5zm6 3h4"/>',
+      tool:'<path d="M14 5a6 6 0 0 0-7 8l-5 5 4 4 5-5a6 6 0 0 0 8-7l-4 3-4-4z"/>',
+    };
+    const icon = (name, cls='') => `<svg class="${cls}" viewBox="0 0 24 24" aria-hidden="true">${ICONS[name] || ICONS.info}</svg>`;
+    const esc = text => String(text).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    const CURRENT = '26.1103.4239.0', LATEST = '26.1106.1800.0';
+    const STORE_KEY = 'codex-updater-design-preferences-v1';
+    const defaults = { theme:'system',autoCheck:true,notify:true,tray:true,startup:false,interval:'24',retention:'0' };
+    let preferences = {...defaults}, storageAvailable = true;
+    try {
+      const saved = JSON.parse(localStorage.getItem(STORE_KEY) || '{}');
+      for (const key of Object.keys(defaults)) if (typeof saved[key] === typeof defaults[key]) preferences[key] = saved[key];
+      if (!['light','dark','system'].includes(preferences.theme)) preferences.theme = 'system';
+      if (!['6','12','24'].includes(preferences.interval)) preferences.interval = '24';
+      if (!['0','2','3','5'].includes(preferences.retention)) preferences.retention = '0';
+    } catch { storageAvailable = false; }
+    const seedPackages = () => [
+      {id:'current',version:CURRENT,mb:428,date:'2026-11-04',pinned:false},
+      {id:'previous',version:'26.1029.3100.0',mb:414,date:'2026-10-30',pinned:true}
+    ];
+    const seedActivity = () => [
+      {icon:'refresh',title:'发现新版本',detail:`${LATEST} · 可下载`,time:'刚刚'},
+      {icon:'check',title:'环境检查完成',detail:'5 项资源正常',time:'09:41'},
+      {icon:'box',title:'安装完成',detail:CURRENT,time:'11月4日'}
+    ];
+    const state = {
+      page:'overview',tab:'general',scenario:'update',phase:'available',current:CURRENT,
+      disk:seedPackages(),cache:seedPackages(),cacheError:false,cacheScanning:false,cacheSynced:'刚刚',
+      activity:seedActivity(),progress:0,checked:'刚刚',health:true,diagnosing:false,networkChecked:false,
+      installDrive:'C',moveStatus:'unknown',storageBusy:false,repairing:false,directory:'%LOCALAPPDATA%\\Codex Updater\\downloads',maximized:false
+    };
+    let taskGeneration = 0, cacheGeneration = 0, toastTimer, cacheTimer, dialogCallback;
+    const busy = () => state.storageBusy || state.diagnosing || ['checking','downloading','verifying','installing'].includes(state.phase);
+    const totalMb = () => state.cache.reduce((sum,pkg) => sum + pkg.mb,0);
+    const formatSize = mb => mb >= 1024 ? `${(mb/1024).toFixed(2)} GB` : `${mb} MB`;
+    const packageCount = () => state.cacheError ? '—' : state.cache.length;
+    const cacheSize = () => state.cacheError ? '读取失败' : formatSize(totalMb());
+    const badge = (text,tone='green') => `<span class="badge ${tone}"><span class="dot"></span>${text}</span>`;
+    const button = (text,action,ico='',cls='',disabled=false) => `<button class="btn ${cls}" data-action="${action}" ${disabled?'disabled':''}>${ico?icon(ico):''}${text}</button>`;
+    function record(title,detail='',type='check') { state.activity.unshift({title,detail,icon:type,time:new Date().toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'})}); state.activity = state.activity.slice(0,15); }
+    function toast(message) {
+      const el = document.querySelector('#toast');
+      el.innerHTML = `${icon('check')}<span>${esc(message)}</span>`; el.classList.add('visible');
+      clearTimeout(toastTimer); toastTimer = setTimeout(() => el.classList.remove('visible'),3500);
+    }
+    function savePreferences() {
+      try { localStorage.setItem(STORE_KEY,JSON.stringify(preferences)); storageAvailable = true; }
+      catch { storageAvailable = false; toast('浏览器无法保存设置，本次会话内仍然生效'); }
+    }
+    const media = window.matchMedia('(prefers-color-scheme: dark)');
+    function applyTheme() { document.documentElement.dataset.theme = preferences.theme === 'system' ? (media.matches?'dark':'light') : preferences.theme; }
+    media.addEventListener('change', () => { if (preferences.theme === 'system') applyTheme(); });
+    function showDialog({title,body,confirm='确定',danger=false,action=null,symbol='info'}) {
+      const modal = document.querySelector('#modal');
+      dialogCallback = action;
+      modal.innerHTML = `<button class="dialog-close" data-action="dismiss" aria-label="关闭对话框">${icon('close')}</button><div class="dialog-body"><div class="dialog-symbol ${danger?'warn':''}">${icon(symbol)}</div><h2 id="dialog-title">${title}</h2>${body}</div><div class="dialog-footer">${action?'<button class="btn" data-action="dismiss" autofocus>取消</button>':''}<button class="btn ${danger?'danger-solid':'primary'}" data-action="confirm-dialog" ${action?'':'autofocus'}>${confirm}</button></div>`;
+      if (!modal.open) modal.showModal();
+    }
+    function closeDialog() { document.querySelector('#modal').close(); dialogCallback = null; }
+    function heroContent() {
+      const map = {
+        available:['发现新版本','下载更新，准备好后再安装。'],
+        unchecked:['检查 Codex 更新','查看是否有可用的新版本。'],
+        checking:['正在检查更新','正在连接 Microsoft Store 分发源…'],
+        latest:['Codex 已是最新','当前版本可继续使用。'],
+        downloading:['正在下载更新','你可以继续使用 Codex。'],
+        verifying:['正在校验安装包','检查完整性与发布者签名。'],
+        ready:['更新已准备好','安装前请保存正在进行的工作。'],
+        installing:['正在安装更新','安装完成后将自动启动 Codex。'],
+        success:['更新完成','Codex 已启动，可以继续工作。'],
+        error:['暂时无法检查更新','连接失败，请检查网络后重试。'],
+        'not-installed':['安装 Codex Desktop','下载并安装 Microsoft Store 安装包。'],
+        'signature-error':['安装包校验未通过','已阻止安装，请重新下载安装包。']
+      };
+      return map[state.phase] || map.unchecked;
+    }
+    function heroActions() {
+      switch(state.phase) {
+        case 'checking': return button('检查中','none','refresh','primary',true);
+        case 'downloading': return button('取消下载','cancel-download','','');
+        case 'verifying': return button('校验中','none','shield','primary',true);
+        case 'installing': return button('安装中','none','refresh','primary',true);
+        case 'ready': return button('安装并重启 Codex','install','download','primary')+button('稍后安装','later');
+        case 'latest': case 'success': return button('启动 Codex','launch','play','primary')+button('检查更新','check','refresh');
+        case 'error': return button('重试检查','check','refresh','primary')+button('网络诊断','network','network');
+        case 'signature-error': return button('重新下载','download','download','primary')+button('查看详情','signature-detail');
+        case 'not-installed': return button('下载安装包','download','download','primary')+button('安装说明','install-info');
+        case 'unchecked': return button('检查更新','check','refresh','primary');
+        default: return button('下载更新','download','download','primary')+button('检查更新','check','refresh');
+      }
+    }
+    function overview() {
+      const [title,description] = heroContent();
+      const hasLatest = !['unchecked','checking','error'].includes(state.phase);
+      const target = state.phase === 'latest' ? state.current : LATEST;
+      const versionBadge = state.phase === 'latest' || state.phase === 'success' ? badge('已是最新') : hasLatest ? badge('有可用更新','blue') : badge('待检查','');
+      return `<div class="page-head"><div><h1>概览</h1><p>Codex 的更新与运行状态</p></div><span class="badge">${icon('monitor')} Windows · x64</span></div>
+        ${!state.health?`<div class="notice amber">${icon('alert')}<div class="grow"><strong>检测到 1 项资源异常</strong><p>可能影响 Codex 启动，建议先修复。</p></div>${button('查看诊断','diagnostics','','')}</div>`:''}
+        <section class="card hero" aria-label="Codex 更新状态">
+          <div class="hero-main"><div>
+            <div class="row app-caption"><div class="logo">${icon('code')}</div><div><strong>Codex Desktop</strong><small>Microsoft Store 分发版</small></div></div>
+            <h2>${title}</h2><p class="hero-description">${description}</p>
+            ${['downloading','verifying','installing'].includes(state.phase)?`<div class="progress-block"><div class="row between"><small class="sub">${state.phase==='downloading'?`${Math.round(436*state.progress/100)} / 436 MB`:state.phase==='verifying'?'签名校验':'正在部署应用'}</small><small class="mono blue">${state.progress}%</small></div><div class="progress-track" role="progressbar" aria-label="更新进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${state.progress}"><span style="width:${state.progress}%"></span></div></div>`:''}
+            <div class="hero-actions">${heroActions()}</div>
+          </div><div class="version-compare"><div class="row between version-caption"><span>版本状态</span>${versionBadge}</div>
+            <div class="version-step"><span class="version-node"></span><div><small>当前版本</small><strong class="mono">${state.current||'尚未安装'}</strong></div></div>
+            <div class="version-step latest"><span class="version-node"></span><div><small>可用版本</small><strong class="mono ${hasLatest?'blue':'sub'}">${hasLatest?target:'等待检查'}</strong></div></div>
+            <div class="row between version-size"><span>${hasLatest?'稳定版 · x64':'连接后显示版本'}</span><span>${hasLatest?'436 MB':'—'}</span></div>
+          </div></div>
+          <div class="hero-foot"><span class="row" style="gap:6px">${icon('shield')} 安装前校验签名</span><span class="row source-label" style="gap:6px">${icon('box')} Microsoft Store</span><span class="row" style="gap:6px">${icon('clock')} 上次检查：${state.checked}</span></div>
+        </section>
+        <section class="card stat-strip" aria-label="本机信息">
+          <button class="stat-item" data-action="installed-info"><span class="tile-icon">${icon('monitor')}</span><span class="grow"><small>安装位置</small><strong>${state.current?`${state.installDrive} 盘 · WindowsApps`:'尚未安装'}</strong></span>${icon('arrow','chevron')}</button>
+          <button class="stat-item" data-page="history"><span class="tile-icon">${icon('disk')}</span><span class="grow"><small>安装包缓存</small><strong>${state.cacheError?'读取失败':`${cacheSize()} <span class="muted">/ ${packageCount()} 个</span>`}</strong></span>${icon('arrow','chevron')}</button>
+          <button class="stat-item" data-action="auto-settings"><span class="tile-icon">${icon('refresh')}</span><span class="grow"><small>自动检查</small><strong>${preferences.autoCheck?`每 ${preferences.interval} 小时`:'已关闭'}</strong></span>${icon('arrow','chevron')}</button>
+        </section>
+        <div class="columns"><section class="card"><div class="card-head"><h2>运行环境</h2>${badge(state.current?(state.health?'5 项正常':'1 项异常'):'未检测',state.current?(state.health?'green':'amber'):'')}</div><div class="resource-list">
+          ${['Windows 命令行工具','Windows 搜索工具','WSL 命令行工具','WSL 搜索工具','Node.js 运行时'].map((name,i)=>`<div class="resource-row"><span class="dot ${!state.current?'muted':!state.health&&i===1?'':'green'}" ${!state.health&&i===1?'style="color:var(--amber)"':''}></span><span>${name}</span><span class="state ${state.current&&state.health?'green':'sub'}">${!state.current?'待安装':!state.health&&i===1?'缺失':'正常'}</span></div>`).join('')}
+          </div><div class="card-foot"><button class="link" data-page="diagnostics">查看诊断 ${icon('arrow')}</button><span>${state.current?'最近检查：刚刚':'安装后可检查'}</span></div></section>
+          <section class="card"><div class="card-head"><h2>最近活动</h2><button class="link" data-action="activity">全部记录 ${icon('arrow')}</button></div><div class="timeline">${state.activity.slice(0,3).map(eventMarkup).join('')}</div></section>
+        </div><p class="content-foot">${icon('shield')} 安装包来自 Microsoft Store · 安装前校验发布者签名</p>`;
+    }
+    function eventMarkup(item) { return `<div class="event"><span class="event-icon">${icon(item.icon)}</span><div><p>${esc(item.title)}</p><small>${esc(item.detail)}</small></div><time>${esc(item.time)}</time></div>`; }
+    function diagnostics() {
+      const resources = [['Windows 命令行工具','用于命令行调用'],['Windows 搜索工具','用于本地文件搜索'],['WSL 命令行工具','用于 WSL 环境调用'],['WSL 搜索工具','用于 WSL 文件搜索'],['Node.js 运行时','用于运行辅助工具']];
+      return `<div class="page-head"><div><h1>诊断</h1><p>检查运行环境，定位启动问题</p></div>${button(state.diagnosing?'检查中…':'检查环境','diagnose','refresh','',state.diagnosing||busy()||!state.current)}</div>
+        <div class="notice ${!state.health?'amber':''}">${icon(state.health?'shield':'alert')}<div class="grow"><strong>${!state.current?'尚未安装 Codex':state.diagnosing?'正在检查运行环境…':state.health?'运行环境正常':'1 项资源需要修复'}</strong><p>${!state.current?'安装完成后可进行环境诊断。':state.health?'5 项启动资源完整。':'Windows 搜索工具缺失，可能影响文件搜索。'}</p></div></div>
+        <section class="card" style="margin-bottom:18px"><div class="settings-row"><div class="row"><span class="tile-icon blue">${icon('tool')}</span><div><strong>修复启动资源</strong><p>${state.repairing?'正在重建资源副本，完成后自动复检…':'启动异常时可手动修复，检测正常也可执行。'}</p></div></div>${button(state.repairing?'修复中…':'修复资源','repair','tool','primary',busy()||!state.current)}</div><div class="card-foot"><span>重建 5 项运行资源副本 · 保留用户配置</span><button class="link" data-action="repair-info">修复范围 ${icon('arrow')}</button></div></section><div class="diagnostic-grid"><section class="card"><div class="card-head"><h2>启动资源</h2><small>${state.current?(state.health?'5 / 5':'4 / 5'):'0 / 5'}</small></div>${resources.map(([name,detail],i)=>`<div class="diagnostic-item"><div class="row between"><div class="row">${icon(i<4?'code':'box')}<strong style="font-size:12px">${name}</strong></div>${badge(!state.current?'待安装':!state.health&&i===1?'缺失':'正常',!state.current?'':!state.health&&i===1?'amber':'green')}</div><p>${detail}</p></div>`).join('')}</section>
+        <div class="stack" style="align-content:start"><section class="card"><div class="card-head"><h2>网络连接</h2>${state.networkChecked?badge(state.scenario==='offline'?'连接失败':'连接正常',state.scenario==='offline'?'red':'green'):badge('未检测','')}</div><div style="padding:0 21px 20px"><p class="sub" style="font-size:11px;margin-bottom:16px">检查更新源和安装包下载服务的连接。</p>${button('检测连接','test-network','network','',state.diagnosing)}</div>${state.networkChecked?`<div class="card-foot">${state.scenario==='offline'?'连接超时 · 请检查网络或代理设置':'Microsoft Store · 42 ms（示例）'}</div>`:''}</section>
+        <section class="card"><div class="card-head"><h2>启动测试</h2></div><div style="padding:0 21px 20px"><p class="sub" style="font-size:11px;margin-bottom:16px">启动 Codex，确认主窗口能正常打开。</p>${button('测试启动','launch-test','play','',busy()||!state.current)}</div></section>
+        <section class="card"><div class="card-head"><h2>需要协助？</h2></div><div style="padding:0 21px 20px"><p class="sub" style="font-size:11px;margin-bottom:16px">复制诊断摘要，提供给技术支持。</p>${button('复制诊断信息','copy-diagnostics','copy')}</div></section></div></div>`;
+    }
+    function cacheAlert() { return state.cacheError?`<div class="notice red">${icon('alert')}<div class="grow"><strong>无法读取缓存目录</strong><p>请确认目录存在且有访问权限。</p></div>${button('重新扫描','scan-cache','refresh','',state.cacheScanning)}</div>`:''; }
+    function history() {
+      return `<div class="page-head"><div><h1>版本与缓存</h1><p>管理已下载的安装包，按需重装或回退</p></div>${button(state.cacheScanning?'扫描中…':'刷新','scan-cache','refresh','',state.cacheScanning)}</div>${cacheAlert()}
+        <section class="card"><div class="storage-summary"><span class="tile-icon">${icon('disk')}</span><div class="grow"><div class="row"><h2>${cacheSize()}</h2><span class="badge">${packageCount()} 个安装包</span></div><p>${state.cacheError?'读取失败时不显示旧数据':`最近同步：${state.cacheSynced} · 窗口激活时自动刷新`}</p></div>${button('清理缓存','clear-cache','trash','',busy()||state.cacheError||state.cache.length===0)}</div>
+        <div class="table-wrap">${state.cacheError?'<div class="empty"><h2>缓存状态暂不可用</h2><p>重新扫描成功后显示版本列表。</p></div>':state.cache.length?`<table><thead><tr><th>版本</th><th>大小</th><th>保存日期</th><th style="text-align:right">操作</th></tr></thead><tbody>${state.cache.map(pkg=>`<tr><td><div class="row"><strong class="mono">${pkg.version}</strong>${pkg.version===state.current?badge('当前','blue'):''}${pkg.pinned?`<span title="已保留，不参与批量清理">${icon('pin')}</span>`:''}</div><p>${pkg.version===state.current?'可重新安装':'可回退'} · 安装前重新校验签名</p></td><td>${pkg.mb} MB</td><td class="mono">${pkg.date}</td><td><div class="row" style="justify-content:flex-end;gap:5px"><button class="btn" data-action="package-install" data-id="${pkg.id}" ${busy()?'disabled':''}>${pkg.version===state.current?'重装':'回退'}</button><button class="btn quiet" data-action="pin" data-id="${pkg.id}" ${busy()?'disabled':''} aria-label="${pkg.pinned?'取消保留':'保留'} ${pkg.version}" title="${pkg.pinned?'取消保留':'保留此版本'}">${icon('pin')}</button><button class="btn quiet" data-action="delete-package" data-id="${pkg.id}" ${busy()?'disabled':''} aria-label="删除 ${pkg.version}" title="删除此安装包">${icon('trash')}</button></div></td></tr>`).join('')}</tbody></table>`:`<div class="empty"><span class="tile-icon">${icon('box')}</span><h2>暂无安装包缓存</h2><p>下载的安装包会显示在这里。已安装的 Codex 不受影响。</p>${button('前往概览','overview','arrow')}</div>`}</div>
+        <div class="card-foot"><span>${icon('folder')} 下载目录</span><button class="link" data-action="storage-settings">管理存储 ${icon('arrow')}</button></div></section>
+        <div class="notice" style="margin-top:18px">${icon('info')}<div><strong>回退需要本机安装包</strong><p>安装时会关闭 Codex，完成后自动启动。删除旧包后将无法使用该包回退。</p></div></div>`;
+    }
+    function switchRow(label,detail,key) { return `<div class="settings-row"><div><strong>${label}</strong><p>${detail}</p></div><button class="switch" role="switch" aria-label="${label}" aria-checked="${preferences[key]}" data-toggle="${key}"></button></div>`; }
+    function settings() {
+      const tabs = [['general','通用'],['appearance','外观'],['storage','存储'],['about','关于']];
+      let body = '';
+      if (state.tab === 'general') body = `<p class="section-label">更新与通知</p><section class="card">${switchRow('自动检查更新','定期检查新版本，不自动安装。','autoCheck')}<div class="settings-row"><div><strong>检查频率</strong><p>更新器运行期间生效。</p></div><select id="interval" aria-label="检查频率" ${!preferences.autoCheck?'disabled':''}>${['6','12','24'].map(n=>`<option value="${n}" ${preferences.interval===n?'selected':''}>每 ${n} 小时</option>`).join('')}</select></div>${switchRow('更新通知','有新版本时通知我。','notify')}</section><p class="section-label" style="margin-top:24px">窗口与启动</p><section class="card">${switchRow('关闭后保留在托盘','关闭窗口后继续检查更新。','tray')}${switchRow('开机启动','登录 Windows 后启动更新器。','startup')}</section><p class="settings-hint">${icon('info')} 原型仅保存选项，不更改系统启动或后台任务。</p>`;
+      if (state.tab === 'appearance') body = `<section class="card"><div class="settings-row"><div><strong>主题</strong><p>选择你习惯的外观。</p></div>${badge('立即生效','blue')}</div><div class="theme-grid" role="radiogroup" aria-label="主题">${[['light','浅色'],['dark','深色'],['system','跟随系统']].map(([id,label])=>`<button class="theme-choice" role="radio" aria-checked="${preferences.theme===id}" tabindex="${preferences.theme===id?'0':'-1'}" data-theme-choice="${id}"><span class="theme-preview ${id}"><aside></aside><article><b></b><i></i></article></span><span class="theme-caption">${label}<span class="radio-dot"></span></span></button>`).join('')}</div></section><p class="settings-hint">${icon('check')} 主题选择保存在当前浏览器，下次打开时恢复。</p><section class="card" style="margin-top:24px"><div class="settings-row"><div><strong>窗口控制</strong><p>左侧为装饰圆点，窗口操作统一位于右上角。</p></div><span class="badge">独立布局</span></div><div class="settings-row"><div><strong>减少动态效果</strong><p>跟随系统的辅助功能设置。</p></div><span class="sub" style="font-size:11px">跟随系统</span></div></section>`;
+      if (state.tab === 'storage') body = `${storageLocations()}${cacheAlert()}<p class="section-label">安装包缓存</p><section class="card"><div class="storage-summary"><span class="tile-icon">${icon('disk')}</span><div class="grow"><h2>${cacheSize()}</h2><p>${packageCount()} 个安装包 · 最近同步：${state.cacheSynced}</p></div>${button(state.cacheScanning?'扫描中…':'重新扫描','scan-cache','refresh','',state.cacheScanning)}</div><div class="settings-row"><div><strong>下载目录</strong><p>安装包保存在此目录。</p></div></div><div class="cache-path"><div class="path mono">${esc(state.directory)}</div><div class="row">${button('打开目录','open-directory','folder')}${button('更改目录','change-directory','','quiet',busy())}${button('迁移已有缓存','move-cache','disk','quiet',busy()||state.cacheError||!state.cache.length)}</div></div></section><section class="card" style="margin-top:18px"><div class="settings-row"><div><strong>自动清理</strong><p>安装成功后清理旧包，保留的版本不受影响。</p></div><select id="retention" aria-label="自动清理" ${busy()?'disabled':''}>${[['0','不自动清理'],['2','保留最近 2 个'],['3','保留最近 3 个'],['5','保留最近 5 个']].map(([n,label])=>`<option value="${n}" ${preferences.retention===n?'selected':''}>${label}</option>`).join('')}</select></div><div class="settings-row"><div><strong>清理安装包</strong><p>不影响已安装的 Codex，保留的版本会跳过。</p></div>${button('清理缓存','clear-cache','trash','danger',busy()||state.cacheError||!state.cache.length)}</div></section><p class="settings-hint">${icon('refresh')} 页面与窗口激活时刷新；目录变更后同步列表。</p>`;
+      if (state.tab === 'about') body = `<section class="card"><div class="about"><div class="logo">${icon('code')}</div><h2>Codex Updater</h2><p>更轻松地管理 Codex Desktop</p><p class="mono" style="margin-top:13px">v0.4.0 <span class="badge">设计预览</span></p></div><div class="settings-row"><div><strong>关于此工具</strong><p>非官方工具，与 OpenAI 无隶属关系。</p></div></div><div class="settings-row"><div><strong>安装包来源</strong><p>Microsoft Store；安装前校验发布者签名。</p></div>${icon('shield')}</div><div class="settings-row"><div><strong>帮助与反馈</strong><p>查看常见操作与支持信息。</p></div>${button('查看帮助','help','help')}</div></section><p class="settings-hint">${icon('info')} 本页面为交互原型，示例版本号不代表真实发布状态。</p>`;
+      return `<div class="page-head"><div><h1>设置</h1><p>按你的习惯使用更新器</p></div><span class="sub row" style="font-size:11px">${icon(storageAvailable?'check':'alert')}${storageAvailable?'更改自动保存':'仅本次会话生效'}</span></div><div class="tabs" role="tablist" aria-label="设置分类">${tabs.map(([id,label])=>`<button role="tab" id="tab-${id}" aria-controls="settings-panel" aria-selected="${state.tab===id}" tabindex="${state.tab===id?'0':'-1'}" class="${state.tab===id?'active':''}" data-tab="${id}">${label}</button>`).join('')}</div><section role="tabpanel" id="settings-panel" aria-labelledby="tab-${state.tab}">${body}</section>`;
+    }
+    function render(animate=false) {
+      const titles = {overview:'概览',diagnostics:'诊断',history:'版本与缓存',settings:'设置'};
+      document.querySelectorAll('[data-page]').forEach(el => { if (el.closest('.nav')) { el.classList.toggle('active',el.dataset.page===state.page); if(el.dataset.page===state.page) el.setAttribute('aria-current','page'); else el.removeAttribute('aria-current'); el.setAttribute('aria-label',titles[el.dataset.page]); } });
+      document.querySelector('#nav-count').textContent = packageCount();
+      document.querySelector('#health-label').textContent = !state.current?'Codex 尚未安装':state.health?'运行环境正常':'1 项资源异常';
+      document.querySelector('#health-dot').style.color = !state.current?'var(--muted)':state.health?'var(--green)':'var(--amber)';
+      const content = document.querySelector('#content');
+      content.innerHTML = `<div class="breadcrumb row between"><div>工作台<span class="separator">/</span><strong>${titles[state.page]}</strong></div><span class="row" style="gap:6px"><span class="dot green"></span>本机工作空间</span></div><div class="${animate?'page-enter':''}">${({overview,diagnostics,history,settings}[state.page])()}</div>`;
+      document.querySelector('#scenario').value = state.scenario;
+      document.querySelector('[data-action="external-delete"]').disabled = busy() || state.cacheScanning;
+    }
+    function renderProgress() {
+      const block=document.querySelector('.progress-block');if(!block)return;
+      block.querySelector('.mono').textContent=`${state.progress}%`;
+      block.querySelector('.sub').textContent=state.phase==='downloading'?`${Math.round(436*state.progress/100)} / 436 MB`:state.phase==='verifying'?'签名校验':'正在部署应用';
+      block.querySelector('[role="progressbar"]').setAttribute('aria-valuenow',state.progress);
+      block.querySelector('.progress-track span').style.width=`${state.progress}%`;
+    }
+    function storageLocations() {
+      const labels={unknown:'尚未检测',checking:'检测中…',ready:'可以迁移（示例）',blocked:'当前不可迁移',moving:'迁移中…',done:'已迁移（示例）'};
+      return `<div class="notice amber">${icon('disk')}<div class="grow"><strong>系统盘空间偏低</strong><p>C 盘剩余 8 GB · D 盘剩余 54 GB（示例）。建议将安装包缓存移到 D 盘。</p></div></div><p class="section-label">Codex 应用本体</p><section class="card" style="margin-bottom:18px"><div class="settings-row"><div><strong>${state.current?`${state.installDrive} 盘 · WindowsApps`:'尚未安装'}</strong><p>${state.current?'应用大小 1.6 GB（示例） · 目标路径由 Windows 管理':'可先检测目标磁盘是否支持安装。'}</p></div>${badge(labels[state.moveStatus],state.moveStatus==='blocked'?'amber':state.moveStatus==='ready'||state.moveStatus==='done'?'green':'')}</div><div class="settings-row"><div class="grow"><strong>目标磁盘</strong><p>D 盘 · NTFS · 剩余 54 GB（示例）</p></div>${state.moveStatus==='ready'?button(state.current?'迁移到 D 盘':'设为安装磁盘','move-app','disk','primary',busy()):button(state.moveStatus==='checking'?'检测中…':'检测迁移条件','check-move','refresh','',busy()||state.moveStatus==='done')}</div>${state.moveStatus==='blocked'?'<div class="notice amber" style="margin:0 20px 18px"><div><strong>此包或系统策略不允许迁移</strong><p>保留当前安装，可先迁移安装包缓存释放空间。</p></div></div>':''}<div class="card-foot"><span>先检测支持情况，再确认执行</span><button class="link" data-action="app-location-help">位置说明 ${icon('arrow')}</button></div></section><p class="settings-hint" style="margin:-4px 0 22px">${icon('info')} 用户配置、日志与项目文件不属于安装包缓存，可能仍占用 C 盘。</p>`;
+    }
+    async function checkMove() {
+      if(busy())return;
+      state.storageBusy=true;state.moveStatus='checking';const generation=++taskGeneration;render();await delay(900);
+      if(generation!==taskGeneration)return;
+      state.storageBusy=false;state.moveStatus=state.scenario==='move-blocked'?'blocked':'ready';render();
+      toast(state.moveStatus==='blocked'?'此场景模拟系统拒绝迁移':'迁移条件检测通过（示例结果）');
+    }
+    function moveApp() {
+      if(busy()||state.moveStatus!=='ready')return;
+      const installed=Boolean(state.current);
+      showDialog({title:installed?'将 Codex 迁移到 D 盘？':'将 D 盘设为安装磁盘？',symbol:'disk',confirm:installed?'开始迁移':'确认设置',body:`<p>${installed?'请保存工作。正式执行时需关闭 Codex，并由 Windows 包管理器迁移应用。':'正式安装时将使用 Windows 支持的目标应用卷。'}</p><div class="detail-box"><p>目标：D 盘（受支持的 Windows 应用卷）</p><p>${installed?'迁移完成后会检查安装路径并测试启动。':'仍需下载并校验安装包后再安装。'}</p><p>用户目录外部的数据、日志及项目文件不保证随应用迁移。</p></div><p style="margin-top:13px">仅演示流程，当前电脑上的 Codex 不会被移动。</p>`,action:async()=>{
+        const generation=++taskGeneration;state.storageBusy=true;state.moveStatus='moving';render();await delay(1300);
+        if(generation!==taskGeneration)return;
+        state.storageBusy=false;state.moveStatus='done';state.installDrive='D';record(installed?'应用迁移完成':'安装磁盘已设置','D 盘 · 演示结果','disk');render();toast(installed?'应用已迁移到 D 盘，启动检查通过（演示）':'安装磁盘已设为 D 盘（演示）');
+      }});
+    }
+    function moveCache() {
+      if(busy()||state.cacheError||!state.cache.length)return;
+      showDialog({title:'迁移已有安装包缓存？',symbol:'folder',confirm:'迁移到 D 盘',body:`<p>将 ${state.cache.length} 个安装包（${cacheSize()}）迁移到新目录。</p><div class="path mono" style="margin-top:15px">D:\\CodexPackages</div><div class="detail-box"><p>复制并校验成功后切换目录，再清理已迁移的源文件。</p><p>失败时保留原目录与文件。已保留版本的标记一并迁移。</p></div><p style="margin-top:13px">原型只模拟路径变化，不移动磁盘文件。</p>`,action:async()=>{
+        const generation=++taskGeneration;state.storageBusy=true;render();toast('正在复制并校验缓存（演示）');await delay(1100);
+        if(generation!==taskGeneration)return;
+        state.directory='D:\\CodexPackages';state.storageBusy=false;record('缓存迁移完成',`${state.cache.length} 个安装包 → D 盘（演示）`,'folder');render();toast('缓存迁移完成，后续安装包将保存到 D 盘（演示）');
+      }});
+    }
+    function navigate(page,tab) {
+      state.page = page; if(tab) state.tab = tab;
+      render(true); document.querySelector('#main').scrollTop = 0;
+      if(page==='history'||(page==='settings'&&state.tab==='storage')) void scanCache(false);
+    }
+    const delay = ms => new Promise(resolve => setTimeout(resolve,ms));
+    async function scanCache(notify=true) {
+      const generation = ++cacheGeneration;
+      const previous = JSON.stringify(state.cache);
+      state.cacheScanning = true; render();
+      await delay(450);
+      if (generation !== cacheGeneration) return;
+      state.cacheScanning = false;
+      state.cacheError = state.scenario === 'cache-error';
+      if (state.cacheError) {
+        if(notify) toast('读取失败：请检查目录权限，或切换演示场景后重试');
+      } else {
+        state.cache = state.disk.map(pkg=>({...pkg})); state.cacheSynced = '刚刚';
+        const changed = previous !== JSON.stringify(state.cache);
+        if (changed) { record('缓存已同步',`${state.cache.length} 个安装包 · ${cacheSize()}`,'disk'); toast(`缓存已同步：${state.cache.length} 个安装包`); }
+        else if (notify) toast('缓存已是最新状态');
+        if(state.phase==='ready'&&!state.disk.some(pkg=>pkg.version===LATEST)) state.phase='available';
+      }
+      render();
+    }
+    // 模拟目录事件与窗口激活共用扫描入口；实际文件监听由桌面主进程接入。
+    window.addEventListener('prototype-cache-change',()=>{clearTimeout(cacheTimer);cacheTimer=setTimeout(()=>void scanCache(false),240);});
+    window.addEventListener('focus',()=>{if(!busy()) void scanCache(false);});
+    document.addEventListener('visibilitychange',()=>{if(!document.hidden&&!busy()) void scanCache(false);});
+    async function checkUpdate() {
+      if(busy()) return;
+      const generation = ++taskGeneration;
+      state.phase = 'checking'; render(); await delay(1300);
+      if(generation!==taskGeneration) return;
+      state.checked = '刚刚';
+      state.phase = state.scenario==='offline'?'error':state.current===LATEST||state.scenario==='latest'?'latest':state.disk.some(pkg=>pkg.version===LATEST)?'ready':state.current?'available':'not-installed';
+      record(state.phase==='error'?'检查更新失败':state.phase==='latest'?'已是最新版本':'发现新版本',state.phase==='error'?'连接超时，可重试':state.phase==='latest'?state.current:LATEST,state.phase==='error'?'alert':'refresh');
+      render(); toast(state.phase==='error'?'检查失败，可在诊断页检查网络':state.phase==='latest'?'当前已是最新版本':'检查完成，有可用更新');
+    }
+    async function download() {
+      if(busy()) return;
+      const generation = ++taskGeneration;
+      state.phase = 'downloading';state.progress=0;render();
+      for(let n=7;n<=100;n+=7) { await delay(210); if(generation!==taskGeneration)return;state.progress=Math.min(n,100);renderProgress(); }
+      state.progress=100;state.phase='verifying';render();await delay(950);
+      if(generation!==taskGeneration)return;
+      if(state.scenario==='signature') {
+        state.phase='signature-error';record('安装包校验失败','已阻止安装，不允许跳过校验','alert');render();toast('签名校验失败，安装已阻止');return;
+      }
+      state.disk = [{id:'latest',version:LATEST,mb:436,date:'2026-11-10',pinned:false},...state.disk.filter(pkg=>pkg.version!==LATEST)];
+      state.cache=state.disk.map(pkg=>({...pkg}));state.cacheError=false;state.cacheSynced='刚刚';state.phase='ready';
+      record('安装包已准备好',`${LATEST} · 签名校验通过`,'shield');render();toast('下载完成，准备好后即可安装');
+    }
+    function requestInstall(pkg) {
+      if(busy())return;
+      const target = pkg || state.disk.find(item=>item.version===LATEST);
+      if(!target) { state.phase='available';void scanCache(false);toast('安装包已不存在，请重新下载');return; }
+      const rollback = target.version!==LATEST && target.version!==state.current;
+      showDialog({title:rollback?'回退到此版本？':target.version===state.current?'重新安装 Codex？':'安装更新并重启 Codex？',symbol:'download',confirm:rollback?'确认回退':'安装并重启',action:()=>void install(target),body:`<p>请先保存 Codex 中正在进行的工作。</p><div class="detail-box"><div class="row between"><span class="sub">目标版本</span><strong class="mono">${target.version}</strong></div><p style="margin-top:10px">安装时会关闭 Codex，完成后自动启动。</p><p>此示例安装包需要管理员权限，正式应用会弹出一次 Windows 授权窗口。</p></div><p style="margin-top:15px">本原型仅演示流程，不关闭应用或请求系统授权。</p>`});
+    }
+    async function install(target) {
+      if(!state.disk.some(pkg=>pkg.id===target.id)) { void scanCache(false);toast('安装包已被删除，请重新下载');return; }
+      if(state.scenario==='uac') { state.phase='ready';record('安装已取消','未获得管理员授权，安装包已保留','info');render();toast('授权已取消，安装包已保留，可再次安装');return; }
+      const generation=++taskGeneration;
+      state.phase='verifying';state.progress=0;render();await delay(600);
+      if(generation!==taskGeneration)return;
+      if(state.scenario==='signature') {state.phase='signature-error';record('安装包校验失败','回退与重装也必须校验签名','alert');render();return;}
+      state.phase='installing';render();
+      for(let n=10;n<=100;n+=10) {await delay(230);if(generation!==taskGeneration)return;state.progress=n;renderProgress();}
+      state.current=target.version;state.phase=target.version===LATEST?'success':'available';state.health=true;
+      if(Number(preferences.retention)>0) {
+        const kept=state.disk.filter(pkg=>!pkg.pinned).slice(0,Number(preferences.retention)).map(pkg=>pkg.id);
+        state.disk=state.disk.filter(pkg=>pkg.pinned||kept.includes(pkg.id)||pkg.id===target.id);
+      }
+      state.cache=state.disk.map(pkg=>({...pkg}));state.cacheSynced='刚刚';
+      record('安装完成',`${target.version} · Codex 已启动（演示）`,'check');render();toast('安装完成，Codex 已重新启动（演示）');
+    }
+    async function diagnose(repair=false) {
+      if(busy()||state.diagnosing||!state.current)return;
+      state.diagnosing=true;state.repairing=repair;const generation=++taskGeneration;render();await delay(1200);
+      if(generation!==taskGeneration)return;
+      state.diagnosing=false;state.repairing=false;if(repair)state.health=true;
+      record(repair?'资源修复完成':'环境检查完成',state.health?'5 项资源正常':'1 项资源缺失',state.health?'check':'alert');render();toast(state.health?'5 项启动资源正常':'检测到 1 项资源异常');
+    }
+    function clearCache() {
+      if(busy()||state.cacheError)return;
+      const removable=state.disk.filter(pkg=>!pkg.pinned);
+      if(!removable.length) {toast('所有安装包都已保留，请先取消保留');return;}
+      const pinned=state.disk.length-removable.length;
+      showDialog({title:'清理安装包缓存？',symbol:'trash',danger:true,confirm:'确认清理',body:`<p>将删除 ${removable.length} 个安装包，释放 ${formatSize(removable.reduce((n,p)=>n+p.mb,0))}。</p><div class="detail-box"><p>已安装的 Codex 不受影响。</p><p>${pinned?`${pinned} 个已保留版本将跳过。`:'删除后无法使用这些安装包回退。'}</p></div>`,action:()=>{state.disk=state.disk.filter(pkg=>pkg.pinned);record('缓存清理完成',`清理 ${removable.length} 个安装包`,'trash');void scanCache(false);}});
+    }
+    function deletePackage(pkg) {
+      if(busy()||!pkg)return;
+      showDialog({title:'删除此安装包？',symbol:'trash',danger:true,confirm:'删除安装包',body:`<p class="mono">${pkg.version} · ${pkg.mb} MB</p><div class="detail-box"><p>不影响已安装的 Codex；删除后无法使用此包重装或回退。</p>${pkg.pinned?'<p>此版本已标记为保留，本次删除会同时取消保留。</p>':''}</div>`,action:()=>{state.disk=state.disk.filter(item=>item.id!==pkg.id);record('安装包已删除',pkg.version,'trash');void scanCache(false);}});
+    }
+    function resetScenario(scenario='update') {
+      taskGeneration++;cacheGeneration++;clearTimeout(cacheTimer);closeDialog();
+      Object.assign(state,{scenario,phase:'available',current:CURRENT,disk:seedPackages(),cache:seedPackages(),cacheError:false,cacheScanning:false,progress:0,health:true,diagnosing:false,repairing:false,storageBusy:false,installDrive:'C',moveStatus:'unknown',networkChecked:false,checked:'刚刚',cacheSynced:'刚刚',activity:seedActivity()});
+      if(scenario==='latest'){state.phase='latest';state.activity=[{icon:'check',title:'已是最新版本',detail:CURRENT,time:'刚刚'}];}
+      if(scenario==='offline'){state.phase='error';state.activity=[{icon:'alert',title:'检查更新失败',detail:'连接超时，可重试',time:'刚刚'}];}
+      if(scenario==='not-installed'){state.phase='not-installed';state.current=null;state.disk=[];state.cache=[];state.activity=[];}
+      if(scenario==='resource')state.health=false;
+      if(scenario==='cache-error'){state.cacheError=true;state.page='history';}
+      if(scenario==='signature')state.phase='signature-error';
+      if(scenario==='uac') {state.disk.unshift({id:'latest',version:LATEST,mb:436,date:'2026-11-10',pinned:false});state.cache=state.disk.map(pkg=>({...pkg}));state.phase='ready';}
+      if(scenario!=='cache-error')state.page='overview';
+      if(scenario==='move-blocked'){state.page='settings';state.tab='storage';state.moveStatus='blocked';}
+      document.querySelector('#paused').hidden=true;render(true);document.querySelector('#main').scrollTop=0;
+    }
+    function setTheme(value) {
+      preferences.theme=value;applyTheme();savePreferences();render();
+      document.querySelector(`[data-theme-choice="${value}"]`)?.focus({preventScroll:true});
+      toast(`已切换为${{light:'浅色',dark:'深色',system:'跟随系统'}[value]}`);
+    }
+    function pauseWindow(kind) {
+      if(busy()&&kind==='close') {showDialog({title:'更新任务正在进行',body:'<p>请等待任务完成，或取消下载后再关闭窗口。</p>',confirm:'继续查看',symbol:'info'});return;}
+      const el=document.querySelector('#paused');
+      el.innerHTML=`<div class="logo">${icon('code')}</div><h2>${kind==='min'?'窗口已最小化':preferences.tray?'已收起到系统托盘':'更新器已关闭'}</h2><p>这是窗口行为演示，浏览器页面仍然打开。</p>${button('返回原型','restore-window','arrow','primary')}`;
+      el.hidden=false;el.querySelector('button').focus();
+    }
+    async function copyDiagnostics() {
+      const text=`Codex Updater 交互原型（示例数据）\n当前版本：${state.current||'未安装'}\n运行环境：${state.health?'正常':'资源缺失'}\n系统：Windows 11 x64\n缓存：${packageCount()} 个 / ${cacheSize()}`;
+      try {await navigator.clipboard.writeText(text);toast('诊断信息已复制');}
+      catch {showDialog({title:'诊断摘要',body:`<p>浏览器未允许剪贴板访问，可选中以下内容复制。</p><pre class="path" style="white-space:pre-wrap;user-select:text">${esc(text)}</pre>`,confirm:'完成',symbol:'copy'});}
+    }
+    const actions = {
+      'check-move':()=>void checkMove(),'move-app':moveApp,'move-cache':moveCache,
+      'app-location-help':()=>showDialog({title:'三个位置，分别管理',symbol:'disk',body:'<div class="detail-box"><p><strong>应用本体</strong><br>由 Windows 管理。支持时可迁移到其他应用卷，不能直接搬动 WindowsApps 文件夹。</p><p><strong>安装包缓存</strong><br>可以更改下载目录，或将已有安装包迁移到 D 盘。</p><p><strong>用户数据与项目</strong><br>配置、日志、会话和代码目录独立存在；迁移应用不代表这些文件全部迁移。</p></div><p style="margin-top:14px">实际支持情况须由桌面端检测。本原型不代表当前 Codex 包已通过迁移验证。</p>'}),
+      'repair-info':()=>showDialog({title:'资源修复范围',symbol:'tool',body:'<p>重建 Codex 启动所需的 5 项运行资源副本，修复后自动复检。</p><div class="detail-box"><p>Windows 命令行与搜索工具</p><p>WSL 命令行与搜索工具</p><p>Node.js 运行时</p></div><p style="margin-top:14px">不重置用户配置。网络、账号登录和 Codex 自身缺陷需另行排查。</p>'}),
+      overview:()=>navigate('overview'),diagnostics:()=>navigate('diagnostics'),
+      check:()=>void checkUpdate(),download:()=>void download(),install:()=>requestInstall(),
+      'cancel-download':()=>{taskGeneration++;state.phase=state.current?'available':'not-installed';state.progress=0;record('下载已取消','可重新下载','info');render();toast('下载已取消');},
+      later:()=>{toast('安装包已保留，准备好后可随时安装');},
+      launch:()=>toast('演示：Codex 已启动'),
+      'scan-cache':()=>void scanCache(),
+      'storage-settings':()=>navigate('settings','storage'),
+      'auto-settings':()=>navigate('settings','general'),
+      'clear-cache':clearCache,
+      'external-delete':()=>{if(busy())return;state.disk=[];window.dispatchEvent(new Event('prototype-cache-change'));toast('已模拟磁盘文件删除，正在同步…');},
+      'package-install':el=>requestInstall(state.disk.find(pkg=>pkg.id===el.dataset.id)),
+      'delete-package':el=>deletePackage(state.disk.find(pkg=>pkg.id===el.dataset.id)),
+      pin:el=>{if(busy())return;const pkg=state.disk.find(item=>item.id===el.dataset.id);if(!pkg)return;pkg.pinned=!pkg.pinned;state.cache=state.disk.map(item=>({...item}));render();toast(pkg.pinned?'已保留此版本，自动清理时会跳过':'已取消保留');},
+      'open-directory':()=>showDialog({title:'下载目录',symbol:'folder',body:`<p>正式应用中会打开文件资源管理器。</p><div class="path mono" style="margin-top:15px">${esc(state.directory)}</div>`}),
+      'change-directory':()=>showDialog({title:'更改下载目录',symbol:'folder',confirm:'使用演示目录',body:'<p>正式应用中会打开系统文件夹选择器。本次使用空的示例目录演示切换结果。</p><div class="path mono" style="margin-top:15px">D:\\CodexPackages</div><p style="margin-top:15px">旧目录文件不会迁移或删除，版本列表将重新读取新目录。</p>',action:()=>{state.directory='D:\\CodexPackages';state.disk=[];record('下载目录已更改','已切换到演示目录','folder');void scanCache(false);}}),
+      diagnose:()=>void diagnose(),repair:()=>showDialog({title:'修复运行资源？',body:'<p>将重建 Windows / WSL 命令行与搜索工具、Node.js 的运行资源副本，完成后自动复检。</p><p style="margin-top:12px">正式执行前请保存工作，修复可能需要关闭 Codex；不会重置用户配置。原型不修改本机文件。</p>',confirm:'开始修复',symbol:'tool',action:()=>void diagnose(true)}),
+      network:()=>{navigate('diagnostics');state.networkChecked=true;render();},
+      'test-network':()=>{state.networkChecked=true;record('网络检测完成',state.scenario==='offline'?'连接超时':'连接正常（示例）','network');render();toast(state.scenario==='offline'?'连接失败，请检查网络后重试':'连接正常：Microsoft Store 可访问（示例）');},
+      'launch-test':()=>showDialog({title:'测试 Codex 启动？',symbol:'play',confirm:'开始测试',body:'<p>正式应用会启动 Codex 并检查主窗口是否出现。</p>',action:()=>{record('启动测试完成','主窗口已显示（演示）','play');render();toast('启动测试通过（演示）');}}),
+      'copy-diagnostics':()=>void copyDiagnostics(),
+      'installed-info':()=>showDialog({title:'当前安装',symbol:'monitor',body:`<div class="detail-box"><p>Codex Desktop · <span class="mono">${state.current||'尚未安装'}</span></p><p>Windows 11 · x64</p><p>安装位置：${state.installDrive} 盘 · WindowsApps（示例）</p></div>`}),
+      'install-info':()=>showDialog({title:'安装 Codex Desktop',symbol:'download',body:'<p>下载完成后校验安装包。点击安装并确认 Windows 管理员授权，完成后将自动启动 Codex。</p><div class="detail-box"><p>需要 Windows 10 / 11（以安装包要求为准）。</p><p>请确保有足够的磁盘空间。</p></div>'}),
+      'signature-detail':()=>showDialog({title:'签名校验未通过',symbol:'shield',body:'<p>无法确认安装包的完整性或发布者，已阻止安装。</p><div class="detail-box"><p>重新下载后再试。如仍然失败，请将诊断信息交给技术支持。</p><p>本场景为模拟错误，切换至「发现更新」可演示成功流程。</p></div>'}),
+      activity:()=>showDialog({title:'活动记录',symbol:'history',body:`<div class="timeline" style="padding:0">${state.activity.length?state.activity.map(eventMarkup).join(''):'<p>暂无活动。检查更新后会显示记录。</p>'}`,confirm:'关闭'}),
+      help:()=>showDialog({title:'使用帮助',symbol:'help',body:'<div class="detail-box"><p><strong>更新 Codex</strong><br>概览 → 下载更新 → 安装并重启。</p><p><strong>清理与回退</strong><br>版本与缓存 → 清理、保留或回退版本。</p><p><strong>遇到问题</strong><br>诊断 → 检查环境 → 复制诊断信息给技术支持。</p></div><p style="margin-top:15px">Codex Updater 为非官方工具，与 OpenAI 无隶属关系。</p>'}),
+      guide:()=>showDialog({title:'交互原型说明',symbol:'info',body:'<p>此原型用于内部评审，所有版本、进度、诊断与磁盘数据均为示例。</p><div class="detail-box"><p>① 设置 → 外观：试用浅色、深色与跟随系统。</p><p>② 版本与缓存 → 模拟外部删除缓存：观察数量、空间和列表同步。</p><p>③ 概览：体验下载、取消、校验、安装确认与完成状态。</p><p>④ 底部场景：查看网络失败、资源异常、签名失败和取消授权。</p></div><p style="margin-top:15px">主题及开关可在浏览器保存。真实磁盘监听、系统窗口控制、安装与授权需由桌面端接入。窗口最大化在原型中演示为浏览器全屏。</p>',confirm:'开始体验'}),
+      reset:()=>{preferences={...defaults};savePreferences();applyTheme();state.directory='%LOCALAPPDATA%\\Codex Updater\\downloads';state.tab='general';resetScenario();toast('演示已重置');},
+      dismiss:closeDialog,
+      'confirm-dialog':()=>{const callback=dialogCallback;closeDialog();if(callback)callback();},
+      'window-close':()=>pauseWindow('close'),'window-min':()=>pauseWindow('min'),
+      'restore-window':()=>{document.querySelector('#paused').hidden=true;document.querySelector('[data-page="'+state.page+'"]').focus();},
+      'window-max':async()=>{try {if(document.fullscreenElement)await document.exitFullscreen();else await document.documentElement.requestFullscreen();}catch {toast('浏览器不允许全屏，可使用 F11 预览');}}
+    };
+    document.addEventListener('click',event=>{
+      const el=event.target.closest('button');if(!el||el.disabled)return;
+      if(el.dataset.page){navigate(el.dataset.page);return;}
+      if(el.dataset.tab){state.tab=el.dataset.tab;render();document.querySelector(`[data-tab="${state.tab}"]`)?.focus();if(state.tab==='storage')void scanCache(false);return;}
+      if(el.dataset.themeChoice){setTheme(el.dataset.themeChoice);return;}
+      if(el.dataset.toggle){const key=el.dataset.toggle;preferences[key]=!preferences[key];savePreferences();render();document.querySelector(`[data-toggle="${key}"]`)?.focus();toast('设置已更新');return;}
+      if(actions[el.dataset.action])actions[el.dataset.action](el);
+    });
+    document.addEventListener('change',event=>{
+      if(event.target.id==='scenario')resetScenario(event.target.value);
+      if(event.target.id==='interval'||event.target.id==='retention'){preferences[event.target.id]=event.target.value;savePreferences();render();document.querySelector('#'+event.target.id)?.focus();toast('设置已更新');}
+    });
+    document.addEventListener('keydown',event=>{
+      const theme=event.target.closest('[data-theme-choice]'),tab=event.target.closest('[data-tab]');
+      if(!theme&&!tab)return;
+      if(!['ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Home','End'].includes(event.key))return;
+      event.preventDefault();
+      const choices=theme?['light','dark','system']:['general','appearance','storage','about'];
+      const current=theme?preferences.theme:state.tab;
+      const index=event.key==='Home'?0:event.key==='End'?choices.length-1:(choices.indexOf(current)+(['ArrowRight','ArrowDown'].includes(event.key)?1:-1)+choices.length)%choices.length;
+      if(theme)setTheme(choices[index]);else {state.tab=choices[index];render();document.querySelector(`[data-tab="${state.tab}"]`).focus();if(state.tab==='storage')void scanCache(false);}
+    });
+    document.querySelector('#modal').addEventListener('cancel',()=>{dialogCallback=null;});
+    document.addEventListener('fullscreenchange',()=>{const el=document.querySelector('[data-action="window-max"]');el.setAttribute('aria-label',document.fullscreenElement?'还原窗口':'最大化');el.title=document.fullscreenElement?'还原窗口':'最大化';el.innerHTML=document.fullscreenElement?'<svg viewBox="0 0 12 12" aria-hidden="true"><path d="M4 3V1h7v7H9"/><rect x="1" y="4" width="7" height="7" rx=".5"/></svg>':'<svg viewBox="0 0 12 12" aria-hidden="true"><rect x="2" y="2" width="8" height="8" rx=".7"/></svg>';});
+    document.querySelectorAll('[data-icon]').forEach(el=>el.innerHTML=icon(el.dataset.icon));
+    applyTheme();render(true);
+  </script>
+</body>
+</html>

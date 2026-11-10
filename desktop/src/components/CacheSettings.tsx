@@ -1,9 +1,17 @@
-import type { CachedPackageList, Settings } from "../types";
-import { formatBytes } from "../lib/format";
+import { useEffect, useRef, useState } from "react";
+import type {
+  CacheMigrationPlan,
+  CacheMigrationProgress,
+  CacheScanStatus,
+  CachedPackageList,
+  Settings,
+  StorageInfo,
+} from "../types";
+import { formatBytes, formatClock } from "../lib/format";
 import { Icon } from "./Icons";
 
 /**
- * 安装包缓存：目录、当前占用、清空，以及「版本历史」卡片的显示开关。
+ * 安装包缓存：目录、占用、空间、清理与迁移。
  *
  * 这张卡片是「缓存不再自动清理」这个决定配套出来的。以前的策略是装完之后自动剪到最近
  * 2 个，用户什么都不用管、也不用看 —— 代价是磁盘上发生了什么他也不知道。现在改成不自动
@@ -14,28 +22,42 @@ import { Icon } from "./Icons";
  *   2. **一个写明后果的清空入口**。它是用户唯一的回收手段，所以不能藏在「打开缓存目录、
  *      自己去挑着删」后面（那正是版本历史卡片刻意不做删除按钮的原因：逐行删除太容易误点）。
  *      清空走主进程的原生确认框，默认按钮是「取消」。
+ *   3. **换目录是一步到位的**。选一个文件夹，缓存固定落在它的 `Codex Updater\downloads`
+ *      子目录里；旧安装包是「要不要一起搬」的可选项 —— 不搬就只切设置，搬就一次做完
+ *      「复制 → 校验 → 切换 → 清理」。失败或取消时源目录与设置都不动。
  *
- * 缓存目录放在这张卡片而不是「高级设置」里：它是这张卡片的前提（占用算的就是这个目录），
- * 而且「装的东西占了我多少地方、能不能换到别的盘」比「Codex 本体装哪儿」更常被问到。
- *
- * 版本历史的显示开关也在这里：它和缓存是同一件事的两面（那张卡片展示的就是缓存里的包），
- * 放在一起用户才知道「关掉的是显示，不是清理」。
+ * 读取失败时不再显示上一轮的文件列表：那份列表可能已经指向不存在的文件。摘要改成
+ * 「无法读取」，列表与回退按钮交给版本与缓存页统一处理。
  */
 export function CacheSettings({
   settings,
   cachedPackages,
+  cacheStatus,
+  cacheError,
+  cacheRefreshedAt,
   cacheDirectory,
+  storage,
   busy,
   clearingCache,
+  migrationPlan,
+  migrationRunning,
+  migrationProgress,
+  onRefresh,
   onPick,
   onResetDirectory,
   onOpen,
   onToggleVersionHistory,
   onKeepCountChange,
   onClearCache,
+  onDismissMigration,
+  onApply,
+  onCancelMigration,
 }: {
   settings: Settings | null;
   cachedPackages: CachedPackageList | null;
+  cacheStatus: CacheScanStatus;
+  cacheError: string | null;
+  cacheRefreshedAt: number | null;
   /**
    * 「打开缓存目录」要打开的真实路径，由 App 按 effectiveDownloadDirectory 算好传进来。
    *
@@ -44,16 +66,37 @@ export function CacheSettings({
    * 事给出两种答案。判据只留在 store 那一处。
    */
   cacheDirectory: string;
-  /** 「有命令在跑」。清空与换目录都置灰，避免和下载/安装抢同一个目录。 */
+  storage: StorageInfo | null;
+  /** 「有命令在跑」。清空、换目录与迁移都置灰，避免和下载/安装抢同一个目录。 */
   busy: boolean;
   clearingCache: boolean;
+  migrationPlan: CacheMigrationPlan | null;
+  migrationRunning: boolean;
+  migrationProgress: CacheMigrationProgress | null;
+  onRefresh: () => void;
   onPick: () => void;
   onResetDirectory: () => void;
   onOpen: (path: string) => void;
   onToggleVersionHistory: (next: boolean) => void;
   onKeepCountChange: (count: number) => void;
   onClearCache: () => void;
+  onDismissMigration: () => void;
+  /** 确认块里的「继续」：勾选要搬旧安装包就走迁移，不勾只切换目录。 */
+  onApply: (carryOver: boolean) => void;
+  onCancelMigration: () => void;
 }) {
+  const cancelRef = useRef<HTMLButtonElement>(null);
+  // 旧安装包默认一起搬：用户既然换了目录，多半也想让它们跟过去。
+  const [carryOver, setCarryOver] = useState(true);
+
+  // 确认块一出现，焦点落在「取消」上：迁移会搬动几 GB 文件，回车键不该直接开始。
+  // 每次新的预检结果都把勾选拨回默认值，避免上一轮的选择莫名延续。
+  useEffect(() => {
+    if (!migrationPlan) return;
+    setCarryOver(true);
+    cancelRef.current?.focus();
+  }, [migrationPlan]);
+
   if (!settings) return null;
   const custom = (settings.downloadDirectory ?? "").trim();
   const packages = cachedPackages?.packages ?? [];
@@ -65,26 +108,47 @@ export function CacheSettings({
     ? [0, 2, 3, 5, 10]
     : [0, 2, 3, 5, 10, keepCount].sort((left, right) => left - right);
 
-  // 清单读不到（枚举脚本失败、或刚启动还没拉回来）时不能报「0 个 · 0 MB」——
-  // 那句话的意思是「缓存是空的」，而事实只是「这次没读到」。用户会照着它判断
-  // 空间已经回来了，然后发现没有。
-  const usageText = cachedPackages
-    ? `${packages.length} 个 · ${formatBytes(totalBytes)}`
-    : "占用未知";
+  // 三种「没有数字」必须分开说：正在扫、读失败、确实为空。
+  const usageText =
+    cacheStatus === "error"
+      ? "无法读取缓存目录"
+      : cachedPackages
+        ? `${packages.length} 个 · ${formatBytes(totalBytes)}`
+        : cacheStatus === "scanning"
+          ? "正在扫描…"
+          : "占用未知";
+  const canClear = Boolean(cachedPackages?.packages.length) && !busy && !clearingCache && cacheStatus !== "error";
+  const refreshedClock = formatClock(cacheRefreshedAt);
 
   // 默认显示：字段缺失（老配置文件）时按显示处理，`!== false` 正是这个意思。
   const showVersionHistory = settings.showVersionHistory !== false;
 
   return (
-    <details className="panel settings-card card" open>
+    <details className="panel settings-card card storage-card" open>
       <summary>安装包缓存 · {usageText}</summary>
       <div className="settings-body">
+        {cacheStatus === "error" && (
+          <div className="inline-alert" role="alert">
+            <div>
+              <strong>无法读取缓存目录</strong>
+              <p className="field-help">{cacheError || "缓存目录不可访问。"}</p>
+            </div>
+            <button type="button" className="button" onClick={onRefresh}>
+              <Icon name="refresh" size={13} />
+              重试
+            </button>
+          </div>
+        )}
+
         <div className="set-block">
           <div className="line">
             <strong>缓存目录</strong>
             <span className="aside">{usageText}</span>
           </div>
-          <p>下载的安装包放在这里，可以换到别的盘。这是本应用唯一能替你选的目录。</p>
+          <p>
+            下载的安装包放在这里。换位置时会在所选文件夹下新建{" "}
+            <code>Codex Updater\downloads</code>。
+          </p>
           <div className="path-row">
             <input
               id="download-directory"
@@ -93,42 +157,161 @@ export function CacheSettings({
               value={custom || settings.defaultDownloadDirectory}
               title={custom || settings.defaultDownloadDirectory}
             />
-            <button type="button" className="button" onClick={onPick}>
-              浏览…
+            <button
+              type="button"
+              className="button"
+              disabled={busy || migrationRunning}
+              title={
+                busy || migrationRunning
+                  ? "有命令正在执行，等它结束再换目录"
+                  : "选一个文件夹，缓存会放在它下面的 Codex Updater\\downloads"
+              }
+              onClick={onPick}
+            >
+              更改位置…
             </button>
             {custom && (
-              <button type="button" className="button" onClick={onResetDirectory}>
+              <button
+                type="button"
+                className="button"
+                disabled={busy || migrationRunning}
+                onClick={onResetDirectory}
+              >
                 恢复默认
               </button>
             )}
           </div>
           <p className="field-help">
-            默认在当前用户的 AppData 下（也就是 C 盘），装过几次更新之后会占掉几个 GB。
+            默认在用户 AppData（C 盘），几次更新后会占几个 GB。
+            {storage?.download
+              ? ` 当前磁盘剩余 ${formatBytes(storage.download.freeBytes)} / ${formatBytes(storage.download.totalBytes)}。`
+              : ""}
           </p>
           <div className="settings-links">
             <button type="button" className="link-button" onClick={() => onOpen(cacheDirectory)}>
               <Icon name="folder" size={13} />
               打开缓存目录
             </button>
+            <button type="button" className="link-button" onClick={onRefresh} disabled={cacheStatus === "scanning"}>
+              <Icon name="refresh" size={13} />
+              {cacheStatus === "scanning" ? "正在刷新…" : "重新扫描"}
+            </button>
+            {refreshedClock && <span className="hint">最近同步 {refreshedClock}</span>}
           </div>
         </div>
+
+        {migrationRunning && (
+          <div className="migration-progress" role="status" aria-live="polite">
+            <div className="line">
+              <strong>正在迁移缓存…</strong>
+              <span className="aside">
+                {migrationProgress
+                  ? `${migrationProgress.copiedFiles} / ${migrationProgress.totalFiles} 个 · ${formatBytes(
+                      migrationProgress.copiedBytes,
+                    )} / ${formatBytes(migrationProgress.totalBytes)}`
+                  : "正在准备…"}
+              </span>
+            </div>
+            <div
+              className={`progress-track ${
+                migrationProgress && migrationProgress.totalBytes > 0 ? "" : "indeterminate"
+              }`}
+              role="progressbar"
+              aria-valuenow={
+                migrationProgress && migrationProgress.totalBytes > 0
+                  ? Math.round((migrationProgress.copiedBytes / migrationProgress.totalBytes) * 100)
+                  : undefined
+              }
+              aria-valuemin={0}
+              aria-valuemax={100}
+            >
+              <span
+                className="progress-fill"
+                style={
+                  migrationProgress && migrationProgress.totalBytes > 0
+                    ? {
+                        width: `${Math.min(
+                          100,
+                          Math.round((migrationProgress.copiedBytes / migrationProgress.totalBytes) * 100),
+                        )}%`,
+                      }
+                    : undefined
+                }
+              />
+            </div>
+            <p className="field-help">
+              {migrationProgress?.currentFile ? `正在处理：${migrationProgress.currentFile}` : "正在校验目标目录…"}
+              完成后会自动切换到新目录。
+            </p>
+            <button type="button" className="button" onClick={onCancelMigration}>
+              取消迁移
+            </button>
+          </div>
+        )}
+
+        {migrationPlan && !migrationRunning && (
+          <div className="confirm-block" role="group" aria-label="确认迁移缓存">
+            <strong>缓存目录改为 {migrationPlan.targetDirectory}</strong>
+            <div className="confirm-grid">
+              <span>当前目录</span>
+              <code>{migrationPlan.sourceDirectory}</code>
+              <span>现有安装包</span>
+              <strong>
+                {migrationPlan.files.length} 个 · {formatBytes(migrationPlan.totalBytes)}
+              </strong>
+              <span>目标可用空间</span>
+              <strong>{formatBytes(migrationPlan.freeBytes)}</strong>
+            </div>
+            {migrationPlan.conflicts.length > 0 && carryOver && (
+              <p className="field-help">
+                目标目录已有 {migrationPlan.conflicts.length} 个同名文件：内容相同则跳过，
+                不同则中止，不会覆盖。
+              </p>
+            )}
+            {carryOver && migrationPlan.totalBytes > migrationPlan.freeBytes && (
+              <p className="error-text">目标磁盘空间不足，请换一个目录，或者不搬现有安装包。</p>
+            )}
+            {migrationPlan.files.length > 0 && (
+              <label className="confirm-check">
+                <input
+                  type="checkbox"
+                  checked={carryOver}
+                  onChange={(event) => setCarryOver(event.target.checked)}
+                />
+                <span>
+                  同时把现有的 {migrationPlan.files.length} 个安装包（{formatBytes(migrationPlan.totalBytes)}）
+                  搬到新目录；不勾选则只切换目录。
+                </span>
+              </label>
+            )}
+            <p className="field-help">
+              迁移期间请不要关闭更新器；复制并校验通过后才会切换设置。
+            </p>
+            <div className="dash-actions">
+              <button ref={cancelRef} type="button" className="button" onClick={onDismissMigration}>
+                取消
+              </button>
+              <button
+                type="button"
+                className="button primary"
+                disabled={carryOver && migrationPlan.totalBytes > migrationPlan.freeBytes}
+                onClick={() => onApply(carryOver)}
+              >
+                {carryOver ? "迁移并切换" : "只切换目录"}
+              </button>
+            </div>
+          </div>
+        )}
 
         <div className="set-row">
           <div className="label">
             <strong>清空缓存</strong>
             <p className="field-help">
-              删掉缓存里的全部 Codex 安装包。<strong>已安装的 Codex 不受影响</strong>，但删掉之后
-              无法再回退到旧版本，需要时得重新下载（每个约 800 MB）。
+              删掉全部安装包。已安装的 Codex 不受影响，但删掉后无法回退旧版本，
+              需要时得重新下载（每个约 800 MB）。
             </p>
           </div>
-          {/* 清空是不可撤销的，所以措辞写清后果、并且不置灰到看不见 —— 它必须一直在，
-              用户才敢放心地让缓存涨上去。忙的时候置灰：正跑着的下载或安装就站在这个目录里。 */}
-          <button
-            type="button"
-            className="link-button danger"
-            disabled={busy}
-            onClick={onClearCache}
-          >
+          <button type="button" className="link-button danger" disabled={!canClear} onClick={onClearCache}>
             {clearingCache ? "正在清空…" : `清空缓存（${usageText}）`}
           </button>
         </div>
@@ -137,11 +320,10 @@ export function CacheSettings({
           <div className="label">
             <strong>自动保留份数</strong>
             <p>
-              装完更新后按版本倒序保留最近的几个安装包。选「不自动清理」就一个都不删，
-              磁盘占用完全由你自己回收。
+              装完更新后按版本倒序保留最近几个。选「不自动清理」就一个都不删。
               {pinnedCount > 0
-                ? `已固定 ${pinnedCount} 个：固定的包不计数，也不会被自动删掉。`
-                : "在「版本历史」里可以固定某个包，固定后不会被自动清理。"}
+                ? ` 已固定 ${pinnedCount} 个，不参与自动清理。`
+                : " 固定的包不参与自动清理。"}
             </p>
           </div>
           <select
@@ -161,11 +343,8 @@ export function CacheSettings({
 
         <div className="set-row">
           <div className="label">
-            <strong>显示「版本历史」卡片</strong>
-            <p>
-              只是一个显示开关：关掉之后缓存里的安装包照旧留着，更新失败时告警里的回退入口
-              也照旧在。要真的腾空间请用上面的「清空缓存」。
-            </p>
+            <strong>显示「版本历史」列表</strong>
+            <p>只影响列表显示，安装包照旧保留；要腾空间请用「清空缓存」。</p>
           </div>
           <label className="switch-control">
             <input

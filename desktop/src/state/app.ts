@@ -1,12 +1,18 @@
 import { create } from "zustand";
 import { invokeCommand, subscribeAppUpdate, subscribeBackgroundCheck, subscribeProgress } from "../lib/bridge";
 import { diagnosticsText } from "../lib/diagnostics";
-import { clearedNotice } from "../lib/format";
+import { clearedNotice, formatBytes } from "../lib/format";
 import { resolveUpdatePolicy, compareVersions, type UpdatePolicy } from "../lib/policy";
+import { applyThemeToDocument } from "../lib/theme";
 import type {
   Activity,
   ActivityId,
+  AppMigrationCapability,
   AppUpdateState,
+  CacheMigrationPlan,
+  CacheMigrationProgress,
+  CacheMigrationResult,
+  CacheScanStatus,
   CachedPackage,
   CachedPackageList,
   ClearCacheResult,
@@ -22,6 +28,7 @@ import type {
   ProgressEvent,
   Settings,
   SignatureReport,
+  StorageInfo,
   ThemePreference,
   UpdateReport,
 } from "../types";
@@ -54,6 +61,30 @@ interface AppState {
   healthDetail: HealthReport | null;
   /** 下载缓存里的安装包清单，回退功能的数据源。读不到时为 null。 */
   cachedPackages: CachedPackageList | null;
+  /** 这一轮扫描的状态。error 时 cachedPackages 必须清空，不能继续显示上一轮的文件。 */
+  cacheStatus: CacheScanStatus;
+  cacheError: string | null;
+  cacheRefreshedAt: number | null;
+  /**
+   * 主题正在保存。
+   *
+   * 外观控件靠它显示「保存中」并防止把未落盘的值当成已保存；快速连点时只让最后一次
+   * 请求的结果生效（见 setTheme），否则慢的那次回包会把快的那次覆盖掉。
+   */
+  themePending: boolean;
+  /** 缓存目录与 Codex 应用卷的真实剩余空间。 */
+  storageInfo: StorageInfo | null;
+  storageLoading: boolean;
+  /** 迁移预检结果。只用于确认对话框，执行时主进程会重新算一遍。 */
+  migrationPlan: CacheMigrationPlan | null;
+  migrationRunning: boolean;
+  migrationProgress: CacheMigrationProgress | null;
+  /** Codex 应用本体迁移能力检测（只读）。 */
+  appCapability: AppMigrationCapability | null;
+  appCapabilityLoading: boolean;
+  /** 上一次检测完成的时刻。用来把「点了没反应」变成「检测完成 · HH:MM」。 */
+  appCapabilityCheckedAt: number | null;
+  appMigrating: boolean;
   /** GitHub Release：更新器自身的新版本与更新公告。读不到时为 null。 */
   github: GithubUpdates | null;
   githubLoading: boolean;
@@ -108,8 +139,24 @@ interface AppState {
 
   bootstrap: () => Promise<void>;
   oneClick: () => Promise<void>;
-  /** 重新读取缓存里的安装包清单（装完、回退完都会变）。失败不报错，只是列表不更新。 */
+  /** 重新读取缓存里的安装包清单（装完、回退完、目录变化都会变）。失败会清空旧列表并标红。 */
   refreshCachedPackages: () => Promise<void>;
+  /** 切换主题：先乐观上屏，保存失败恢复到上一个已保存值，并用请求序号丢弃过期回包。 */
+  setTheme: (theme: ThemePreference) => Promise<void>;
+  /** 读取缓存目录与 Codex 应用卷的剩余空间。 */
+  refreshStorage: () => Promise<void>;
+  /** 迁移预检：只读，不改任何文件。返回 null 表示失败（错误已写进全局 error）。 */
+  precheckCacheMigration: (targetDirectory: string) => Promise<CacheMigrationPlan | null>;
+  /** 打开系统目录选择器，只返回目标路径，不改设置（迁移用）。取消返回 null。 */
+  pickCacheFolder: () => Promise<string | null>;
+  /** 执行迁移。必须由界面在用户确认预检结果之后调用。 */
+  migrateCache: (targetDirectory: string) => Promise<CacheMigrationResult | null>;
+  cancelCacheMigration: () => Promise<void>;
+  applyCacheMigrationProgress: (event: CacheMigrationProgress) => void;
+  /** 检测 Codex 应用本体是否可以迁到另一个 Windows 应用卷。 */
+  detectAppMigration: () => Promise<AppMigrationCapability | null>;
+  /** 把 Codex 应用本体迁到指定应用卷（用户确认后由主进程再确认并执行）。 */
+  moveCodexApp: (volume: string) => Promise<void>;
   /** 回退到指定的旧版本安装包。走的是和安装同一条链路，只是允许降级。 */
   rollback: (pkg: CachedPackage) => Promise<void>;
   /**
@@ -145,7 +192,7 @@ interface AppState {
   runHealthProbe: () => Promise<void>;
   runRepair: () => Promise<void>;
   launch: () => Promise<void>;
-  saveDownloadDirectory: (value: string) => Promise<void>;
+  saveDownloadDirectory: (value: string) => Promise<boolean>;
   /**
    * 保存各种可选项（后台常驻的托盘 / 开机自启、版本历史卡片的显示开关）。
    *
@@ -179,7 +226,6 @@ interface AppState {
   openRelease: (url: string) => Promise<void>;
   /** 把当前现场拼成一段文本复制到剪贴板，同事报障时不必截图。 */
   copyDiagnostics: () => Promise<void>;
-  pickDirectory: () => Promise<void>;
   openPath: (path: string) => Promise<void>;
   /** 打开 Codex 本体的安装目录（路径由主进程解析，这里不传路径过去）。 */
   openInstallLocation: () => Promise<void>;
@@ -191,6 +237,13 @@ interface AppState {
 function startActivity(id: ActivityId, label: string): Activity {
   return { id, label, percent: 0, indeterminate: false, logs: [] };
 }
+
+// 缓存扫描代次：目录切换 / 连续刷新时，只接受最后一次请求的结果。旧请求晚回来
+// 会把新目录的清单覆盖成旧目录的，用户看到的回退按钮就指向了一个已经不存在的文件。
+let cacheGeneration = 0;
+// 主题保存请求序号：快速连点三次，只有最后一次的回包能改界面；前两次即使成功，
+// 也不能把当前选择拨回去（它们回读到的本来就是中间值）。
+let themeRequestSeq = 0;
 
 /**
  * 有没有命令正在跑 —— 所有「触发命令」的入口都必须用它置灰。判据只此一处。
@@ -213,6 +266,8 @@ export const isCommandRunning = (state: {
   rollingBack: boolean;
   clearingCache: boolean;
   autoDownloading: boolean;
+  migrationRunning: boolean;
+  appMigrating: boolean;
 }): boolean =>
   state.phase === "working" ||
   state.phase === "checking" ||
@@ -221,7 +276,9 @@ export const isCommandRunning = (state: {
   state.checkingUpdate ||
   state.rollingBack ||
   state.clearingCache ||
-  state.autoDownloading;
+  state.autoDownloading ||
+  state.migrationRunning ||
+  state.appMigrating;
 
 /**
  * 「打开缓存目录」该打开哪个目录 —— 全应用只此一处判据。
@@ -255,6 +312,19 @@ export const useAppStore = create<AppState>((set, get) => ({
   launchResult: null,
   healthDetail: null,
   cachedPackages: null,
+  cacheStatus: "idle",
+  cacheError: null,
+  cacheRefreshedAt: null,
+  themePending: false,
+  storageInfo: null,
+  storageLoading: false,
+  migrationPlan: null,
+  migrationRunning: false,
+  migrationProgress: null,
+  appCapability: null,
+  appCapabilityLoading: false,
+  appCapabilityCheckedAt: null,
+  appMigrating: false,
   github: null,
   githubLoading: false,
   appUpdate: {
@@ -285,6 +355,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     try {
       const settings = await invokeCommand<Settings>("get_settings");
       const status = await invokeCommand<HealthReport>("get_status");
+      // 首帧已经由 preload 上色；这里再用主进程回读的落盘值校准一次，
+      // 防止两次读取之间设置被外部改过。
+      applyThemeToDocument(settings.theme);
       set({ settings, status, phase: "ready" });
     } catch (error) {
       set({ phase: "failed", error: describe(error) });
@@ -381,13 +454,204 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   refreshCachedPackages: async () => {
+    const generation = ++cacheGeneration;
+    // 首次扫描显示「正在扫描」；已有列表时保留旧值，界面按 cacheStatus 决定是否标注
+    // 「正在刷新」，不做整块闪烁。
+    set((state) => ({
+      cacheStatus: state.cachedPackages ? state.cacheStatus : "scanning",
+      cacheError: null,
+    }));
     try {
       const cachedPackages = await invokeCommand<CachedPackageList>("list_cached_packages", {
         downloadDirectory: get().settings?.downloadDirectory ?? "",
       });
-      set({ cachedPackages });
+      // 过期结果直接丢弃：它读的是旧目录 / 旧时刻，落进 store 就是一份自相矛盾的快照。
+      if (generation !== cacheGeneration) return;
+      set({
+        cachedPackages,
+        cacheStatus: "ready",
+        cacheError: null,
+        cacheRefreshedAt: Date.now(),
+      });
+    } catch (error) {
+      if (generation !== cacheGeneration) return;
+      // 关键：失败时**清空**旧列表。以前这里保持原样，界面会继续展示已经读不到的
+      // 安装包和回退按钮 —— 用户点下去才发现文件早就不在了。读不到就是读不到。
+      set({
+        cachedPackages: null,
+        cacheStatus: "error",
+        cacheError: describe(error),
+        cacheRefreshedAt: Date.now(),
+      });
+    }
+  },
+
+  setTheme: async (theme) => {
+    const requestId = ++themeRequestSeq;
+    const previous = get().settings?.theme ?? "system";
+    // 乐观上屏：主题是「点一下就应该变」的设置，不该等一次 IPC + 两次读盘。
+    set((state) => ({
+      settings: state.settings ? { ...state.settings, theme } : state.settings,
+      themePending: true,
+      error: null,
+    }));
+    applyThemeToDocument(theme);
+    try {
+      await invokeCommand<Settings>("save_settings", { theme });
+      // 回读主进程归一化后的值，而不是假设它接受传入值。
+      const settings = await invokeCommand<Settings>("get_settings");
+      if (requestId !== themeRequestSeq) return;
+      set({ settings, themePending: false });
+      applyThemeToDocument(settings.theme ?? "system");
+    } catch (error) {
+      if (requestId !== themeRequestSeq) return;
+      // 保存失败必须把控件拨回上一个已保存值，并说明原因。让界面停在新值上等于
+      // 谎报「已保存」；下次重启又会变回去，用户完全无法理解。
+      set((state) => ({
+        settings: state.settings ? { ...state.settings, theme: previous } : state.settings,
+        themePending: false,
+        error: `主题保存失败，已恢复上一个设置：${describe(error)}`,
+      }));
+      applyThemeToDocument(previous);
+    }
+  },
+
+  refreshStorage: async () => {
+    set({ storageLoading: true });
+    try {
+      const storageInfo = await invokeCommand<StorageInfo>("get_storage_info");
+      set({ storageInfo, storageLoading: false });
     } catch {
-      // 读不到就保持原样。「版本历史」卡片显示的是缓存里有什么，它不该成为失败来源。
+      // 空间信息是辅助信息，读不到就显示「未知」，不污染全局错误。
+      set({ storageInfo: null, storageLoading: false });
+    }
+  },
+
+  precheckCacheMigration: async (targetDirectory) => {
+    set({ error: null, notice: null });
+    try {
+      const migrationPlan = await invokeCommand<CacheMigrationPlan>("precheck_cache_migration", {
+        targetDirectory,
+      });
+      set({ migrationPlan });
+      return migrationPlan;
+    } catch (error) {
+      set({ error: `迁移预检失败：${describe(error)}` });
+      return null;
+    }
+  },
+
+  pickCacheFolder: async () => {
+    try {
+      const result = await invokeCommand<{ canceled: boolean; path?: string }>("pick_directory");
+      if (result.canceled || !result.path) return null;
+      return result.path;
+    } catch (error) {
+      set({ error: describe(error) });
+      return null;
+    }
+  },
+
+  migrateCache: async (targetDirectory) => {
+    if (isCommandRunning(get())) return null;
+    set({
+      migrationRunning: true,
+      migrationProgress: null,
+      error: null,
+      notice: null,
+    });
+    try {
+      const result = await invokeCommand<CacheMigrationResult>("migrate_cache", { targetDirectory });
+      if (result.cancelled) {
+        set({ notice: "已取消迁移。源目录与设置都没有改动。" });
+        return result;
+      }
+      if (!result.ok) {
+        set({ error: "迁移没有完成：源目录与设置保持不变。" });
+        return result;
+      }
+      // 设置已经切换到新目录，重新读设置和缓存清单，并刷新空间信息。
+      const settings = await invokeCommand<Settings>("get_settings");
+      set({ settings });
+      await get().refreshCachedPackages();
+      await get().refreshStorage();
+      const leftover = result.cleanupFailures.length
+        ? `；原目录仍有 ${result.cleanupFailures.length} 个文件未能清理`
+        : "";
+      set({
+        notice: `缓存已迁移到 ${result.targetDirectory}，共移动 ${result.copiedCount} 个文件、${formatBytes(result.copiedBytes)}${leftover}。`,
+      });
+      return result;
+    } catch (error) {
+      set({ error: `迁移失败：${describe(error)}` });
+      return null;
+    } finally {
+      set({ migrationRunning: false, migrationProgress: null, migrationPlan: null });
+    }
+  },
+
+  cancelCacheMigration: async () => {
+    try {
+      await invokeCommand("cancel_cache_migration");
+    } catch {
+      // 取消失败不影响当前流程：主进程会在下一个文件边界停下来。
+    }
+  },
+
+  applyCacheMigrationProgress: (event) => set({ migrationProgress: event }),
+
+  detectAppMigration: async () => {
+    set({ appCapabilityLoading: true });
+    try {
+      const appCapability = await invokeCommand<AppMigrationCapability>("get_app_migration_capability");
+      set({ appCapability, appCapabilityLoading: false, appCapabilityCheckedAt: Date.now() });
+      return appCapability;
+    } catch (error) {
+      set({
+        appCapability: {
+          installed: false,
+          version: null,
+          installLocation: null,
+          packageVolume: null,
+          movable: false,
+          reason: `检测失败：${describe(error)}`,
+          volumes: [],
+          failed: true,
+        },
+        appCapabilityLoading: false,
+        appCapabilityCheckedAt: Date.now(),
+      });
+      return get().appCapability;
+    }
+  },
+
+  moveCodexApp: async (volume) => {
+    if (isCommandRunning(get())) return;
+    set({ appMigrating: true, error: null, notice: null });
+    try {
+      const result = await invokeCommand<{
+        ok: boolean;
+        cancelled?: boolean;
+        installLocation: string | null;
+        message: string;
+      }>("move_codex_app", { volume });
+      const status = await invokeCommand<HealthReport>("get_status").catch(() => get().status);
+      set({ status, healthDetail: null });
+      await get().detectAppMigration();
+      await get().refreshStorage();
+      if (result.cancelled) {
+        // 用户在主进程确认框里点了取消，或在 UAC 上拒绝了授权：这是正常选择，
+        // 不是失败，不该在界面上亮一条红色错误。
+        set({ notice: result.message || "已取消迁移，Codex 没有被移动。" });
+      } else if (result.ok) {
+        set({ notice: result.message || `Codex 已迁移到 ${result.installLocation ?? volume}。` });
+      } else {
+        set({ error: result.message || "迁移没有完成，Windows 未报告新的安装位置。" });
+      }
+    } catch (error) {
+      set({ error: `应用迁移失败：${describe(error)}` });
+    } finally {
+      set({ appMigrating: false });
     }
   },
 
@@ -678,12 +942,21 @@ export const useAppStore = create<AppState>((set, get) => ({
     try {
       await invokeCommand<Settings>("save_settings", { downloadDirectory: value });
       const settings = await invokeCommand<Settings>("get_settings");
-      set({ settings });
+      // 切换目录也意味着一轮迁移流程结束：无论后续选不选搬文件，确认块都该收起。
+      set({
+        settings,
+        migrationPlan: null,
+        notice: `缓存目录已切换到 ${settings.downloadDirectory || settings.defaultDownloadDirectory}。`,
+      });
       // 换了缓存目录，「版本历史」列的还是旧目录里的包 —— 必须跟着刷新。
       // 否则用户改完目录看到的是一份对不上的清单，回退按钮指向的文件也不在新目录里。
       await get().refreshCachedPackages();
+      // 存储摘要里的「缓存所在磁盘」也要跟着换盘。
+      await get().refreshStorage();
+      return true;
     } catch (error) {
-      set({ error: describe(error) });
+      set({ error: `缓存目录切换失败：${describe(error)}` });
+      return false;
     }
   },
 
@@ -865,15 +1138,6 @@ export const useAppStore = create<AppState>((set, get) => ({
       });
       // 必须有回执：剪贴板是看不见的，不给一句话，用户会以为没点着又点一次。
       set({ notice: "诊断信息已复制到剪贴板，粘贴给对方即可" });
-    } catch (error) {
-      set({ error: describe(error) });
-    }
-  },
-
-  pickDirectory: async () => {
-    try {
-      const result = await invokeCommand<{ canceled: boolean; path?: string }>("pick_directory");
-      if (!result.canceled && result.path) await get().saveDownloadDirectory(result.path);
     } catch (error) {
       set({ error: describe(error) });
     }

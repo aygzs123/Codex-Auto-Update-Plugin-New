@@ -225,8 +225,9 @@ test("清空缓存：界面如实显示占用，读不到清单时不说「0 个
 
 test("版本历史可以整张关掉，但关的只是显示", () => {
   const cacheCard = read("src", "components", "CacheSettings.tsx");
-  assert.match(cacheCard, /显示「版本历史」卡片/, "开关的文案要说清关掉的是什么");
-  assert.match(cacheCard, /只是一个显示开关/, "必须写明它不动磁盘上的东西");
+  assert.match(cacheCard, /显示「版本历史」/, "开关的文案要说清关掉的是什么");
+  assert.match(cacheCard, /只影响列表显示/, "必须写明它不动磁盘上的东西");
+  assert.match(cacheCard, /安装包照旧保留/, "关掉的只是显示，包还在");
   // `!== false` 而不是真值判断：老配置文件里没有这个键，读出来是 undefined，
   // 那时必须显示（默认开），不能因为「假值」把卡片藏起来。
   assert.match(app, /const showVersionHistory = settings\?\.showVersionHistory !== false;/, "默认必须是显示");

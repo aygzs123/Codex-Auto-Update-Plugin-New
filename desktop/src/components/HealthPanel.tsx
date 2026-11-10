@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from "react";
 import type { HealthReport } from "../types";
 import { healthComponentText, healthStateText } from "../lib/format";
 import { diagnosisCopy } from "../lib/diagnosis";
@@ -42,6 +43,17 @@ export function HealthPanel({
   const probeFailed = health?.probeResult === "window-not-visible";
   // 没等到窗口时说什么、要不要提修复，全部走唯一映射表 —— 这里不再自己下结论。
   const diagnosis = diagnosisCopy(health?.startupDiagnosis);
+  // 修复会关闭 Codex，先给一次明确的范围说明；默认焦点在「取消」。
+  const [confirming, setConfirming] = useState(false);
+  const cancelRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    if (confirming) cancelRef.current?.focus();
+  }, [confirming]);
+  // 修复开始后收起确认块：屏幕应回到真实阶段与日志，不再停在旧按钮上。
+  useEffect(() => {
+    if (repairing) setConfirming(false);
+  }, [repairing]);
 
   const components = health?.components ?? [];
   const okCount = components.filter((component) => component.state === "ok").length;
@@ -158,18 +170,56 @@ export function HealthPanel({
         </button>
         {/* 这颗按钮常驻，不跟着判定走：它是个「我想重建就重建」的手动入口，不是结论。
             结论里的修复建议只出现在判定确实指向搬迁 bug 的地方（横幅），免得拿不出证据
-            就把人推去修。修复脚本本身幂等，健康时只会打印 SKIP。 */}
+            就把人推去修。修复脚本本身幂等，健康时只会打印 SKIP。
+            未安装时不能执行：没有 Codex 的资源可重建，点了只会得到一条脚本错误。 */}
         <button
           type="button"
           className="button"
-          disabled={busy}
-          title={busy ? "有命令正在执行，等它结束再操作" : undefined}
-          onClick={onRepair}
+          disabled={busy || !health?.installed}
+          title={
+            busy
+              ? "有命令正在执行，等它结束再操作"
+              : !health?.installed
+                ? "尚未安装 Codex Desktop，没有可修复的资源副本"
+                : undefined
+          }
+          onClick={() => setConfirming(true)}
         >
           <Icon name="refresh" size={14} />
           {repairing ? "修复中…" : "修复资源副本"}
         </button>
       </div>
+
+      {!health?.installed && (
+        <p className="field-help">尚未安装 Codex Desktop，修复入口保留但不可执行；安装后再运行。</p>
+      )}
+
+      {confirming && (
+        <div className="confirm-block" role="group" aria-label="确认修复资源副本">
+          <strong>确认修复资源副本？</strong>
+          <p className="field-help">
+            修复范围仅限 Windows / WSL 命令行工具、搜索工具与 Node.js 的资源副本，
+            <strong>不会重置 Codex 配置或会话</strong>。执行前会关闭正在运行的 Codex，
+            完成后自动重新自检；保存好正在编辑的内容再继续。修复过程需要管理员权限时会弹一次 UAC。
+          </p>
+          <div className="dash-actions">
+            <button ref={cancelRef} type="button" className="button" onClick={() => setConfirming(false)}>
+              取消
+            </button>
+            <button
+              type="button"
+              className="button primary"
+              onClick={() => {
+                setConfirming(false);
+                onRepair();
+              }}
+            >
+              开始修复
+            </button>
+          </div>
+        </div>
+      )}
+
       <p className="hint mt10">
         修复会先关闭 Codex；只写用户目录，不碰 WindowsApps。资源健康时只打印 SKIP。
       </p>

@@ -13,6 +13,8 @@ desktop/release-build/
 desktop/*.tsbuildinfo
 desktop/vite.config.js
 desktop/vite.config.d.ts
+# 本地验证与截图脚本的输出，不入库
+desktop/*.log
 
 # IDE
 .idea/

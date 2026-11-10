@@ -138,13 +138,23 @@ const rollbackScenario = process.argv.includes("--rollback");
 
 // --app-update：「设置 → 关于 → 检查更新」这条自更新链路。
 //
-// 桩里放一个比当前版本新的 `desktop-v0.5.0`（带 .exe 资产与 sha256 摘要），于是
-// 「检查更新」之后必须出现「发现新版本 v0.5.0」与「下载并安装」；点下载（走 IPC 桩，
+// 桩里放一个比当前版本新的 `desktop-v0.6.0`（带 .exe 资产与 sha256 摘要），于是
+// 「检查更新」之后必须出现「发现新版本 v0.6.0」与「下载并安装」；点下载（走 IPC 桩，
 // 不跑真实安装器）之后必须变成「已下载…可以安装」。
 //
 // 这条场景同时验证公告的两个来源：CHANGELOG 历史（0.1.0 / 0.2.0）来自打包进应用的
-// JSON，0.5.0 来自远端 —— 合并后按时间倒序、同 tag 不重复。
+// JSON，0.6.0 来自远端 —— 合并后按时间倒序、同 tag 不重复。
 const appUpdateScenario = process.argv.includes("--app-update");
+
+// --storage：设置 → 存储里的三条真实交互。
+//
+// 它们共同的特征是「会动用户磁盘上的东西」，所以这里验证的恰恰是**不轻易动**：
+//   - 外观三档即时切换，根节点 data-theme 必须真的跟着变；
+//   - 「更改位置」先出确认块，焦点落在「取消」，确认之前一条 migrate_cache 都不许发；
+//   - 「迁移应用本体」先只读检测，选定卷再执行；主进程确认框在桩里不存在，所以桩直接回
+//     「已取消」——界面必须把取消当成正常选择（提示，不是红字错误）。
+// 全程不执行真实迁移、不跑 Move-AppxPackage、不碰真实缓存。
+const storageScenario = process.argv.includes("--storage");
 
 // 进度序列取自 scripts/simulate-install.cjs 跑出来的真实事件流（含静默期爬升 20%→53%）。
 const PROGRESS_STREAM = [
@@ -254,17 +264,17 @@ const STUB_UPDATE_LATEST = {
 // 正文带 Markdown 标记（标题、列表、反引号），用来验证公告摘要会把它剥成纯文本；
 // 直接铺原文的话，界面上会出现一排 `##` 和 `-`。
 const STUB_UPDATER = {
-  version: "0.5.0",
-  tag: "desktop-v0.5.0",
-  name: "Codex Updater 0.5.0",
+  version: "0.6.0",
+  tag: "desktop-v0.6.0",
+  name: "Codex Updater 0.6.0",
   body: "## 本次更新\n\n- 设置 → 关于可以直接检查更新\n- 公告按 `CHANGELOG` 维护\n\n升级后请重启一次应用。",
-  url: "https://github.com/aygzs123/Codex-Auto-Update-Plugin-New/releases/tag/desktop-v0.5.0",
+  url: "https://github.com/aygzs123/Codex-Auto-Update-Plugin-New/releases/tag/desktop-v0.6.0",
   publishedAt: "2026-11-20T00:00:00Z",
   assets: [
     {
-      name: "Codex Updater Setup 0.5.0.exe",
+      name: "Codex Updater Setup 0.6.0.exe",
       size: 88_000_000,
-      url: "https://github.com/aygzs123/Codex-Auto-Update-Plugin-New/releases/download/desktop-v0.5.0/CodexUpdater.exe",
+      url: "https://github.com/aygzs123/Codex-Auto-Update-Plugin-New/releases/download/desktop-v0.6.0/CodexUpdater.exe",
       digest: `sha256:${"a".repeat(64)}`,
     },
   ],
@@ -274,6 +284,70 @@ const STUB_UPDATER = {
 // 当前这一版、以及唯一能回退的那一版。未安装的机器上缓存是空的 —— 这条也要有，
 // 空列表必须给出解释文案，不能是一个空盒子。
 const CACHE_DIRECTORY = "C:\\Users\\me\\AppData\\Roaming\\Codex Updater\\downloads";
+const INSTALL_LOCATION = "C:\\Program Files\\WindowsApps\\OpenAI.Codex_26.901.6511.0_x64__2p2nqsd0c76g0";
+
+// --storage 场景的磁盘与迁移夹具。数字写大一点没关系，反正它们只用来渲染；
+// 关键是路径必须是「真实形状」—— 安装位置带版本号，AppxVolume 以 WindowsApps 结尾。
+const STUB_STORAGE = {
+  download: { path: CACHE_DIRECTORY, totalBytes: 512_000_000_000, freeBytes: 238_000_000_000 },
+  install: { path: INSTALL_LOCATION, totalBytes: 512_000_000_000, freeBytes: 238_000_000_000 },
+};
+// 用户选的是普通文件夹；真正的缓存目录是它下面的 Codex Updater\downloads，
+// 由界面前缀拼接后交给 precheck_cache_migration。
+const MIGRATION_FOLDER = "E:\\Codex 缓存";
+const MIGRATION_TARGET = `${MIGRATION_FOLDER}\\Codex Updater\\downloads`;
+const STUB_APP_CAPABILITY = {
+  installed: true,
+  version: "26.901.6511.0",
+  installLocation: INSTALL_LOCATION,
+  packageVolume: "C:\\Program Files\\WindowsApps",
+  movable: true,
+  reason: "Windows 报告该包可以移动到其他 AppxVolume。",
+  volumes: [
+    {
+      path: "C:\\Program Files\\WindowsApps",
+      label: "C:",
+      isSystemVolume: true,
+      freeBytes: 238_000_000_000,
+      totalBytes: 512_000_000_000,
+    },
+    {
+      path: "E:\\WindowsApps",
+      label: "E:",
+      isSystemVolume: false,
+      freeBytes: 900_000_000_000,
+      totalBytes: 1_000_000_000_000,
+    },
+    // 第二个候选卷存在的意义：下拉框必须真的能选，选中值要原样传给 move_codex_app。
+    // 只有一个选项时「选择」这一步等于没测 —— 界面把值写死也照样通过。
+    {
+      path: "F:\\WindowsApps",
+      label: "F:",
+      isSystemVolume: false,
+      freeBytes: 64_000_000_000,
+      totalBytes: 128_000_000_000,
+    },
+  ],
+};
+
+// 设置桩必须可写：主题切换走的是 save_settings → get_settings 回读，
+// 桩若恒回初始值，界面会「保存成功」却立刻弹回上一个主题，量到的永远是初始态。
+const DEFAULT_STUB_SETTINGS = {
+  downloadDirectory: "",
+  defaultDownloadDirectory: CACHE_DIRECTORY,
+  logsDirectory: "C:\\Users\\me\\AppData\\Roaming\\Codex Updater\\logs",
+  dismissedTips: [],
+  // 新增设置的默认档：主题跟随系统、自动检查开、自动下载关、通知开、每 6 小时复查、
+  // 不自动清理缓存。显式写出来而不是靠缺省值，界面断言才不是「字段全空也恰好成立」。
+  theme: "system",
+  autoCheck: true,
+  autoDownload: false,
+  notifyUpdates: true,
+  checkIntervalHours: 6,
+  cacheKeepCount: 0,
+  showVersionHistory: true,
+};
+let stubSettings = { ...DEFAULT_STUB_SETTINGS };
 const cachedPackage = (version, relation) => ({
   version,
   architecture: "x64",
@@ -311,6 +385,14 @@ const releaseHeldInstall = [];
 const releaseInstall = () => releaseHeldInstall.splice(0).forEach((resolve) => resolve());
 
 function registerStubHandlers() {
+  // preload 在首帧前用 sendSync 读主题。真实主进程有这条 handler；这里没有的话
+  // Electron 只会打一行警告，但页面首帧的主题会退回 matchMedia —— 深色截图就不可信了。
+  ipcMain.on("desktop:initial-theme", (event) => {
+    event.returnValue = {
+      preference: darkMode ? "dark" : "system",
+      resolved: darkMode || nativeTheme.shouldUseDarkColors ? "dark" : "light",
+    };
+  });
   ipcMain.handle("desktop:command", (_event, command, args) => {
     // 记下每条命令真的走了几次 IPC。这是「命令跑着时再点不会叠加」唯一可靠的证据：
     // DOM 上的 disabled 只说明按钮点不动，说明不了快捷键/其它入口有没有绕过去。
@@ -331,27 +413,91 @@ function registerStubHandlers() {
             );
           });
         }
-        return {
-          downloadDirectory: "",
-          defaultDownloadDirectory: "C:\\Users\\me\\AppData\\Roaming\\Codex Updater\\downloads",
-          logsDirectory: "C:\\Users\\me\\AppData\\Roaming\\Codex Updater\\logs",
-          dismissedTips: [],
-          // 新增设置的默认档：主题跟随系统、自动检查开、自动下载关、通知开、每 6 小时复查、
-          // 不自动清理缓存。显式写出来而不是靠缺省值，界面断言才不是「字段全空也恰好成立」。
-          theme: "system",
-          autoCheck: true,
-          autoDownload: false,
-          notifyUpdates: true,
-          checkIntervalHours: 6,
-          cacheKeepCount: 0,
-          showVersionHistory: true,
-        };
+        return { ...stubSettings };
+      case "save_settings":
+        // 只合并、不校验：真实主进程归一化的逻辑在 main.cjs，由单测钉住；
+        // 这里要的是「写进去的值能被读回来」，否则主题断言测的就不是保存链路。
+        Object.assign(stubSettings, args || {});
+        return { ...stubSettings };
       case "get_status":
       case "check_health":
         return STUB_HEALTH;
-      case "list_cached_packages":
+      case "list_cached_packages": {
         // 不桩的话默认分支会回一个 {}，渲染进程读 packages 会炸。
-        return { ...STUB_CACHED_PACKAGES };
+        //
+        // 路径跟着当前缓存目录走：存储场景会切换目录，桩若恒回旧目录的路径，
+        // 界面顶部的「缓存所在磁盘」就会和输入框里的新目录对不上 —— 那是假象，
+        // 不是产品 bug，但会让截图和断言都开始说谎。
+        const directory = stubSettings.downloadDirectory || CACHE_DIRECTORY;
+        return {
+          ...STUB_CACHED_PACKAGES,
+          downloadDirectory: directory,
+          packages: STUB_CACHED_PACKAGES.packages.map((pkg) => ({
+            ...pkg,
+            path: `${directory}\\${pkg.path.split("\\").pop()}`,
+          })),
+        };
+      }
+      case "get_storage_info":
+        return { ...STUB_STORAGE };
+      case "precheck_cache_migration": {
+        // 预检只读；返回一份与缓存夹具一致的清单。注意这里**不是**授权：
+        // 真正的 migrate_cache 桩永远不会被调用（场景断言它的调用次数是 0）。
+        const target = String(args?.targetDirectory ?? MIGRATION_TARGET);
+        const files = STUB_CACHED_PACKAGES.packages.map((pkg) => ({
+          name: pkg.path.split("\\").pop(),
+          sizeBytes: pkg.sizeBytes,
+        }));
+        return {
+          sourceDirectory: CACHE_DIRECTORY,
+          targetDirectory: target,
+          files,
+          totalBytes: files.reduce((sum, file) => sum + file.sizeBytes, 0),
+          freeBytes: 900_000_000_000,
+          conflicts: [],
+        };
+      }
+      case "pick_directory":
+        return storageScenario ? { canceled: false, path: MIGRATION_FOLDER } : { canceled: true };
+      case "migrate_cache":
+        // 场景里只走到确认块就取消。真的被调用说明「确认前不许动」这条被破坏了，
+        // 场景断言会失败；这里仍然给一个诚实的取消结果，别让流程卡死。
+        return {
+          ok: false,
+          cancelled: true,
+          sourceDirectory: CACHE_DIRECTORY,
+          targetDirectory: String(args?.targetDirectory ?? MIGRATION_TARGET),
+          copiedCount: 0,
+          copiedBytes: 0,
+          skippedCount: 0,
+          cleanedCount: 0,
+          cleanupFailures: [],
+        };
+      case "cancel_cache_migration":
+        return { cancelling: false };
+      case "get_app_migration_capability":
+        return storageScenario
+          ? { ...STUB_APP_CAPABILITY }
+          : {
+              installed: false,
+              version: null,
+              installLocation: null,
+              packageVolume: null,
+              movable: false,
+              reason: "尚未检测。",
+              volumes: [],
+            };
+      case "move_codex_app":
+        // 真实主进程会先弹原生确认框、再跑提权脚本。桩里直接回「已取消」，
+        // 验证的正是「用户拒绝」这条正常路径：界面给提示，不亮红字。
+        return {
+          ok: false,
+          cancelled: true,
+          installLocation: null,
+          message: "已取消迁移，Codex 没有被移动。",
+        };
+      case "open_storage_settings":
+        return { ok: true };
       case "verify_download_signature":
         // 回退和安装共用同一道签名闸门。桩回「通过」，让流程能走到安装那一步 ——
         // 校验失败的分支由 tests/verify.test.cjs 真正执行着判断逻辑。
@@ -447,8 +593,8 @@ function registerStubHandlers() {
         // 不桩的话会落到默认分支回一个 {}：渲染进程读到 undefined 字段，公告与更新结论
         // 都变成空的 —— 而界面上看起来一切正常。
         //
-        // 公告只放远端的 0.5.0；0.1.0 ~ 0.4.0 来自打包进应用的 CHANGELOG，
-        // 两条来源合并后必须是 0.5.0 在最前、且没有重复的 tag。
+        // 公告只放远端的 0.6.0；0.1.0 ~ 0.5.0 来自打包进应用的 CHANGELOG，
+        // 两条来源合并后必须是 0.6.0 在最前、且没有重复的 tag。
         return appUpdateScenario
           ? {
               updater: { ...STUB_UPDATER },
@@ -461,7 +607,7 @@ function registerStubHandlers() {
         // 自更新场景：不真的下载一百多兆，也不跑真实安装器。这里只验证
         // 「界面 → IPC → 回到界面」这条链路，以及下载完成后界面切到可安装态。
         return {
-          path: "C:\\Users\\me\\AppData\\Roaming\\Codex Updater\\updates\\Codex Updater Setup 0.5.0.exe",
+          path: "C:\\Users\\me\\AppData\\Roaming\\Codex Updater\\updates\\Codex Updater Setup 0.6.0.exe",
           size: STUB_UPDATER.assets[0].size,
           sha256: "a".repeat(64),
         };
@@ -762,9 +908,9 @@ async function inspect(window) {
         const toggle = card.querySelector('input[type="checkbox"]');
         return {
           summary,
-          // 「浏览…」是换目录的入口，它必须在这张卡片里 —— 用户看到占了多少之后，
+          // 「更改位置…」是换目录的入口，它必须在这张卡片里 —— 用户看到占了多少之后，
           // 下一个问题必然是「能不能挪到别的盘」。
-          hasBrowse: [...card.querySelectorAll("button")].some((b) => b.textContent.includes("浏览")),
+          hasBrowse: [...card.querySelectorAll("button")].some((b) => b.textContent.includes("更改位置")),
           clearLabel: clearButton ? clearButton.textContent.trim() : "",
           clearDisabled: clearButton ? clearButton.disabled : null,
           clearIsDanger: clearButton ? clearButton.classList.contains("danger") : null,
@@ -836,8 +982,59 @@ async function inspect(window) {
     };
   })()`);
 
-  // 设置页：路径行、安装位置、缓存卡片。所有 .settings-card 默认展开。
+  // 设置页拆成了四个标签（通用 / 外观 / 存储 / 关于）。DOM 里同时只存在当前标签的
+  // 内容，所以逐标签点击、逐标签采集；不先切标签就去找「安装包缓存」卡片，会得到
+  // 一整片 null，而下面的断言会把 null 当成「没毛病」——那种绿是假的。
   await go("settings");
+  const clickTab = async (tab) => {
+    await run(
+      `(() => { const el = document.getElementById("settings-tab-${tab}"); if (el) el.click(); return !!el; })()`,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 220));
+  };
+  const settingsTabs = await run(`(() => {
+    const tabs = [...document.querySelectorAll('[role="tab"]')];
+    return {
+      count: tabs.length,
+      labels: tabs.map((tab) => tab.textContent.trim()),
+      selected: tabs.filter((tab) => tab.getAttribute("aria-selected") === "true").length,
+      panelIds: tabs.map((tab) => tab.getAttribute("aria-controls")),
+    };
+  })()`);
+
+  await clickTab("general");
+  const general = await run(`(() => {
+    const cards = [...document.querySelectorAll(".settings-card")];
+    const bySummary = (needle) =>
+      cards.find((card) => card.querySelector("summary")?.textContent.includes(needle)) ?? null;
+    const updateCard = bySummary("更新与通知");
+    const networkCard = bySummary("网络诊断");
+    return {
+      hasUpdateCard: !!updateCard,
+      updateSwitchCount: updateCard ? updateCard.querySelectorAll(".switch").length : 0,
+      intervalValue: updateCard?.querySelector(".field-select")?.value ?? null,
+      hasNetworkCard: !!networkCard,
+      hasNetworkButton: !!(
+        networkCard && [...networkCard.querySelectorAll("button")].some((b) => b.textContent.includes("诊断"))
+      ),
+    };
+  })()`);
+
+  await clickTab("appearance");
+  const appearance = await run(`(() => {
+    const card = [...document.querySelectorAll(".settings-card")].find((node) =>
+      node.querySelector("summary")?.textContent.includes("外观"),
+    );
+    return {
+      hasThemeCard: !!card,
+      themeActive: card?.querySelector(".theme-option[data-active='true'] strong")?.textContent.trim() ?? "",
+      themeOptionCount: card ? card.querySelectorAll(".theme-option").length : 0,
+      themeRadios: card ? card.querySelectorAll('[role="radio"]').length : 0,
+      themeChecked: card?.querySelector('[role="radio"][aria-checked="true"] strong')?.textContent.trim() ?? "",
+    };
+  })()`);
+
+  await clickTab("storage");
   const settings = await run(`(() => {
     const pathRowButtons = (() => {
       const rows = [...document.querySelectorAll(".path-row")];
@@ -890,7 +1087,7 @@ async function inspect(window) {
       const toggle = card.querySelector('input[type="checkbox"]');
       return {
         summary,
-        hasBrowse: [...card.querySelectorAll("button")].some((b) => b.textContent.includes("浏览")),
+        hasBrowse: [...card.querySelectorAll("button")].some((b) => b.textContent.includes("更改位置")),
         clearLabel: clearButton ? clearButton.textContent.trim() : "",
         clearDisabled: clearButton ? clearButton.disabled : null,
         clearIsDanger: clearButton ? clearButton.classList.contains("danger") : null,
@@ -899,50 +1096,51 @@ async function inspect(window) {
       };
     })();
 
+    // 存储摘要 + 两个迁移入口。缓存为空或正在读取时迁移按钮应置灰 —— 这条在
+    // checkCacheStates 里单独验证；这里先确认入口真的在页面上。
+    const storage = (() => {
+      const summary = document.querySelector(".storage-summary");
+      const buttons = [...document.querySelectorAll("button")].map((button) => button.textContent.trim());
+      return {
+        hasSummary: !!summary,
+        summaryText: summary?.textContent.trim() ?? "",
+        hasChangeLocation: buttons.some((label) => label.includes("更改位置")),
+        hasCapabilityButton: buttons.some((label) => label.includes("检测迁移条件")),
+        hasUserDataNote: (document.body.textContent || "").includes("不随应用迁移"),
+      };
+    })();
+
+    return { pathRowButtons, installLocationField, cache, storage };
+  })()`);
+
+  // 自动保留份数在「存储」标签的缓存卡片里，必须在切走之前量；切到「关于」之后
+  // DOM 里已经没有这张卡片，量到的只会是 null。
+  const keepCountValue = await run(`(() => {
+    const card = [...document.querySelectorAll(".settings-card")].find((node) =>
+      node.querySelector("summary")?.textContent.includes("安装包缓存"),
+    );
+    return card?.querySelector(".field-select")?.value ?? null;
+  })()`);
+
+  await clickTab("about");
+  const appUpdate = await run(`(() => {
     // 「关于 → Codex Updater 更新」一块。版本号、检查按钮与状态行都必须真的在页面上：
     // 这是自更新唯一的入口，藏起来等于功能不存在。
-    const appUpdate = (() => {
-      const block = document.querySelector(".about-update");
-      if (!block) return null;
-      const about = block.closest(".card") ?? document;
-      const version = about.querySelector(".about-row .pill")?.textContent.trim() ?? "";
-      return {
-        version,
-        status: block.parentElement?.querySelector(".about-update-status")?.textContent.trim() ?? "",
-        buttons: [...block.querySelectorAll("button")].map((button) => ({
-          label: button.textContent.trim(),
-          disabled: button.disabled,
-        })),
-      };
-    })();
-
-    // 新增的设置卡片：主题、更新与通知、网络诊断、自动保留份数。它们必须在设置页
-    // 真的渲染出来 —— 只在 store 里加字段、界面上没有入口，等于功能不存在。
-    const extras = (() => {
-      const cards = [...document.querySelectorAll(".settings-card")];
-      const bySummary = (needle) =>
-        cards.find((card) => card.querySelector("summary")?.textContent.includes(needle)) ?? null;
-      const themeCard = bySummary("外观");
-      const updateCard = bySummary("更新与通知");
-      const networkCard = bySummary("网络诊断");
-      const cacheCard = bySummary("安装包缓存");
-      return {
-        hasThemeCard: !!themeCard,
-        themeActive: themeCard?.querySelector(".theme-option[data-active='true'] strong")?.textContent.trim() ?? "",
-        themeOptionCount: themeCard ? themeCard.querySelectorAll(".theme-option").length : 0,
-        hasUpdateCard: !!updateCard,
-        updateSwitchCount: updateCard ? updateCard.querySelectorAll(".switch").length : 0,
-        intervalValue: updateCard?.querySelector(".field-select")?.value ?? null,
-        hasNetworkCard: !!networkCard,
-        hasNetworkButton: !!(
-          networkCard && [...networkCard.querySelectorAll("button")].some((b) => b.textContent.includes("诊断"))
-        ),
-        keepCountValue: cacheCard?.querySelector(".field-select")?.value ?? null,
-      };
-    })();
-
-    return { pathRowButtons, installLocationField, cache, appUpdate, extras };
+    const block = document.querySelector(".about-update");
+    if (!block) return null;
+    const about = block.closest(".card") ?? document;
+    const version = about.querySelector(".about-row .pill")?.textContent.trim() ?? "";
+    return {
+      version,
+      status: block.parentElement?.querySelector(".about-update-status")?.textContent.trim() ?? "",
+      buttons: [...block.querySelectorAll("button")].map((button) => ({
+        label: button.textContent.trim(),
+        disabled: button.disabled,
+      })),
+    };
   })()`);
+
+  const extras = { ...general, ...appearance, keepCountValue };
 
   // 版本历史页：逐行量回退按钮。ctaLabel 在概览页的主按钮上，这里量不到，
   // 合并时从 overview 补上（回退途中文案断言用的就是它）。
@@ -1012,6 +1210,9 @@ async function inspect(window) {
     ...overview,
     ...diagnostics,
     ...settings,
+    extras,
+    appUpdate,
+    settingsTabs,
     rollback: history.rollback ? { ...history.rollback, ctaLabel: overview.ctaLabel } : null,
   };
 }
@@ -1045,6 +1246,10 @@ async function readBusyState(window) {
   await go("diagnostics");
   const health = await run(collect(".dash-actions button, .page-head .button"));
   await go("settings");
+  // 设置拆成四个标签之后，「打开目录 / 复制诊断 / 清空缓存」都在「存储」标签里。
+  // 不先切过去，下面两条采集只会拿到空数组。
+  await run(`(() => { const el = document.getElementById("settings-tab-storage"); if (el) el.click(); return !!el; })()`);
+  await new Promise((resolve) => setTimeout(resolve, 220));
   // 即时入口：打开缓存/日志目录、复制诊断。它们不跑命令，忙时也必须可点。
   const instant = await run(collect(".settings-links button"));
   const cacheClear = await run(`(() => {
@@ -1078,6 +1283,13 @@ async function main() {
     show: Boolean(screenshotDir),
     width: windowWidth,
     height: 780,
+    // 与真实主窗口保持一致：应用是自绘标题栏的无边框窗口。验证窗口若用 Electron
+    // 默认边框，截图里会多出一条写着「Electron」的系统标题栏 —— 那是验证工具的窗口，
+    // 不是产品界面，留在截图里会让人误以为应用带着一条原生顶栏。
+    title: "Codex Updater",
+    frame: false,
+    titleBarStyle: "hidden",
+    autoHideMenuBar: true,
     webPreferences: {
       preload: join(desktopRoot, "electron", "preload.cjs"),
       contextIsolation: true,
@@ -1210,9 +1422,16 @@ async function main() {
     const nav = document.querySelector('.nav-item[data-nav="settings"]');
     if (nav) nav.click();
     await new Promise((resolve) => setTimeout(resolve, 300));
-    const cards = [...document.querySelectorAll(".settings-card")];
-    cards.forEach((card) => { card.open = true; });
-    return cards.length;
+    let total = 0;
+    for (const tab of ["general", "appearance", "storage", "about"]) {
+      const button = document.getElementById("settings-tab-" + tab);
+      if (button) button.click();
+      await new Promise((resolve) => setTimeout(resolve, 220));
+      const cards = [...document.querySelectorAll(".settings-card")];
+      cards.forEach((card) => { card.open = true; });
+      total += cards.length;
+    }
+    return total;
   })()`);
   await new Promise((resolve) => setTimeout(resolve, 250));
   await window.webContents.executeJavaScript(
@@ -1233,6 +1452,11 @@ async function main() {
         `(() => { const item = document.querySelector('.nav-item[data-nav="settings"]'); if (item) item.click(); return !!item; })()`,
       );
       await new Promise((resolve) => setTimeout(resolve, 260));
+      // 「关于」是设置页的第四个标签，自更新入口在那里。
+      await window.webContents.executeJavaScript(
+        `(() => { const el = document.getElementById("settings-tab-about"); if (el) el.click(); return !!el; })()`,
+      );
+      await new Promise((resolve) => setTimeout(resolve, 220));
     };
     const readAbout = () =>
       window.webContents.executeJavaScript(`(() => {
@@ -1269,7 +1493,7 @@ async function main() {
     await new Promise((resolve) => setTimeout(resolve, 500));
     const downloaded = await readAbout();
 
-    // 公告铃铛：点开量时间线。0.5.0 来自远端桩，0.1.0 ~ 0.4.0 来自 CHANGELOG。
+    // 公告铃铛：点开量时间线。0.6.0 来自远端桩，0.1.0 ~ 0.5.0 来自 CHANGELOG。
     const bell = await window.webContents.executeJavaScript(`(async () => {
       const button = document.querySelector(".bell-button");
       if (button) button.click();
@@ -1278,13 +1502,19 @@ async function main() {
       if (!panel) return null;
       const entries = [...panel.querySelectorAll(".timeline-item")].map((item) => ({
         title: item.querySelector(".timeline-head strong")?.textContent.trim() ?? "",
-        body: item.querySelector(".timeline-body p")?.textContent.trim() ?? "",
+        // 公告正文现在是逐条列表；兼容兜底段落，断言读的是「这一版说了什么」。
+        body: [
+          ...item.querySelectorAll(".timeline-notes li"),
+        ].map((node) => node.textContent.trim()).join(" ") ||
+          item.querySelector(".timeline-body p")?.textContent.trim() ||
+          "",
       }));
+      const hasReleaseWording = /Release/i.test(panel.textContent);
       const closeButton = panel.querySelector(".bell-close");
       // 截图模式故意不关：要截的就是这块时间线。断言本身不受影响 —— 面板开着
       // 也不改任何按钮的可点状态，后面的场景会自己切回概览。
       ${screenshotDir ? "" : "if (closeButton) closeButton.click();"}
-      return { entries, empty: !!panel.querySelector(".bell-empty") };
+      return { entries, empty: !!panel.querySelector(".bell-empty"), hasReleaseWording };
     })()`);
     bellReport = bell;
     appUpdateReport = { initial, checked, downloaded };
@@ -1501,11 +1731,16 @@ async function main() {
       );
     }
     // 桌面端滚动：切页要回顶部；PageUp/PageDown/Home/End 要能滚内容区。
-    // 在「设置」页上量 —— 它是四页里唯一一页高度超过窗口的，滚动才有意义。
+    // 在「设置 → 存储」上量 —— 四个标签里它内容最长，默认的「通用」一屏就放得下，
+    // 拿它量滚动会得到 max=0，下面的滚动断言就成了恒真的空断言。
     const clickNav = (id) =>
       run(`(() => { const item = document.querySelector('.nav-item[data-nav="${id}"]'); if (item) item.click(); return !!item; })()`);
+    const clickSettingsStorage = () =>
+      run(`(() => { const tab = document.getElementById("settings-tab-storage"); if (tab) tab.click(); return !!tab; })()`);
     await clickNav("settings");
     await new Promise((resolve) => setTimeout(resolve, 320));
+    await clickSettingsStorage();
+    await new Promise((resolve) => setTimeout(resolve, 220));
     const scrolledTo = await run(`(() => {
       const scroll = document.querySelector(".app-scroll");
       scroll.scrollTop = scroll.scrollHeight;
@@ -1516,6 +1751,8 @@ async function main() {
     const resetTop = await run(`(() => Math.round(document.querySelector(".app-scroll").scrollTop))()`);
     await clickNav("settings");
     await new Promise((resolve) => setTimeout(resolve, 320));
+    await clickSettingsStorage();
+    await new Promise((resolve) => setTimeout(resolve, 220));
     const keyboardScroll = await run(`(() => {
       const scroll = document.querySelector(".app-scroll");
       scroll.scrollTop = 0;
@@ -1567,6 +1804,11 @@ async function main() {
       `(() => { const item = document.querySelector('.nav-item[data-nav="settings"]'); if (item) item.click(); return !!item; })()`,
     );
     await new Promise((resolve) => setTimeout(resolve, 300));
+    // 「复制诊断信息」在设置 → 存储 → 目录与诊断 里。
+    await window.webContents.executeJavaScript(
+      `(() => { const el = document.getElementById("settings-tab-storage"); if (el) el.click(); return !!el; })()`,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 220));
     await window.webContents.executeJavaScript(`(() => {
       const item = [...document.querySelectorAll(".settings-links button")].find((button) =>
         button.textContent.includes("复制诊断信息"),
@@ -1592,6 +1834,246 @@ async function main() {
 
   const problems = [];
   if (autoCheckProblem) problems.push(autoCheckProblem);
+
+  // 存储场景：主题即时切换 + 缓存迁移确认 + 应用本体迁移检测。
+  //
+  // 三条都走真实组件与 store，只是主进程换成桩。最要紧的断言是「确认之前不动」：
+  // 预检返回之后，migrate_cache 的调用次数必须仍然是 0。
+  let storageReport = null;
+  if (storageScenario) {
+    const run = (script) => window.webContents.executeJavaScript(script);
+    const clickTab = async (tab) => {
+      await run(`(() => { const el = document.getElementById("settings-tab-${tab}"); if (el) el.click(); return !!el; })()`);
+      await new Promise((resolve) => setTimeout(resolve, 240));
+    };
+    const clickButton = (label, scope = "document") =>
+      run(`(() => {
+        const root = ${scope === "document" ? "document" : `document.querySelector(${JSON.stringify(scope)})`};
+        if (!root) return false;
+        const button = [...root.querySelectorAll("button")].find((node) => node.textContent.trim().includes(${JSON.stringify(label)}));
+        if (button) button.click();
+        return !!button;
+      })()`);
+    const openSettings = async () => {
+      await run(`(() => { const item = document.querySelector('.nav-item[data-nav="settings"]'); if (item) item.click(); return !!item; })()`);
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    };
+
+    await openSettings();
+
+    // 1) 主题：三档即时切换，根节点 data-theme 必须真的跟着变。
+    await clickTab("appearance");
+    // 必须按 id 点：第一张卡片的说明文字里也写着「切深色时一起变」，
+    // 按文本包含去找会点到「跟随系统」—— 那样量到的永远是初始态，断言会假绿。
+    const clickedDark = await run(`(() => { const el = document.getElementById("theme-option-dark"); if (el) el.click(); return !!el; })()`);
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    const darkTheme = await run(
+      `(() => ({ theme: document.documentElement.dataset.theme, preference: document.documentElement.dataset.themePreference }))()`,
+    );
+    await run(`(() => { const el = document.getElementById("theme-option-light"); if (el) el.click(); return !!el; })()`);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    const lightTheme = await run(
+      `(() => ({ theme: document.documentElement.dataset.theme, preference: document.documentElement.dataset.themePreference }))()`,
+    );
+    await run(`(() => { const el = document.getElementById("theme-option-system"); if (el) el.click(); return !!el; })()`);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    const systemTheme = await run(
+      `(() => ({ theme: document.documentElement.dataset.theme, preference: document.documentElement.dataset.themePreference }))()`,
+    );
+    if (darkTheme.theme !== "dark" || darkTheme.preference !== "dark") {
+      problems.push(`选「深色」后根节点没有切到深色：theme=${darkTheme.theme} preference=${darkTheme.preference}`);
+    }
+    if (lightTheme.theme !== "light" || lightTheme.preference !== "light") {
+      problems.push(`选「浅色」后根节点没有切到浅色：theme=${lightTheme.theme} preference=${lightTheme.preference}`);
+    }
+    if (systemTheme.preference !== "system" || (systemTheme.theme !== "dark" && systemTheme.theme !== "light")) {
+      problems.push(`选「跟随系统」后偏好没有回到 system：${JSON.stringify(systemTheme)}`);
+    }
+
+    // 2) 缓存换目录：选一个普通文件夹 → 自动落到 <所选>\Codex Updater\downloads →
+    //    确认块（默认勾选「一起搬旧安装包」）→ 先取消，确认什么也没改；
+    //    再选一次、取消勾选 → 「只切换目录」真的只写设置，migrate_cache 一次都不发。
+    await clickTab("storage");
+    const clickedChange = await clickButton("更改位置");
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    const confirm = await run(`(() => {
+      const block = document.querySelector(".confirm-block");
+      if (!block) return null;
+      const check = block.querySelector(".confirm-check input[type=checkbox]");
+      return {
+        title: block.querySelector("strong")?.textContent.trim() ?? "",
+        text: block.textContent.trim(),
+        groupLabel: block.getAttribute("aria-label"),
+        focusedLabel: document.activeElement?.textContent?.trim() ?? "",
+        focusInside: block.contains(document.activeElement),
+        buttons: [...block.querySelectorAll("button")].map((button) => button.textContent.trim()),
+        carryChecked: check ? check.checked : null,
+      };
+    })()`);
+    const migrateCallsAfterPrecheck = commandCalls.migrate_cache || 0;
+
+    if (!clickedChange) problems.push("存储页找不到「更改位置」按钮");
+    if (!confirm) {
+      problems.push("点了「更改位置」之后没有出现确认块");
+    } else {
+      // 目标路径必须是「所选文件夹 + Codex Updater\downloads」，不能把安装包直接铺在所选文件夹里。
+      if (!confirm.title.includes(MIGRATION_TARGET)) {
+        problems.push(`确认块没有说清缓存会落在哪里：${confirm.title}`);
+      }
+      if (confirm.groupLabel !== "确认迁移缓存") problems.push(`确认块缺少无障碍分组名：${confirm.groupLabel}`);
+      // 迁移会搬几 GB 文件，回车键不该直接开始。
+      if (!confirm.focusInside || confirm.focusedLabel !== "取消") {
+        problems.push(`确认块出现后焦点应落在「取消」上，实际：${confirm.focusedLabel || "(没有焦点)"}`);
+      }
+      if (confirm.carryChecked !== true) problems.push("确认块里「一起搬旧安装包」默认应当是勾选的");
+      if (!confirm.buttons.includes("迁移并切换")) problems.push(`确认块缺少「迁移并切换」：${confirm.buttons.join(" / ")}`);
+    }
+    if (migrateCallsAfterPrecheck !== 0) {
+      problems.push(`确认之前就发出了 ${migrateCallsAfterPrecheck} 次 migrate_cache —— 预检结果被当成授权了`);
+    }
+    if (screenshotDir && confirm) {
+      // 迁移确认块是这次改版最需要人工核对的一屏，单独留一张。确认块在折叠线以下，
+      // 先按内容高度把窗口撑开再抓图 —— 否则截到的是半截，按钮还压在视口外。
+      mkdirSync(screenshotDir, { recursive: true });
+      const fullHeight = await run(`(() => {
+        const scroll = document.querySelector(".app-scroll");
+        const bar = document.querySelector(".topbar");
+        const barHeight = bar ? bar.getBoundingClientRect().height : 0;
+        const content = scroll ? scroll.scrollHeight : document.documentElement.scrollHeight;
+        return Math.min(Math.round(barHeight + content + 20), 2400);
+      })()`);
+      window.setContentSize(windowWidth, Math.max(780, Math.round(fullHeight)));
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      const image = await window.webContents.capturePage();
+      writeFileSync(join(screenshotDir, "storage-migration-confirm.png"), image.toPNG());
+      console.log(`  截图：${join(screenshotDir, "storage-migration-confirm.png")}`);
+    }
+    await clickButton("取消", ".confirm-block");
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    const confirmGone = await run(`(() => !document.querySelector(".confirm-block"))()`);
+    if (!confirmGone) problems.push("点「取消」之后确认块没有消失");
+    if ((commandCalls.migrate_cache || 0) !== 0) problems.push("取消之后仍然发出了 migrate_cache");
+    if (String(commandArgs.save_settings?.downloadDirectory ?? "") === MIGRATION_TARGET) {
+      problems.push("确认块阶段就把缓存目录切到了目标目录");
+    }
+
+    // 2b) 不搬旧安装包：取消勾选后主按钮变成「只切换目录」。
+    await clickButton("更改位置");
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    const unchecked = await run(`(() => {
+      const box = document.querySelector(".confirm-block .confirm-check input[type=checkbox]");
+      if (!box) return null;
+      box.click();
+      return {
+        checked: box.checked,
+        button: document.querySelector(".confirm-block .button.primary")?.textContent.trim() ?? "",
+      };
+    })()`);
+    if (!unchecked || unchecked.checked !== false) {
+      problems.push("确认块里取消勾选「一起搬旧安装包」没有生效");
+    } else if (unchecked.button !== "只切换目录") {
+      problems.push(`取消勾选后主按钮应变成「只切换目录」，实际：${unchecked.button || "(没有按钮)"}`);
+    }
+    await clickButton("只切换目录", ".confirm-block");
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    const switched = await run(`(() => ({
+      confirmGone: !document.querySelector(".confirm-block"),
+      input: document.getElementById("download-directory")?.value ?? "",
+    }))()`);
+    if (String(commandArgs.save_settings?.downloadDirectory ?? "") !== MIGRATION_TARGET) {
+      problems.push(
+        `「只切换目录」没有把缓存目录写到 ${MIGRATION_TARGET}：${
+          String(commandArgs.save_settings?.downloadDirectory ?? "") || "(未写入)"
+        }`,
+      );
+    }
+    if ((commandCalls.migrate_cache || 0) !== 0) {
+      problems.push("「只切换目录」不该发出 migrate_cache —— 用户没同意搬文件");
+    }
+    if (!switched.confirmGone) problems.push("切换目录之后确认块没有收起");
+    if (switched.input !== MIGRATION_TARGET) {
+      problems.push(`切换目录后输入框没有显示新目录：${switched.input || "(空)"}`);
+    }
+
+    // 3) 应用本体：只读检测 → 候选卷 → 执行。执行桩回「已取消」，界面必须是提示而非错误。
+    const stateBeforeDetect = await run(
+      `(() => document.querySelector(".detect-state")?.textContent.trim() ?? "")()`,
+    );
+    if (stateBeforeDetect !== "尚未检测") {
+      problems.push(`检测之前的状态行应当是「尚未检测」，实际：${stateBeforeDetect || "(没有状态行)"}`);
+    }
+    const clickedDetect = await clickButton("检测迁移条件");
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    const capability = await run(`(() => {
+      const block = document.querySelector(".capability-block");
+      const select = document.getElementById("app-target-volume");
+      return {
+        present: !!block,
+        text: block?.textContent.trim() ?? "",
+        state: document.querySelector(".detect-state")?.textContent.trim() ?? "",
+        hasSelect: !!select,
+        options: select ? [...select.options].map((option) => option.value) : [],
+        hasMoveButton: [...document.querySelectorAll("button")].some((button) =>
+          button.textContent.includes("迁移到所选卷"),
+        ),
+      };
+    })()`);
+    if (!clickedDetect) problems.push("应用本体卡片找不到「检测迁移条件」按钮");
+    if (!capability.present) problems.push("检测之后没有显示迁移能力结论");
+    if (!capability.text.includes("可以尝试迁移")) {
+      problems.push(`检测结论不对：${capability.text.slice(0, 80)}`);
+    }
+    if (!capability.state.includes("检测完成")) {
+      problems.push(`检测之后状态行没有更新：${capability.state || "(没有状态行)"}`);
+    }
+    if (
+      !capability.hasSelect ||
+      capability.options.length !== 2 ||
+      capability.options[0] !== "E:\\WindowsApps" ||
+      capability.options[1] !== "F:\\WindowsApps"
+    ) {
+      problems.push(`候选目标卷不对：${capability.options.join(" / ") || "(没有下拉框)"}`);
+    }
+    if (!capability.hasMoveButton) problems.push("检测通过后没有出现「迁移到所选卷」按钮");
+
+    // 选第二个候选卷：下拉框必须是受控的，重测之后不会留着旧值。
+    const selectedVolume = await run(`(() => {
+      const select = document.getElementById("app-target-volume");
+      if (!select) return null;
+      select.selectedIndex = select.options.length - 1;
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+      return select.value;
+    })()`);
+    if (selectedVolume !== "F:\\WindowsApps") {
+      problems.push(`候选卷下拉框选不中第二项：${selectedVolume || "(空)"}`);
+    }
+
+    await clickButton("迁移到所选卷");
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    const moveCalls = commandCalls.move_codex_app || 0;
+    const moveVolume = String(commandArgs.move_codex_app?.volume ?? "");
+    const moveState = await run(`(() => ({
+      dialog: document.querySelector(".modal-dialog")?.textContent.trim() ?? "",
+      error: document.querySelector(".error-text:not(.soft)")?.textContent.trim() ?? "",
+    }))()`);
+    if (moveCalls !== 1) problems.push(`「迁移到所选卷」应发出 1 次 move_codex_app，实际 ${moveCalls} 次`);
+    if (moveVolume !== "F:\\WindowsApps") problems.push(`迁移目标卷没有按所选值传下去：${moveVolume || "(空)"}`);
+    if (!moveState.dialog.includes("已取消迁移")) {
+      problems.push(`取消迁移后应给出提示对话框，实际：${moveState.dialog || "(没有对话框)"}`);
+    }
+    if (moveState.error) problems.push(`取消迁移被当成了错误：${moveState.error}`);
+    // 关掉提示，让最后的截图停在存储页本身。
+    await run(`(() => { const button = document.querySelector(".modal-dialog button"); if (button) button.click(); return true; })()`);
+    await new Promise((resolve) => setTimeout(resolve, 250));
+
+    storageReport = { darkTheme, lightTheme, systemTheme, confirm, migrateCallsAfterPrecheck, capability, moveCalls, moveVolume };
+    console.log(
+      `  存储场景：主题 dark=${darkTheme.theme}/light=${lightTheme.theme}/system=${systemTheme.preference}；` +
+        `预检后 migrate_cache=${migrateCallsAfterPrecheck} 次；move_codex_app=${moveCalls} 次（${moveVolume}）`,
+    );
+  }
+
+
   // 设置卡片一张都没展开时，下面那些路径行/安装位置的测量全是空值，会一路「通过」——
   // 那种绿是假的：什么都没量到，当然挑不出毛病。
   if (!openedSettingsCount) {
@@ -1637,11 +2119,11 @@ async function main() {
           problems.push(`还没检查时徽章应是「尚未检查」，实际是「${initial.badge || "(空)"}」`);
         }
 
-        // 点完检查：桩里的 desktop-v0.5.0 必须被认出来，按钮换成「下载并安装」。
-        if (!checked?.status.includes("发现新版本 v0.5.0")) {
+        // 点完检查：桩里的 desktop-v0.6.0 必须被认出来，按钮换成「下载并安装」。
+        if (!checked?.status.includes("发现新版本 v0.6.0")) {
           problems.push(`点「检查更新」后没有显示新版本：${checked?.status || "(空)"}`);
         }
-        if (!checked?.badge.includes("v0.5.0")) {
+        if (!checked?.badge.includes("v0.6.0")) {
           problems.push(`发现新版本后徽章没有跟上版本号：${checked?.badge || "(空)"}`);
         }
         if (!checked?.buttons.some((button) => button.label.includes("下载并安装"))) {
@@ -1658,13 +2140,13 @@ async function main() {
         if (downloaded?.badge !== "待安装") {
           problems.push(`下载完成后徽章应是「待安装」，实际是「${downloaded?.badge || "(空)"}」`);
         }
-        if (downloaded?.status.includes("v0.5.0") === false) {
+        if (downloaded?.status.includes("v0.6.0") === false) {
           problems.push(`下载完成后的状态没带上版本号：${downloaded?.status || "(空)"}`);
         }
       }
     }
 
-    // 公告两个来源合并：远端 0.5.0 在前，CHANGELOG 历史在后，
+    // 公告两个来源合并：远端 0.6.0 在前，CHANGELOG 历史在后，
     // 且每个版本只出现一次（本地与远端同 tag 时以本地为准）。
     if (!bellReport) {
       problems.push("顶栏公告铃铛点开后没有面板");
@@ -1672,23 +2154,26 @@ async function main() {
       problems.push("公告时间线是空的：CHANGELOG 历史没有进来");
     } else {
       const titles = bellReport.entries.map((entry) => entry.title);
-      for (const version of ["v0.5.0", "v0.4.0", "v0.3.0", "v0.2.0", "v0.1.0"]) {
+      for (const version of ["v0.6.0", "v0.5.0", "v0.4.0", "v0.3.0", "v0.2.0", "v0.1.0"]) {
         if (!titles.includes(version)) problems.push(`公告里缺少 ${version}：${titles.join(" / ")}`);
       }
       const duplicates = titles.filter((title, index) => titles.indexOf(title) !== index);
       if (duplicates.length > 0) problems.push(`公告里有重复条目：${duplicates.join(", ")}`);
-      if (titles[0] !== "v0.5.0") {
+      if (titles[0] !== "v0.6.0") {
         problems.push(`公告应按发布时间倒序，第一条却是：${titles[0]}`);
       }
       // 正文必须是剥好的纯文本：Markdown 标记铺到界面上就是一排 `##` 和 `-`。
       const dirty = bellReport.entries.filter((entry) => /(^|\s)#{1,6}\s|`/.test(entry.body));
       if (dirty.length > 0) problems.push(`公告正文没有剥掉 Markdown 标记：${dirty[0].body}`);
+      // 公告讲的是「这次改了什么」，不出现发布平台的术语（Release / GitHub），也不放外链。
+      if (bellReport.hasReleaseWording) problems.push("公告面板里出现了 Release 字样");
+      if (bellReport.entries.some((entry) => !entry.body)) problems.push("公告条目没有正文");
     }
   }
   // --checking 场景的主按钮本来就该是灰的（命令正在跑），这里按「就绪即可点」断言会误报。
   if (!checkingHold && report.ctaDisabled !== false) problems.push("主操作按钮在就绪状态下应当可点击");
 
-  // 高级设置的路径行：输入框 width:100% + flex 默认 min-width:auto 会把「浏览…」
+  // 高级设置的路径行：输入框 width:100% + flex 默认 min-width:auto 会把「更改位置…」
   // 挤到裁切或溢出容器。这两条断言把那个布局 bug 钉住。
   const pathButtons = report.pathRowButtons;
   if (!pathButtons || pathButtons.length === 0) {
@@ -1703,8 +2188,8 @@ async function main() {
       if (button.overflowsRow) problems.push(`路径行按钮溢出容器：${button.label}`);
       if (button.height < 36) problems.push(`路径行按钮高度过小：${button.label}（${button.height}px）`);
     }
-    const browse = pathButtons.find((button) => button.label.includes("浏览"));
-    if (!browse) problems.push(`路径行缺少「浏览」按钮：${pathButtons.map((b) => b.label).join(", ")}`);
+    const browse = pathButtons.find((button) => button.label.includes("更改位置"));
+    if (!browse) problems.push(`路径行缺少「更改位置」按钮：${pathButtons.map((b) => b.label).join(", ")}`);
   }
 
   // 「Codex 安装位置」必须原样显示包自己报的路径。桩数据用的是 **D 盘** 路径，
@@ -1748,7 +2233,7 @@ async function main() {
       const expectedNav = [
         ["overview", "概览"],
         ["diagnostics", "诊断"],
-        ["history", "版本历史"],
+        ["history", "版本与缓存"],
         ["settings", "设置"],
       ];
       if (navReport.items.length !== expectedNav.length) {
@@ -2319,7 +2804,9 @@ async function main() {
           ? "up-to-date"
           : appUpdateScenario
             ? "app-update"
-            : launchNoWindow
+            : storageScenario
+              ? "storage"
+              : launchNoWindow
           ? "launch-no-window"
           : rollbackScenario
             ? "rollback"
@@ -2373,6 +2860,15 @@ async function main() {
         );
       }
       await capture(join(screenshotDir, view ? `${name}-${view}.png` : `${name}.png`));
+      // 设置页四个标签一次只渲染一个，只截一个标签等于只验收了四分之一。
+      // 「外观」是主题切换唯一入口，深色截图必须能看见它。
+      if (view === "settings") {
+        await window.webContents.executeJavaScript(
+          `(() => { const tab = document.getElementById("settings-tab-appearance"); if (tab) tab.click(); return !!tab; })()`,
+        );
+        await new Promise((resolve) => setTimeout(resolve, 260));
+        await capture(join(screenshotDir, `${name}-settings-appearance.png`));
+      }
     }
   }
 
@@ -2411,6 +2907,8 @@ async function main() {
           ? "打开 Codex（进程在/窗口不在，判定为搬迁 bug）"
         : rollbackScenario
           ? "版本回退"
+          : storageScenario
+            ? "存储管理（主题切换 / 缓存迁移确认 / 应用迁移检测）"
           : installing
             ? "安装进度流"
             : notInstalled

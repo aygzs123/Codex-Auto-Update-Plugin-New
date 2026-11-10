@@ -2,7 +2,23 @@ import { useEffect, useRef, useState } from "react";
 import type { GithubReleaseInfo } from "../types";
 import { Icon } from "./Icons";
 
-/** Release 正文是 Markdown，这里只取一小段纯文本，不整段铺进界面。 */
+/** 公告正文里的列表行：更新说明本来就是一条条写的，摊平成一段反而难读。 */
+function notes(markdown: string, limit = 20): string[] {
+  return String(markdown || "")
+    .split(/\r?\n/)
+    .filter((line) => /^\s*[-*+]\s+\S/.test(line))
+    .map((line) =>
+      line
+        .replace(/^\s*[-*+]\s+/, "")
+        .replace(/`/g, "")
+        .replace(/[*_]/g, "")
+        .trim(),
+    )
+    .filter(Boolean)
+    .slice(0, limit);
+}
+
+/** 没有列表行时的兜底：取一小段纯文本。 */
 function excerpt(markdown: string, limit = 160): string {
   const text = String(markdown || "")
     .replace(/<!--[\s\S]*?-->/g, "")
@@ -18,17 +34,20 @@ function formatDate(value: string | null): string {
   if (!value) return "";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "";
-  return date.toLocaleDateString("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit" });
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${date.getFullYear()}-${month}-${day}`;
 }
 
 /**
  * 顶栏的更新公告入口。
  *
- * 形式是一枚铃铛：有新的更新器版本时显示红点，点开是 Release 的时间线。
+ * 形式是一枚铃铛：有新的更新器版本时显示红点，点开是历次更新的说明。
  * 公告不铺在概览页里 —— 那里要留给「要不要更新」的结论，公告是第二层信息。
  *
- * 时间线由两段拼成：打包进应用的 CHANGELOG 历史（本地优先）+ GitHub 上更新的 Release。
- * 正文以 CHANGELOG 为准 —— 历史 Release 用的是通用模板，读起来是几句一样的英文客套话。
+ * 时间线由两段拼成：打包进应用的 CHANGELOG 历史（本地优先）+ 远端更新的版本。
+ * 正文以 CHANGELOG 为准 —— 远端历史版本用的是通用模板，读起来是几句一样的客套话。
+ * 界面只讲版本、日期和做了什么，不放外链、不出现发布平台的术语。
  *
  * 关掉的公告按 tag 落盘（`dismissedTips`），只影响这条时间线。
  */
@@ -38,7 +57,6 @@ export function AnnouncementBell({
   dismissedTips,
   openRequest = 0,
   onDismiss,
-  onOpenRelease,
 }: {
   announcements: GithubReleaseInfo[];
   hasUpdate: boolean;
@@ -50,7 +68,6 @@ export function AnnouncementBell({
    */
   openRequest?: number;
   onDismiss: (id: string) => void;
-  onOpenRelease: (url: string) => void;
 }) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -98,7 +115,7 @@ export function AnnouncementBell({
           <header className="bell-head">
             <div>
               <strong>更新公告</strong>
-              <p>按发布时间倒序 · 来自 CHANGELOG 与 GitHub Release</p>
+              <p>按版本倒序 · 每次更新改了什么</p>
             </div>
             <button type="button" className="bell-close" aria-label="关闭公告" onClick={() => setOpen(false)}>
               <Icon name="close" size={14} />
@@ -109,34 +126,39 @@ export function AnnouncementBell({
             <p className="bell-empty">暂无更新公告。</p>
           ) : (
             <ol className="timeline">
-              {visible.map((entry) => (
-                <li className="timeline-item" key={entry.tag}>
-                  <span className="timeline-dot" aria-hidden="true" />
-                  <div className="timeline-body">
-                    <div className="timeline-head">
-                      <strong>v{entry.version}</strong>
-                      {entry.version === __APP_VERSION__ && (
-                        <span className="pill compact" data-tone="accent">
-                          当前版本
-                        </span>
+              {visible.map((entry) => {
+                const items = notes(entry.body);
+                return (
+                  <li className="timeline-item" key={entry.tag}>
+                    <span className="timeline-dot" aria-hidden="true" />
+                    <div className="timeline-body">
+                      <div className="timeline-head">
+                        <strong>v{entry.version}</strong>
+                        {entry.version === __APP_VERSION__ && (
+                          <span className="pill compact" data-tone="accent">
+                            当前版本
+                          </span>
+                        )}
+                        <time dateTime={entry.publishedAt ?? undefined}>{formatDate(entry.publishedAt)}</time>
+                      </div>
+                      {items.length > 0 ? (
+                        <ul className="timeline-notes">
+                          {items.map((item) => (
+                            <li key={item}>{item}</li>
+                          ))}
+                        </ul>
+                      ) : (
+                        entry.body.trim() && <p>{excerpt(entry.body)}</p>
                       )}
-                      <time dateTime={entry.publishedAt ?? undefined}>{formatDate(entry.publishedAt)}</time>
-                    </div>
-                    {entry.body.trim() && <p>{excerpt(entry.body)}</p>}
-                    <div className="timeline-actions">
-                      {entry.url && (
-                        <button type="button" className="link" onClick={() => onOpenRelease(entry.url)}>
-                          查看 Release
-                          <Icon name="chevron" size={11} />
+                      <div className="timeline-actions">
+                        <button type="button" className="link subtle" onClick={() => onDismiss(entry.tag)}>
+                          不再显示
                         </button>
-                      )}
-                      <button type="button" className="link subtle" onClick={() => onDismiss(entry.tag)}>
-                        不再显示
-                      </button>
+                      </div>
                     </div>
-                  </div>
-                </li>
-              ))}
+                  </li>
+                );
+              })}
             </ol>
           )}
         </section>
