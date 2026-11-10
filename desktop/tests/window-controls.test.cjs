@@ -246,6 +246,20 @@ test("窗口：初始矩形收进显示器工作区，不把窗口底边放到�
   assert.match(mainSource, /fits \? restore\.height : DEFAULT_HEIGHT/, "放不下时没有退回默认高度");
 });
 
+test("窗口：混合缩放显示器上，创建后要重钉矩形再显示", () => {
+  // 主屏 150% + 副屏 100% 时，BrowserWindow 创建时传进去的 DIP 尺寸会先按主屏
+  // 工作区裁一次、再按主屏缩放折一次：请求 1049×852 实际得到 700×501，打开后
+  // 右半边和下半截都在窗口外 —— 用户看到的就是「显示不全」。窗口建好之后
+  // setBounds 用的是目标屏幕真实的 DIP 尺寸，所以必须隐藏创建、重钉、再显示。
+  assert.match(mainSource, /show:\s*false,/, "创建时必须先隐藏，等矩形钉准再显示");
+  assert.match(mainSource, /window\.setBounds\(targetBounds\)/, "缺少建好后重钉窗口矩形的步骤");
+  assert.match(
+    mainSource,
+    /if \(restore && restore\.maximized\) window\.maximize\(\);[\s\S]{0,120}else if \(!startHidden\) window\.show\(\);/,
+    "钉好矩形之后才显示窗口",
+  );
+});
+
 // ---------- runner ----------
 
 let failed = 0;

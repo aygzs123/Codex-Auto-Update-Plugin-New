@@ -74,8 +74,11 @@ test("发版正文会补回版本标题", async () => {
 test("解析对 CRLF 与结尾空行稳健", async () => {
   const { parseChangelog } = await load();
   // CI 是 CRLF 检出，本地是 LF。两份输入必须得到同一份结果。
-  const crlf = changelog.replace(/\n/g, "\r\n");
-  assert.deepEqual(parseChangelog(crlf), parseChangelog(changelog));
+  // 先把读到的内容统一成 LF 再造 CRLF 版本：直接 replace(/\n/g) 的话，CRLF 检出下
+  // 会把 \r\n 变成 \r\r\n，造出来的是一份畸形输入，测试反而会红在假问题上。
+  const lf = changelog.replace(/\r\n/g, "\n");
+  const crlf = lf.replace(/\n/g, "\r\n");
+  assert.deepEqual(parseChangelog(crlf), parseChangelog(lf));
   assert.deepEqual(parseChangelog(""), []);
   assert.deepEqual(parseChangelog("# Changelog\n\n没有版本小节\n"), []);
 });

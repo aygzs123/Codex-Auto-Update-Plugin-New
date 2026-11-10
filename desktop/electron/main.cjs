@@ -894,8 +894,9 @@ async function createWindow() {
     frame: false,
     titleBarStyle: "hidden",
     autoHideMenuBar: true,
-    // 开机自启那个实例先不出现在屏幕上，只留托盘；用户点托盘或通知再显示。
-    show: !startHidden,
+    // 先不显示：窗口的 DIP 矩形要在建好之后重新钉一次（见下面的 setBounds），
+    // 钉准了再露出来，否则会先闪一下错误大小。开机自启的实例本来就不显示。
+    show: false,
     webPreferences: {
       preload: join(__dirname, "preload.cjs"),
       contextIsolation: true,
@@ -909,7 +910,30 @@ async function createWindow() {
   window.removeMenu();
   attachKeyboardShortcuts(window);
 
+  // 混合缩放的多显示器上，创建窗口时传进去的 DIP 尺寸会先按**主屏**工作区裁一次、
+  // 再按主屏缩放折算一次：主屏 150% + 副屏 100% 时，请求 1049×852 实际得到
+  // 700×501。窗口打开后只剩左边一窄条，右半边卡片和下半截内容都在窗口外 ——
+  // 这就是「正常打开 exe 却显示不全」的来源。等窗口已经建在目标屏幕上之后，
+  // setBounds 用的才是那块屏幕真实的 DIP 尺寸，所以在这里把矩形钉回去。
+  const placed = window.getBounds();
+  const targetBounds = {
+    x: restore ? x : placed.x,
+    y: restore ? y : placed.y,
+    width,
+    height,
+  };
+  if (
+    placed.width !== width ||
+    placed.height !== height ||
+    placed.x !== targetBounds.x ||
+    placed.y !== targetBounds.y
+  ) {
+    window.setBounds(targetBounds);
+  }
+
+  // 最大化会自己把窗口显示出来；其余情况等尺寸钉好再显示（开机自启的保持隐藏）。
   if (restore && restore.maximized) window.maximize();
+  else if (!startHidden) window.show();
 
   if (isDev) {
     const command = "npm run dev -- --host 127.0.0.1";

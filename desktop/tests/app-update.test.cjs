@@ -124,7 +124,8 @@ test("store 里检查 → 下载 → 安装三步齐全，失败不污染全局 
 test("首屏订阅更新包进度，并在卸载时退订", () => {
   assert.match(appView, /connectAppUpdateProgress\(\)/, "App 没有订阅更新包进度");
   assert.match(app, /export function connectAppUpdateProgress\(\)/, "store 没有导出 connectAppUpdateProgress");
-  const effect = section(appView, "useEffect(() => {\n    void bootstrap();", 900);
+  // CI 是 CRLF 检出、本地是 LF，先统一换行再按行切片，否则这边永远本地绿、CI 红。
+  const effect = section(appView.replace(/\r\n/g, "\n"), "useEffect(() => {\n    void bootstrap();", 900);
   assert.match(effect, /offAppUpdate\(\)/, "卸载时没有退订");
 });
 

@@ -227,7 +227,10 @@ test("开机自启只在打包态写注册表，且带 --hidden", () => {
   // 注册表项可能被清理软件抹掉，所以每次启动都按落盘值重写一遍。
   assert.match(main, /applyLoginItem\(readSettings\(\)\.launchAtLogin\)/, "启动时要按落盘值补写一次注册表");
   const create = sliceFunction(main, "createWindow");
-  assert.match(create, /show: !startHidden/, "--hidden 启动时窗口必须是隐藏的");
+  // 创建时一律隐藏（要先 setBounds 钉准 DIP 矩形，见 window-controls 测试），
+  // 显示由 startHidden 决定：带 --hidden 启动的实例不能露出来。
+  assert.match(create, /show: false,/, "窗口必须先以隐藏状态创建");
+  assert.match(create, /else if \(!startHidden\) window\.show\(\);/, "--hidden 启动时窗口必须是隐藏的");
 });
 
 // ---------- 主题 ----------
